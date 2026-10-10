@@ -140,6 +140,12 @@ pub struct ComponentMount {
     id: u64,
 }
 
+impl ComponentMount {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ComponentEventHandle<H: CompositionHost> {
     runtime: u64,
@@ -150,6 +156,16 @@ pub struct ComponentEventHandle<H: CompositionHost> {
     owner: H::Owner,
 }
 impl<H: CompositionHost> ComponentEventHandle<H> {
+    pub fn mount_id(&self) -> u64 {
+        self.mount
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn action_id(&self) -> u64 {
+        self.action
+    }
+
     pub fn owner(&self) -> &H::Owner {
         &self.owner
     }
@@ -752,6 +768,43 @@ impl<H: CompositionHost> CompositionRuntime<H> {
             return Err("initialization effects require an unmounted owner".into());
         }
         self.drain_effects(owner, 0, 0, false)
+    }
+
+    /// Resolve a native host's explicitly registered selection in this manager.
+    pub fn registered_component(
+        &self,
+        node: &Value,
+    ) -> Result<Option<ComponentReference<H>>, String> {
+        let Some(selection) = self.extensions.resolve_registered(&self.packages, node)? else {
+            return Ok(None);
+        };
+        let package = self
+            .packages
+            .get(&selection.owner)
+            .ok_or("retired registered owner")?;
+        self.extensions
+            .validate_entry(package, &selection.implementation)?;
+        Ok(Some(ComponentReference {
+            runtime: self.id,
+            owner: selection.owner,
+            implementation: selection.implementation,
+            incarnation: package.incarnation,
+        }))
+    }
+
+    pub fn mount_owner(&self, mount: &ComponentMount) -> Result<&H::Owner, String> {
+        self.validate_mount(mount)?;
+        Ok(&self.mounts[&mount.id].reference.owner)
+    }
+
+    /// Native diagnostics may inspect token identities, but possession alone
+    /// never confers callback authority: receiver and source grants are checked.
+    pub fn callback_transport_tokens(&self) -> impl Iterator<Item = u64> + '_ {
+        self.callbacks.keys().copied()
+    }
+
+    pub fn owned_child_grant_count(&self) -> usize {
+        self.children.len()
     }
 
     pub fn participating_owners(&self) -> impl Iterator<Item = &H::Owner> {
@@ -4276,5 +4329,143 @@ mod tests {
         assert_eq!(host.next_callback, MAX_TRANSPORT_TOKEN);
         assert_eq!(host.callbacks.len(), count);
         assert!(host.take_effects().is_empty());
+    }
+    #[test]
+    fn settings_sized_tree_counts_components_instead_of_every_json_value() {
+        let owner = "owner".to_owned();
+        let rows = (0..512)
+            .map(|index| {
+                serde_json::json!({
+                    "kind": "button",
+                    "id": format!("setting-{index}"),
+                    "title": format!("Setting {index}"),
+                    "description": "A production-shaped Settings row with several scalar properties",
+                    "className": "settings-row",
+                    "disabled": false,
+                    "selected": false,
+                    "width": 480,
+                    "height": 40,
+                    "action": index,
+                    "__handlerSlots": {"action": format!("root/@setting-{index}:action")},
+                    "children": [format!("Setting {index}")]
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut tree = serde_json::json!({
+            "kind": "column",
+            "className": "settings-page",
+            "children": rows
+        });
+        let mut events = BTreeMap::new();
+
+        rewrite_events::<OrdinaryCompositionHost>(
+            &mut tree,
+            1,
+            2,
+            3,
+            &owner,
+            &mut events,
+            &mut TreeBudget::default(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(events.len(), 512);
+    }
+
+    #[test]
+    fn component_depth_and_handler_budgets_remain_independent() {
+        let owner = "owner".to_owned();
+        let mut too_many_handlers = Value::Array(
+            (0..=MAX_HANDLERS)
+                .enumerate()
+                .map(|(index, _)| {
+                    serde_json::json!({
+                        "action": 0,
+                        "__handlerSlots": {"action": format!("root/#{index}:action")}
+                    })
+                })
+                .collect(),
+        );
+        let error = rewrite_events::<OrdinaryCompositionHost>(
+            &mut too_many_handlers,
+            1,
+            2,
+            3,
+            &owner,
+            &mut BTreeMap::new(),
+            &mut TreeBudget::default(),
+            0,
+        )
+        .unwrap_err();
+        assert!(error.contains("handler limit"));
+
+        let mut too_deep = Value::Null;
+        for _ in 0..=MAX_TREE_DEPTH {
+            too_deep = Value::Array(vec![too_deep]);
+        }
+        let error = rewrite_events::<OrdinaryCompositionHost>(
+            &mut too_deep,
+            1,
+            2,
+            3,
+            &owner,
+            &mut BTreeMap::new(),
+            &mut TreeBudget::default(),
+            0,
+        )
+        .unwrap_err();
+        assert!(error.contains("depth limit"));
+    }
+
+    #[test]
+    fn missing_nested_patch_authority_isolated_before_any_package_runs() {
+        let mut host = composed();
+        for (_, context) in host.owner_contexts() {
+            context
+                .runtime
+                .borrow_mut()
+                .eval("globalThis.renders=0")
+                .unwrap();
+        }
+        let root = host.mount(&host.component("root").unwrap()).unwrap();
+        let initial = host.render_expanded(&root, &json!({}), |_| Ok(())).unwrap();
+        let event = initial.events.values().next().unwrap().clone();
+        assert_ne!(event.mount, root.id);
+        let authority = host.patch_authority.remove(&event.mount).unwrap();
+        let error = host
+            .dispatch_expanded_batch_scheduled_pending_validated(
+                &root,
+                &[(event.clone(), Value::Null)],
+                &initial.events,
+                &initial.node,
+                |_, _, _| Ok(()),
+            )
+            .err()
+            .unwrap();
+        assert!(error.contains("lost native patch authority"));
+        assert!(!host.transaction_pending());
+        for (_, context) in host.owner_contexts() {
+            assert_eq!(
+                context
+                    .runtime
+                    .borrow_mut()
+                    .eval_json::<u64>("renders")
+                    .unwrap(),
+                0
+            );
+        }
+        host.patch_authority.insert(event.mount, authority);
+        let outcome = host
+            .dispatch_expanded_batch_scheduled_pending_validated(
+                &root,
+                &[(event, Value::Null)],
+                &initial.events,
+                &initial.node,
+                |patch, _, _| Ok(patch.counters),
+            )
+            .unwrap();
+        assert!(matches!(outcome, ScheduledExpandedBatch::Patched { .. }));
+        host.finish_transaction(true).unwrap();
     }
 }
