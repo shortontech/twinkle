@@ -1,3 +1,5 @@
+//! Stable component identity and runtime-owned interaction state.
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -7,27 +9,36 @@ use std::{
 use crate::{DismissReason, FocusReturn, OverlayAnchor, OverlayId};
 use crate::{DocumentSelection, SelectionDocument, TextEditor};
 
+/// The input family responsible for the most recent authoritative interaction.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum InputModality {
+    /// Keyboard navigation or text input.
     #[default]
     Keyboard,
+    /// Mouse, pen, or touch-derived pointer input.
     Pointer,
+    /// Game controller navigation.
     Controller,
+    /// An accessibility adapter action.
     Accessibility,
 }
 
+/// Stable component identity used to retain state across declarative rebuilds.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct UiId(Arc<str>);
 
 impl UiId {
+    /// Creates an identity from an application-stable string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(Arc::from(value.into()))
     }
 
+    /// Creates a descendant identity by appending a slash-separated segment.
     pub fn scoped(&self, child: impl AsRef<str>) -> Self {
         Self::new(format!("{}/{}", self.0, child.as_ref()))
     }
 
+    /// Returns the complete stable identity.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -57,16 +68,22 @@ macro_rules! integer_ids {
 
 integer_ids!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
+/// The amount of frame work required after a state transition.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Invalidation {
+    /// No visual work is required.
     #[default]
     None,
+    /// Existing geometry can be repainted.
     Paint,
+    /// Layout and paint must be resolved again.
     Layout,
+    /// A repaint is required after the supplied delay.
     Scheduled(Duration),
 }
 
 impl Invalidation {
+    /// Combines two requests, retaining the strongest immediate work or earliest deadline.
     pub fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::Layout, _) | (_, Self::Layout) => Self::Layout,
@@ -80,16 +97,24 @@ impl Invalidation {
     }
 }
 
+/// Per-component ephemeral values retained by [`UiStateStore`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransientState {
+    /// Horizontal scroll position in logical pixels.
     pub scroll_offset_x: f32,
+    /// Vertical scroll position in logical pixels.
     pub scroll_offset: f32,
+    /// Current vertical inertial velocity.
     pub scroll_velocity: f32,
     /// Whether content growth should keep this scroll region pinned to its end.
     pub scroll_at_end: bool,
+    /// Whether a dropdown owned by the component is open.
     pub dropdown_open: bool,
+    /// Frame generation in which the dropdown was opened.
     pub dropdown_open_generation: u64,
+    /// Component-defined animation progress, normally from zero to one.
     pub animation_progress: f32,
+    /// Retained editing model when the component owns a text editor.
     pub editor: Option<TextEditor>,
 }
 
@@ -135,6 +160,7 @@ struct PointerModalityState {
     hover_fraction: f32,
 }
 
+/// Focus and controller-navigation state shared by the resolved tree.
 #[derive(Clone, Debug, Default)]
 pub struct NavigationState {
     current_target: Option<UiId>,
@@ -145,18 +171,24 @@ pub struct NavigationState {
     controller_retained_focus: HashMap<UiId, UiId>,
 }
 
+/// Operation currently owned by the authoritative focused widget.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WidgetTargetMode {
+    /// Traversing between controls.
     #[default]
     Navigation,
+    /// Editing text in the focused control.
     TextEditing,
+    /// Adjusting a continuous value such as a slider.
     ValueAdjustment,
 }
 
 impl NavigationState {
+    /// Returns the authoritative focused target.
     pub fn focused(&self) -> Option<&UiId> {
         self.current_target.as_ref()
     }
+    /// Returns the focused target when controller projection is active.
     pub fn controller_selected(&self) -> Option<&UiId> {
         self.controller_projection_active
             .then_some(self.current_target.as_ref())
@@ -174,18 +206,23 @@ impl NavigationState {
             Invalidation::Paint
         }
     }
+    /// Returns the active top-level controller pane.
     pub fn controller_pane(&self) -> Option<&UiId> {
         self.controller_pane.as_ref()
     }
+    /// Returns the innermost active controller navigation scope.
     pub fn controller_scope(&self) -> Option<&UiId> {
         self.controller_scope.as_ref()
     }
+    /// Reports whether a controller is adjusting a value.
     pub fn controller_editing(&self) -> bool {
         self.target_mode == WidgetTargetMode::ValueAdjustment
     }
+    /// Returns the focused widget's current operation mode.
     pub fn target_mode(&self) -> WidgetTargetMode {
         self.target_mode
     }
+    /// Returns the last controller-focused descendant retained for `scope`.
     pub fn retained_controller_focus(&self, scope: &UiId) -> Option<&UiId> {
         self.controller_retained_focus.get(scope)
     }
@@ -270,6 +307,11 @@ pub(crate) struct TextContextSession {
     pub anchor: OverlayAnchor,
 }
 
+/// Runtime-owned persistent interaction state for one independently presented viewport.
+///
+/// Applications normally let [`UiHost`](crate::UiHost) own this store. Headless/custom hosts must
+/// call [`begin_frame`](Self::begin_frame), touch live IDs during resolution, and then call
+/// [`end_frame`](Self::end_frame) so removed component state can be reclaimed.
 #[derive(Clone, Debug)]
 pub struct UiStateStore {
     pub(crate) virtual_boundary: Option<(UiId, u64, bool)>,
@@ -304,6 +346,7 @@ impl Default for UiStateStore {
 }
 
 impl UiStateStore {
+    /// Creates a store that retains unseen component state for the given number of frames.
     pub fn with_retention_frames(retention_frames: u64) -> Self {
         let now = Instant::now();
         Self {
@@ -418,10 +461,12 @@ impl UiStateStore {
         Invalidation::Layout
     }
 
+    /// Returns the topmost open overlay identity.
     pub fn open_overlay_id(&self) -> Option<&OverlayId> {
         self.overlays.stack.last().map(|(id, _)| id)
     }
 
+    /// Iterates open overlays from bottom to top and supports reverse traversal.
     pub fn overlay_stack(&self) -> impl DoubleEndedIterator<Item = &OverlayId> {
         self.overlays.stack.iter().map(|(id, _)| id)
     }
@@ -440,6 +485,7 @@ impl UiStateStore {
         Invalidation::Layout
     }
 
+    /// Takes the pending focus restoration produced by an overlay dismissal.
     pub fn take_focus_return(&mut self) -> Option<FocusReturn> {
         self.overlays.last_focus_return.take()
     }
@@ -450,10 +496,12 @@ impl UiStateStore {
         first
     }
 
+    /// Advances the frame generation before resolving a new declaration.
     pub fn begin_frame(&mut self) {
         self.durable.frame = self.durable.frame.saturating_add(1);
     }
 
+    /// Marks an identity live and returns its retained transient state.
     pub fn touch(&mut self, id: impl Into<UiId>) -> &mut TransientState {
         let frame = self.durable.frame;
         &mut self
@@ -468,6 +516,7 @@ impl UiStateStore {
             .state
     }
 
+    /// Reclaims expired state and clears ownership referring to removed components.
     pub fn end_frame(&mut self) {
         let oldest = self
             .durable
@@ -514,18 +563,22 @@ impl UiStateStore {
             .retain(|scope, target| live.contains(scope) && live.contains(target));
     }
 
+    /// Reports whether the store currently has retained state for `id`.
     pub fn contains(&self, id: &UiId) -> bool {
         self.durable.entries.contains_key(id)
     }
 
+    /// Returns retained state without marking it live in the current frame.
     pub fn state(&self, id: &UiId) -> Option<&TransientState> {
         self.durable.entries.get(id).map(|entry| &entry.state)
     }
 
+    /// Marks an identity live and returns mutable retained state.
     pub fn state_mut(&mut self, id: impl Into<UiId>) -> &mut TransientState {
         self.touch(id)
     }
 
+    /// Returns the retained editor for an identity, creating it from `initial` when absent.
     pub fn editor(&mut self, id: impl Into<UiId>, initial: impl Into<String>) -> &mut TextEditor {
         self.touch(id)
             .editor
@@ -548,18 +601,22 @@ impl UiStateStore {
         self.set_focus(id)
     }
 
+    /// Monotonic generation advanced whenever focus ownership changes.
     pub fn focus_generation(&self) -> u64 {
         self.focus_generation
     }
 
+    /// Updates the pointer-hover target and requests paint when it changes.
     pub fn set_hovered(&mut self, id: Option<UiId>) -> Invalidation {
         replace_if_changed(&mut self.pointer.hovered, id, Invalidation::Paint)
     }
 
+    /// Updates the pressed pointer target and requests paint when it changes.
     pub fn set_pressed(&mut self, id: Option<UiId>) -> Invalidation {
         replace_if_changed(&mut self.pointer.pressed, id, Invalidation::Paint)
     }
 
+    /// Updates pointer capture without itself requesting visual work.
     pub fn set_capture(&mut self, id: Option<UiId>) -> Invalidation {
         if id.is_none() {
             self.pointer.scrollbar_grab_offset = None;
@@ -575,6 +632,7 @@ impl UiStateStore {
         self.pointer.scrollbar_grab_offset
     }
 
+    /// Returns the read-only navigation state.
     pub fn navigation(&self) -> &NavigationState {
         &self.navigation
     }
@@ -583,6 +641,7 @@ impl UiStateStore {
         &mut self.navigation
     }
 
+    /// Returns the authoritative focused target.
     pub fn focused(&self) -> Option<&UiId> {
         self.navigation.current_target.as_ref()
     }
@@ -593,6 +652,7 @@ impl UiStateStore {
         self.focused()
     }
 
+    /// Returns the current pointer-hover target.
     pub fn hovered(&self) -> Option<&UiId> {
         self.pointer.hovered.as_ref()
     }
@@ -672,14 +732,17 @@ impl UiStateStore {
         self.geometry_animation_active
     }
 
+    /// Returns the target on which a pointer button is currently held.
     pub fn pressed(&self) -> Option<&UiId> {
         self.pointer.pressed.as_ref()
     }
 
+    /// Returns the target owning pointer capture.
     pub fn captured(&self) -> Option<&UiId> {
         self.pointer.captured.as_ref()
     }
 
+    /// Returns the most recent authoritative input modality.
     pub fn input_modality(&self) -> InputModality {
         self.pointer.input_modality
     }
@@ -703,6 +766,7 @@ impl UiStateStore {
         }
     }
 
+    /// Reports whether the native window currently has focus.
     pub fn window_focused(&self) -> bool {
         self.pointer.window_focused
     }
@@ -724,14 +788,17 @@ impl UiStateStore {
         }
     }
 
+    /// Returns the component owning the current document selection.
     pub fn selection_owner(&self) -> Option<&UiId> {
         self.text.selection_owner.as_ref()
     }
 
+    /// Returns the retained selection for a selectable document.
     pub fn document_selection(&self, id: &UiId) -> Option<&DocumentSelection> {
         self.text.document_selections.get(id)
     }
 
+    /// Returns or creates the retained selection for a selectable document.
     pub fn document_selection_mut(&mut self, id: impl Into<UiId>) -> &mut DocumentSelection {
         self.text.document_selections.entry(id.into()).or_default()
     }
@@ -750,6 +817,7 @@ impl UiStateStore {
         self.text.selection_documents.insert(id, document);
     }
 
+    /// Changes the component owning document selection.
     pub fn set_selection_owner(&mut self, id: Option<UiId>) -> Invalidation {
         if self.text.selection_owner == id {
             return Invalidation::None;
@@ -758,6 +826,7 @@ impl UiStateStore {
         Invalidation::Paint
     }
 
+    /// Clears every retained document selection and its owner.
     pub fn clear_document_selection(&mut self) -> Invalidation {
         let changed = self.text.selection_owner.take().is_some()
             || self
@@ -774,10 +843,12 @@ impl UiStateStore {
         }
     }
 
+    /// Reports whether the focused editor's blinking caret is visible.
     pub fn caret_visible(&self) -> bool {
         self.text.caret_visible
     }
 
+    /// Makes the caret visible, requesting paint only when it changed.
     pub fn show_caret(&mut self) -> Invalidation {
         if self.text.caret_visible {
             Invalidation::None
@@ -787,6 +858,7 @@ impl UiStateStore {
         }
     }
 
+    /// Toggles caret visibility when a target is focused.
     pub fn toggle_caret(&mut self) -> Invalidation {
         if self.navigation.current_target.is_none() {
             return Invalidation::None;
@@ -795,6 +867,7 @@ impl UiStateStore {
         Invalidation::Paint
     }
 
+    /// Applies and clamps a vertical scroll delta for an identified region.
     pub fn scroll_by(&mut self, id: impl Into<UiId>, delta: f32, maximum: f32) -> Invalidation {
         let state = self.touch(id);
         let next = (state.scroll_offset + delta).clamp(0.0, maximum.max(0.0));
@@ -807,6 +880,7 @@ impl UiStateStore {
         }
     }
 
+    /// Applies and clamps a horizontal scroll delta for an identified region.
     pub fn scroll_by_x(&mut self, id: impl Into<UiId>, delta: f32, maximum: f32) -> Invalidation {
         let state = self.touch(id);
         let next = (state.scroll_offset_x + delta).clamp(0.0, maximum.max(0.0));
@@ -828,10 +902,12 @@ impl UiStateStore {
         }
     }
 
+    /// Creates a delayed repaint request.
     pub fn schedule_repaint(delay: Duration) -> Invalidation {
         Invalidation::Scheduled(delay)
     }
 
+    /// Retires pointer gestures, text context, and overlays after window focus loss.
     pub fn focus_lost(&mut self) -> Invalidation {
         self.virtual_boundary = None;
         self.virtual_focus = None;
@@ -848,10 +924,12 @@ impl UiStateStore {
         }
     }
 
+    /// Applies the same ownership retirement used for focus loss during suspension.
     pub fn suspended(&mut self) -> Invalidation {
         self.focus_lost()
     }
 
+    /// Retires controller projection and active gestures after an input device disappears.
     pub fn device_removed(&mut self) -> Invalidation {
         let changed = std::mem::take(&mut self.navigation.controller_projection_active);
         self.focus_lost().merge(if changed {
@@ -861,6 +939,7 @@ impl UiStateStore {
         })
     }
 
+    /// Releases all retained component and interaction state for viewport destruction.
     pub fn destroy(&mut self) {
         self.virtual_boundary = None;
         self.virtual_focus = None;

@@ -34,7 +34,6 @@ mod release_admission;
 pub mod retained_surface;
 #[allow(missing_docs)]
 mod runtime;
-#[allow(missing_docs)]
 pub mod state;
 #[allow(missing_docs)]
 pub mod text_context_menu;
