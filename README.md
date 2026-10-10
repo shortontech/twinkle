@@ -24,6 +24,8 @@ Then clone the repository and run the standalone counter:
 git clone https://github.com/shortontech/twinkle.git
 cd twinkle
 cargo run -p twinkle-ui --example standalone
+cargo run -p twinkle-ui --example form_validation
+cargo run -p twinkle-ui --example headless
 ```
 
 To use Twinkle from another project while releases are not yet published, add the Git dependency:

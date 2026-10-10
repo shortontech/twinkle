@@ -3,6 +3,9 @@
 These recipes continue from the [counter application](getting-started.md). They describe where
 state belongs and point to executable repository examples; API details are available in rustdoc.
 
+Run the complete form example with `cargo run -p twinkle-ui --example form_validation`, or inspect
+the window-free test example with `cargo run -p twinkle-ui --example headless`.
+
 ## Forms and validation
 
 Keep entered values and validation errors in the `Application`, not in a component-local shadow
