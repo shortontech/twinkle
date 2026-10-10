@@ -733,6 +733,27 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         Ok(result)
     }
 
+    /// Read admitted native metadata without exposing composition grants.
+    pub fn owner_contexts(&self) -> impl Iterator<Item = (&H::Owner, &OwnerRuntime<H>)> {
+        self.packages.iter()
+    }
+
+    /// Capture initialization requests from an owner before it has any mounts.
+    /// Native hosts still validate every returned effect against their policy.
+    pub fn collect_initial_owner_effects(&mut self, owner: &H::Owner) -> Result<(), String> {
+        if !self.packages.contains_key(owner) {
+            return Err("retired initialization owner".into());
+        }
+        if self
+            .mounts
+            .values()
+            .any(|mount| &mount.reference.owner == owner)
+        {
+            return Err("initialization effects require an unmounted owner".into());
+        }
+        self.drain_effects(owner, 0, 0, false)
+    }
+
     pub fn participating_owners(&self) -> impl Iterator<Item = &H::Owner> {
         self.resolution
             .owner_order
@@ -834,7 +855,7 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         Value::Object(catalog)
     }
 
-    fn publish_contribution_catalog(&self) -> Result<(), String> {
+    pub fn publish_contribution_catalog(&self) -> Result<(), String> {
         let catalog = self.contribution_catalog();
         for package in self.packages.values() {
             package
@@ -3864,6 +3885,23 @@ mod tests {
             BTreeMap::from([("parent".into(), parent), ("provider".into(), child)]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn initialization_requests_keep_native_owner_and_require_an_unmounted_domain() {
+        let mut host = composed();
+        host.packages.insert("provider".into(), context(
+            "twinkle.request({type:'initialized'}); export function View(){return h(Text,null,'ready')}"
+        ));
+        let owner = "provider".to_owned();
+        host.collect_initial_owner_effects(&owner).unwrap();
+        let effects = host.take_effects();
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].owner(), &owner);
+        assert_eq!(effects[0].value()["type"], "initialized");
+        host.validate_effect(&effects[0]).unwrap();
+        host.mount(&host.component("widget").unwrap()).unwrap();
+        assert!(host.collect_initial_owner_effects(&owner).is_err());
     }
 
     #[test]
