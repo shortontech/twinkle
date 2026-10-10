@@ -72,9 +72,19 @@ game tick, streaming-data callback, or other recurring update loop.
 When Rust owns changing application state, open a transaction and use
 `JsxRuntime::reconcile_data_patched(snapshot)`. The runtime republishes the snapshot, reruns only
 its affected readers, and returns a bounded typed patch. Apply that patch to a clone of the accepted
-`RetainedPanelTree`, validate effects under host policy, then commit the patch, pending event, and
-transaction together. Reject the transaction on any failure so both the JSX runtime and native tree
-retain their previous accepted state.
+`RetainedPanelTree` with `apply_patch_owned`, validate effects under host policy, then commit the
+patch and transaction together. Data reconciliation does not create a synthetic pending event; only
+input dispatches require `finish_event`. The owned path consumes the disposable candidate instead
+of defensively cloning it a second time. Reject the transaction on any failure so both the JSX
+runtime and native tree retain their previous accepted state.
+
+Before applying a property-only envelope, call
+`RetainedPanelTree::changed_element_ids(&patch)` and retain the returned paths. Expose them once
+from `Application::take_changed_view_ids` after the accepted tree is committed. `UiHost` uses that
+complete set to skip clean retained declaration branches during a pure application-data rebuild;
+missing paths, structural patches, and batches mixed with input or geometry changes automatically
+fall back to conservative full reconciliation. The paths are derived from native tree position, so
+ordinary non-interactive leaves do not need artificial `id` properties for this optimization.
 
 The lifecycle distinction is:
 
@@ -85,6 +95,21 @@ The lifecycle distinction is:
 This distinction is important for performance. Calling the cold path after `set_data_value` rebuilds,
 materializes, serializes, transports, parses, and indexes the complete tree even when only a few
 leaf properties changed. Patched snapshot reconciliation transports only admitted changes.
+
+Component boundaries still determine how much JSX work precedes that patch. For a frequently
+updated keyed collection, make each item a component and wrap pure item components in `memo`:
+
+```tsx
+const Cell = memo(({color}: {color: string}) =>
+    <Div className={color ? `cell filled ${color}` : "cell"} />
+);
+
+<Div>{board.map((color, index) => <Cell key={index} color={color} />)}</Div>
+```
+
+A map callback that directly returns native elements is not a component boundary. Its parent must
+recreate and compare every element whenever the parent reruns; keyed memoized components can reuse
+the output of items whose primitive props did not change.
 
 ## Package modules and TypeScript
 

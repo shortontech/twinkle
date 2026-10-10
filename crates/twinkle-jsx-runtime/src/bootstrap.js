@@ -2032,6 +2032,15 @@ function __twinkleDispatchBatchPatched(events, previous = false) {
     }
 }
 
+// Host-data publication is already enclosed by the native runtime transaction.
+// Reconcile it directly instead of manufacturing and cloning an empty event.
+function __twinkleReconcileDataPatched() {
+    const dirty = Array.from(__dirtyComponents);
+    if (!dirty.length) return JSON.stringify({rendered:false, dirty});
+    const patch = __twinkleRender(undefined, true);
+    return JSON.stringify({rendered:true, dirty, patch});
+}
+
 function __twinkleDispatchSlotsPatched(events, previous = false) {
     return __twinkleDispatchBatchPatched(events.map(([slot, value]) => {
         const action = __handlerSlots.get(slot);

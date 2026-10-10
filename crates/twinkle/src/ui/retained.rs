@@ -69,6 +69,7 @@ pub(crate) struct RetainedNode {
     id: RetainedNodeId,
     parent: Option<RetainedNodeId>,
     identity: ChildIdentity,
+    #[cfg_attr(not(test), allow(dead_code))]
     ui_id: UiId,
     kind: KindTag,
     signatures: PhaseSignatures,
@@ -78,7 +79,6 @@ pub(crate) struct RetainedNode {
     subtree_nodes: usize,
     /// Recomputed bottom-up during reconciliation, before layout reuse queries.
     subtree_layout_clean: bool,
-    postorder_index: usize,
     pub(crate) phases: RetainedPhaseData,
 }
 
@@ -521,10 +521,42 @@ impl RetainedNodeArena {
     }
 
     pub(crate) fn reconcile<Message>(&mut self, root: &Element<Message>) -> ReconcileStats {
+        self.reconcile_impl(root, None)
+    }
+
+    pub(crate) fn reconcile_changed<Message>(
+        &mut self,
+        root: &Element<Message>,
+        changed: &[UiId],
+    ) -> ReconcileStats {
+        let mut ancestry = HashSet::new();
+        for id in changed {
+            let Some(mut node) = self.by_ui_id.get(id).copied() else {
+                return self.reconcile(root);
+            };
+            loop {
+                ancestry.insert(node);
+                let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) else {
+                    break;
+                };
+                node = parent;
+            }
+        }
+        self.reconcile_impl(root, Some(&ancestry))
+    }
+
+    fn reconcile_impl<Message>(
+        &mut self,
+        root: &Element<Message>,
+        changed_ancestry: Option<&HashSet<RetainedNodeId>>,
+    ) -> ReconcileStats {
         let mut old_nodes = std::mem::take(&mut self.nodes);
         let old_count = old_nodes.len();
         let old_root = self.root.take();
         self.last = ReconcileStats::default();
+        if changed_ancestry.is_none() {
+            self.by_ui_id.clear();
+        }
         let mut consumed = HashSet::new();
         let root_id = self.reconcile_node(
             root,
@@ -538,23 +570,10 @@ impl RetainedNodeArena {
             old_root,
             &mut old_nodes,
             &mut consumed,
+            changed_ancestry,
         );
         self.root = Some(root_id);
         self.last.removed = old_count.saturating_sub(consumed.len());
-        let mut postorder_index = 0;
-        self.propagate_descendant_work(root_id, &mut postorder_index);
-        self.by_ui_id.clear();
-        for node in self.nodes.values() {
-            self.by_ui_id.entry(node.ui_id.clone()).or_insert(node.id);
-        }
-        for node in self.nodes.values_mut() {
-            node.invalidate_dirty_phases();
-        }
-        self.last.clean = self
-            .nodes
-            .values()
-            .filter(|node| node.dirty.is_empty())
-            .count();
         self.last.clone()
     }
 
@@ -569,16 +588,29 @@ impl RetainedNodeArena {
         candidate: Option<RetainedNodeId>,
         old_nodes: &mut HashMap<RetainedNodeId, RetainedNode>,
         consumed: &mut HashSet<RetainedNodeId>,
+        changed_ancestry: Option<&HashSet<RetainedNodeId>>,
     ) -> RetainedNodeId {
         self.last.visited += 1;
         let kind = kind_tag(&element.kind);
+        if let (Some(changed_ancestry), Some(candidate)) = (changed_ancestry, candidate)
+            && !changed_ancestry.contains(&candidate)
+            && old_nodes.get(&candidate).is_some_and(|node| {
+                node.kind == kind
+                    && node.identity == identity
+                    && node.parent == parent
+                    && node.ui_id == ui_id
+            })
+        {
+            self.reuse_unchanged_subtree(candidate, old_nodes, consumed);
+            return candidate;
+        }
         let mut old = candidate.and_then(|id| old_nodes.remove(&id));
         let had_old = old.is_some();
         let mut reusable = old
             .as_mut()
             .filter(|node| node.kind == kind && node.identity == identity);
         let current = signatures(element);
-        let (id, phases, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
+        let (id, mut phases, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
             consumed.insert(old.id);
             self.last.reused += 1;
             let mut dirty = DirtyPhases::default();
@@ -642,11 +674,10 @@ impl RetainedNodeArena {
         let old_children = reusable
             .as_ref()
             .map_or(&[][..], |node| node.children.as_slice());
-        let mut keyed = HashMap::new();
-        for child_id in old_children {
-            let child = &old_nodes[child_id];
-            keyed.insert(child.identity.clone(), *child_id);
-        }
+        // Stable child lists are the common case. Match their positional
+        // prefix directly and pay for a keyed lookup table only after the
+        // first insertion, removal, or move.
+        let mut keyed = None;
         let mut children = Vec::with_capacity(element.children.len());
         for (index, child) in element.children.iter().enumerate() {
             let child_identity = child
@@ -657,10 +688,28 @@ impl RetainedNodeArena {
                 || ui_id.scoped(format!("#{index}")),
                 |id| ui_id.scoped(id.as_str()),
             );
-            let old_child = keyed
-                .get(&child_identity)
-                .copied()
-                .filter(|candidate| !consumed.contains(candidate));
+            let aligned = old_children.get(index).copied().filter(|candidate| {
+                !consumed.contains(candidate)
+                    && old_nodes
+                        .get(candidate)
+                        .is_some_and(|node| node.identity == child_identity)
+            });
+            let old_child = aligned.or_else(|| {
+                let keyed = keyed.get_or_insert_with(|| {
+                    old_children
+                        .iter()
+                        .filter_map(|child_id| {
+                            old_nodes
+                                .get(child_id)
+                                .map(|node| (node.identity.clone(), *child_id))
+                        })
+                        .collect::<HashMap<_, _>>()
+                });
+                keyed
+                    .get(&child_identity)
+                    .copied()
+                    .filter(|candidate| !consumed.contains(candidate))
+            });
             if let Some(old_child) = old_child
                 && old_children.get(index).copied() != Some(old_child)
             {
@@ -675,12 +724,49 @@ impl RetainedNodeArena {
                 old_child,
                 old_nodes,
                 consumed,
+                changed_ancestry,
             ));
         }
         if reusable.is_some_and(|old| old.children != children) {
             dirty.insert(DirtyPhases::CHILDREN);
         }
-        let node = RetainedNode {
+        let mut descendants = DirtyPhases::default();
+        for child in &children {
+            descendants.insert(self.nodes[child].subtree_dirty);
+        }
+        if dirty.contains(DirtyPhases::CHILDREN) || descendants.contains(DirtyPhases::MEASURE) {
+            dirty.insert(
+                DirtyPhases::MEASURE
+                    .union(DirtyPhases::PLACE)
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        } else if descendants.contains(DirtyPhases::PLACE) {
+            dirty.insert(
+                DirtyPhases::PLACE
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        }
+        let subtree_dirty = dirty.union(descendants);
+        if dirty.contains(DirtyPhases::MEASURE) {
+            phases.scroll_measurements = None;
+        }
+        let subtree_nodes = 1 + children
+            .iter()
+            .map(|child| self.nodes[child].subtree_nodes)
+            .sum::<usize>();
+        let subtree_layout_clean = children
+            .iter()
+            .all(|child| self.nodes[child].subtree_layout_clean)
+            && !dirty.contains(DirtyPhases::MEASURE)
+            && !dirty.contains(DirtyPhases::PLACE)
+            && phases.measured.is_some()
+            && phases.allocated.is_some();
+        self.by_ui_id.entry(ui_id.clone()).or_insert(id);
+        let mut node = RetainedNode {
             id,
             parent,
             identity,
@@ -689,65 +775,38 @@ impl RetainedNodeArena {
             signatures: current,
             dirty,
             children,
-            subtree_dirty: dirty,
-            subtree_nodes: 1,
-            subtree_layout_clean: false,
-            postorder_index: 0,
+            subtree_dirty,
+            subtree_nodes,
+            subtree_layout_clean,
             phases,
         };
+        node.invalidate_dirty_phases();
+        if node.dirty.is_empty() {
+            self.last.clean += 1;
+        }
         let _ = position;
         self.nodes.insert(id, node);
         id
     }
 
-    fn propagate_descendant_work(
+    fn reuse_unchanged_subtree(
         &mut self,
-        root: RetainedNodeId,
-        postorder_index: &mut usize,
-    ) -> DirtyPhases {
-        let children = self.nodes[&root].children.clone();
-        let mut descendants = DirtyPhases::default();
-        for &child in &children {
-            descendants.insert(self.propagate_descendant_work(child, postorder_index));
+        id: RetainedNodeId,
+        old_nodes: &mut HashMap<RetainedNodeId, RetainedNode>,
+        consumed: &mut HashSet<RetainedNodeId>,
+    ) {
+        let mut node = old_nodes
+            .remove(&id)
+            .expect("unchanged retained subtree root exists");
+        for child in node.children.clone() {
+            self.reuse_unchanged_subtree(child, old_nodes, consumed);
         }
-        let subtree_nodes = 1 + children
-            .iter()
-            .map(|child| self.nodes[child].subtree_nodes)
-            .sum::<usize>();
-        let children_layout_clean = children
-            .iter()
-            .all(|child| self.nodes[child].subtree_layout_clean);
-        let node = self.nodes.get_mut(&root).expect("retained node exists");
-        if node.dirty.contains(DirtyPhases::CHILDREN) || descendants.contains(DirtyPhases::MEASURE)
-        {
-            node.dirty.insert(
-                DirtyPhases::MEASURE
-                    .union(DirtyPhases::PLACE)
-                    .union(DirtyPhases::PAINT)
-                    .union(DirtyPhases::INTERACTION)
-                    .union(DirtyPhases::SEMANTICS),
-            );
-        } else if descendants.contains(DirtyPhases::PLACE) {
-            node.dirty.insert(
-                DirtyPhases::PLACE
-                    .union(DirtyPhases::PAINT)
-                    .union(DirtyPhases::INTERACTION)
-                    .union(DirtyPhases::SEMANTICS),
-            );
-        }
-        node.subtree_dirty = node.dirty.union(descendants);
-        if node.dirty.contains(DirtyPhases::MEASURE) {
-            node.phases.scroll_measurements = None;
-        }
-        node.subtree_nodes = subtree_nodes;
-        node.subtree_layout_clean = children_layout_clean
-            && !node.dirty.contains(DirtyPhases::MEASURE)
-            && !node.dirty.contains(DirtyPhases::PLACE)
-            && node.phases.measured.is_some()
-            && node.phases.allocated.is_some();
-        node.postorder_index = *postorder_index;
-        *postorder_index = postorder_index.saturating_add(1);
-        node.subtree_dirty
+        consumed.insert(id);
+        self.last.reused += 1;
+        self.last.clean += 1;
+        node.dirty = DirtyPhases::default();
+        node.subtree_dirty = DirtyPhases::default();
+        self.nodes.insert(id, node);
     }
 
     #[cfg(test)]

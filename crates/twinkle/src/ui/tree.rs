@@ -538,7 +538,7 @@ impl ResolvedLayout {
 /// custom embedders may construct them directly with the `layout` methods.
 pub struct UiFrame<Message = String> {
     retained_nodes: super::retained::RetainedNodeArena,
-    retained_layout: HashMap<UiId, ResolvedNode>,
+    retained_layout: HashMap<UiId, RetainedGeometry>,
     nodes_measured: usize,
     diagnostic_text_measurements: usize,
     scroll_content_measurements: usize,
@@ -590,6 +590,14 @@ pub struct UiFrame<Message = String> {
     active_overlay: Option<(crate::OverlayId, Rect)>,
     active_overlay_kind: Option<crate::TransientKind>,
     active_overlay_dismiss: Option<crate::DismissPolicy>,
+}
+
+#[derive(Clone, Debug)]
+struct RetainedGeometry {
+    preferred: Size,
+    allocated: Rect,
+    clip: Option<Rect>,
+    grid_tracks: Vec<f32>,
 }
 
 impl<Message> Default for UiFrame<Message> {
@@ -1768,7 +1776,7 @@ impl<Message: Clone> UiFrame<Message> {
         id: &UiId,
         bounds: Rect,
         inherited_clip: Option<Rect>,
-    ) -> Option<&ResolvedNode> {
+    ) -> Option<&RetainedGeometry> {
         if !self.retained_nodes.subtree_layout_is_clean(id) {
             return None;
         }
@@ -1889,7 +1897,15 @@ impl<Message: Clone> UiFrame<Message> {
         state: &mut UiStateStore,
         diagnostics: bool,
     ) -> Self {
-        Self::layout_with_state_and_diagnostics_impl(root, bounds, state, diagnostics, None)
+        Self::layout_with_state_and_diagnostics_impl(
+            root,
+            bounds,
+            state,
+            diagnostics,
+            None,
+            None,
+            None,
+        )
     }
 
     fn layout_with_state_and_diagnostics_against(
@@ -1905,6 +1921,47 @@ impl<Message: Clone> UiFrame<Message> {
             state,
             diagnostics,
             Some(previous),
+            None,
+            None,
+        )
+    }
+
+    /// Resolve against a frame that will be replaced, moving its retained-node
+    /// arena into the candidate instead of cloning it first.
+    pub(crate) fn resolve_against_reusing(
+        root: impl Component<Message>,
+        request: FrameRequest<'_>,
+        previous: &mut Self,
+    ) -> Self {
+        let retained_nodes = std::mem::take(&mut previous.retained_nodes);
+        Self::layout_with_state_and_diagnostics_impl(
+            root,
+            request.viewport,
+            request.state,
+            request.diagnostics == DiagnosticMode::Collect,
+            Some(previous),
+            Some(retained_nodes),
+            None,
+        )
+    }
+
+    /// Resolve an authoritative non-structural update while reusing clean
+    /// retained declaration subtrees outside the changed ID ancestry.
+    pub(crate) fn resolve_against_reusing_changed(
+        root: impl Component<Message>,
+        request: FrameRequest<'_>,
+        previous: &mut Self,
+        changed: &[UiId],
+    ) -> Self {
+        let retained_nodes = std::mem::take(&mut previous.retained_nodes);
+        Self::layout_with_state_and_diagnostics_impl(
+            root,
+            request.viewport,
+            request.state,
+            request.diagnostics == DiagnosticMode::Collect,
+            Some(previous),
+            Some(retained_nodes),
+            Some(changed),
         )
     }
 
@@ -1914,6 +1971,8 @@ impl<Message: Clone> UiFrame<Message> {
         state: &mut UiStateStore,
         diagnostics: bool,
         previous: Option<&Self>,
+        retained_nodes: Option<super::retained::RetainedNodeArena>,
+        changed_view_ids: Option<&[UiId]>,
     ) -> Self {
         let mut root = root.into_element();
         let declaration_root = root.clone();
@@ -1933,8 +1992,8 @@ impl<Message: Clone> UiFrame<Message> {
             declaration_root_id: Some(root_id.clone()),
             diagnostics_enabled: diagnostics,
             viewport: bounds,
-            retained_nodes: previous
-                .map(|previous| previous.retained_nodes.clone())
+            retained_nodes: retained_nodes
+                .or_else(|| previous.map(|previous| previous.retained_nodes.clone()))
                 .unwrap_or_default(),
             retained_layout: previous
                 .map(|previous| {
@@ -1942,8 +2001,17 @@ impl<Message: Clone> UiFrame<Message> {
                         .resolved
                         .nodes
                         .iter()
-                        .cloned()
-                        .map(|node| (node.id.clone(), node))
+                        .map(|node| {
+                            (
+                                node.id.clone(),
+                                RetainedGeometry {
+                                    preferred: node.preferred,
+                                    allocated: node.allocated,
+                                    clip: node.clip,
+                                    grid_tracks: node.grid_tracks.clone(),
+                                },
+                            )
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -1958,7 +2026,11 @@ impl<Message: Clone> UiFrame<Message> {
                 .unwrap_or_default(),
             ..Self::default()
         };
-        tree.retained_nodes.reconcile(&root);
+        if let Some(changed) = changed_view_ids.filter(|changed| !changed.is_empty()) {
+            tree.retained_nodes.reconcile_changed(&root, changed);
+        } else {
+            tree.retained_nodes.reconcile(&root);
+        }
         layout_element(&root, &root_id, bounds, None, None, &mut tree);
         let initial = tree
             .resolved

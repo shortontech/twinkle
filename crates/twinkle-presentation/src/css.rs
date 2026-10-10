@@ -118,7 +118,7 @@ pub struct ControlStyle {
     // Computed once for this immutable resolved style, shared by cached returns
     // and inherited text context. Never mutate a cached parent's variable map.
     pub(crate) custom_properties: Arc<HashMap<String, String>>,
-    pub(crate) ancestors: Vec<(String, Option<String>, Option<String>)>,
+    pub(crate) ancestors: Arc<Vec<(String, Option<String>, Option<String>)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1408,10 +1408,10 @@ impl StyleSheet {
             return style.clone();
         }
         let mut style = ControlStyle {
-            ancestors: ancestors.to_vec(),
+            ancestors: Arc::new(ancestors.to_vec()),
             ..ControlStyle::default()
         };
-        style.ancestors.push((
+        Arc::make_mut(&mut style.ancestors).push((
             kind.into(),
             id.map(str::to_owned),
             class_name.map(str::to_owned),

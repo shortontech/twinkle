@@ -851,6 +851,14 @@ pub trait Application: Sized {
         None
     }
 
+    /// Drains the complete set of stable declared element IDs changed by the
+    /// next non-structural view update. `None` requests conservative full-tree
+    /// reconciliation. The host resolves IDs against the accepted frame and
+    /// falls back if any ID is missing or ambiguous.
+    fn take_changed_view_ids(&mut self) -> Option<Vec<UiId>> {
+        None
+    }
+
     /// Drains a semantic focus request produced by a domain update.
     ///
     /// The host resolves the stable application id against the rebuilt tree,
@@ -3089,6 +3097,12 @@ impl<A: Application> UiHost<A> {
     }
 
     pub fn step(&mut self, batch: HostBatch) -> HostEventOutcome {
+        let patch_only_application_change = batch.application_changed
+            && batch.events.is_empty()
+            && batch.completions.is_empty()
+            && batch.surface_size.is_none()
+            && batch.scale_factor.is_none()
+            && batch.window_focused.is_none();
         let pure_resize = self.application.retain_view_on_resize()
             && batch.surface_size.is_some_and(|(width, height)| {
                 Rect::new(0.0, 0.0, width as f32, height as f32) != self.bounds
@@ -3525,6 +3539,7 @@ impl<A: Application> UiHost<A> {
             } else {
                 let (paint_list_us, layout_us, rebuild_outcome) = self.rebuild_timed_retaining(
                     may_retain_view && view_context_unchanged && combined.messages.is_empty(),
+                    patch_only_application_change,
                 );
                 combined.merge(rebuild_outcome);
                 combined.telemetry.paint_list_us = paint_list_us;
@@ -4030,11 +4045,26 @@ impl<A: Application> UiHost<A> {
     }
 
     fn rebuild_timed(&mut self) -> (u64, u64, HostEventOutcome) {
-        self.rebuild_timed_retaining(false)
+        self.rebuild_timed_retaining(false, false)
     }
 
-    fn rebuild_timed_retaining(&mut self, retain: bool) -> (u64, u64, HostEventOutcome) {
+    fn rebuild_timed_retaining(
+        &mut self,
+        retain: bool,
+        allow_changed_view_ids: bool,
+    ) -> (u64, u64, HostEventOutcome) {
         let mut view_calls = 0usize;
+        let reported_changed_view_ids = self.application.take_changed_view_ids();
+        let changed_view_ids = allow_changed_view_ids
+            .then_some(reported_changed_view_ids)
+            .flatten()
+            .and_then(|ids| {
+                (!ids.is_empty()).then(|| {
+                    ids.into_iter()
+                        .map(|id| self.tree.resolve_stable_target(&id))
+                        .collect::<Option<Vec<_>>>()
+                })?
+            });
         let focused_before = self
             .state
             .window_focused()
@@ -4066,12 +4096,31 @@ impl<A: Application> UiHost<A> {
         // Resolve overlays against a clone first. Gesture ownership is not
         // disturbed unless the effective blocking layer, including its anchor
         // and content, has successfully staged for publication.
-        let mut staged_state = self.state.clone();
-        let mut staged_tree = UiFrame::resolve_against(
-            view,
-            FrameRequest::new(self.bounds, &mut staged_state),
-            &self.tree,
-        );
+        let mut staged_state = if blocking_overlay {
+            self.state.clone()
+        } else {
+            std::mem::take(&mut self.state)
+        };
+        let mut staged_tree = if blocking_overlay {
+            UiFrame::resolve_against(
+                view,
+                FrameRequest::new(self.bounds, &mut staged_state),
+                &self.tree,
+            )
+        } else if let Some(changed) = changed_view_ids.as_deref() {
+            UiFrame::resolve_against_reusing_changed(
+                view,
+                FrameRequest::new(self.bounds, &mut staged_state),
+                &mut self.tree,
+                changed,
+            )
+        } else {
+            UiFrame::resolve_against_reusing(
+                view,
+                FrameRequest::new(self.bounds, &mut staged_state),
+                &mut self.tree,
+            )
+        };
         overlay_interaction.restore_before_overlay(&mut staged_state);
         let mut overlay_failures =
             apply_frame_overlays(&mut staged_tree, &mut staged_state, overlays);
@@ -4178,7 +4227,8 @@ impl<A: Application> UiHost<A> {
             // The request was consumed before selection. At most one native
             // follow-up resolves reveal geometry and selection paint; package
             // row admission remains the application's normal viewport work.
-            let (next_paint_us, next_layout_us, next_outcome) = self.rebuild_timed_retaining(true);
+            let (next_paint_us, next_layout_us, next_outcome) =
+                self.rebuild_timed_retaining(true, false);
             cancellation.invalidation = cancellation.invalidation.merge(boundary);
             cancellation.merge(next_outcome);
             return (

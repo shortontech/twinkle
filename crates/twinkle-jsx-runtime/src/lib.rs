@@ -493,15 +493,17 @@ impl JsxRuntime {
     ///
     /// This is the recurring-update counterpart to a cold `render`. The caller must open a
     /// transaction first, validate and apply the returned patch to its accepted native tree, call
-    /// [`Self::finish_patch_render`] when a patch was produced, finish the pending event, and then
-    /// accept or reject the transaction. Rejection restores both the runtime snapshot and JSX
-    /// state. Initial mounts and reloads still require a complete render.
+    /// [`Self::finish_patch_render`] when a patch was produced, and then accept or reject the
+    /// transaction. Unlike an input dispatch, data reconciliation creates no pending event.
+    /// Rejection restores both the runtime snapshot and JSX state. Initial mounts and reloads still
+    /// require a complete render.
     pub fn reconcile_data_patched(&mut self, data: Value) -> Result<ScheduledPatch, String> {
         if self.checkpoint.is_none() {
             return Err("patched data reconciliation requires a runtime transaction".into());
         }
         self.set_data_value(data)?;
-        self.dispatch_batch_patched(Vec::new(), false)
+        let wire_value = self.call_native_json("__twinkleReconcileDataPatched", &[])?;
+        self.decode_scheduled_patch(wire_value)
     }
 
     /// Retain immutable host inventory while overlaying mount-local fields.
@@ -2673,7 +2675,6 @@ mod tests {
         assert!(patch.counters.nodes_mutated > 0);
         assert_eq!(patch.counters.tree_bytes, 0);
         runtime.finish_patch_render(true).unwrap();
-        runtime.finish_event(true).unwrap();
         runtime.finish_transaction(true).unwrap();
     }
 

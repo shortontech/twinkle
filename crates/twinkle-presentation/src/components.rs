@@ -807,7 +807,7 @@ struct InheritedTextStyle {
     line_height: Option<f32>,
     text_align: Option<twinkle::TextAlign>,
     custom_properties: Arc<std::collections::HashMap<String, String>>,
-    ancestors: Vec<(String, Option<String>, Option<String>)>,
+    ancestors: Arc<Vec<(String, Option<String>, Option<String>)>>,
 }
 
 impl InheritedTextStyle {
@@ -5231,6 +5231,22 @@ impl RetainedPanelTree {
         &self.source
     }
 
+    /// Return stable native tree paths for a property-only patch. Hosts may use
+    /// these paths to constrain native reconciliation without requiring authors
+    /// to add otherwise-unnecessary `id` properties to every patched leaf.
+    /// Structural and handler changes return `None` and require a full reconcile.
+    pub fn changed_element_ids(&self, patch: &NativePatchEnvelope) -> Option<Vec<String>> {
+        let mut targets = std::collections::HashSet::with_capacity(patch.operations.len());
+        for operation in &patch.operations {
+            let NativePatchOperation::SetPrimitive { target, .. } = operation else {
+                return None;
+            };
+            targets.insert(target.as_str());
+        }
+        let ids = find_source_node_paths(&self.source, &targets);
+        (ids.len() == targets.len()).then_some(ids)
+    }
+
     /// Apply a bounded native delta to clones of the accepted source and typed
     /// presentation. The receiver is changed only after every operation and
     /// root/style invariant succeeds.
@@ -5243,12 +5259,76 @@ impl RetainedPanelTree {
         generation: u64,
         transport_bytes: usize,
     ) -> Result<NativePatchApplyCounters, String> {
+        let (next, counters) = Self::apply_patch_parts(
+            self.source.clone(),
+            self.node.clone(),
+            self.sources.clone(),
+            self.nodes.clone(),
+            self.handler_slots.clone(),
+            patch,
+            manifest,
+            expected_surface_id,
+            stylesheet,
+            generation,
+            transport_bytes,
+        )?;
+        *self = next;
+        Ok(counters)
+    }
+
+    /// Consume an unaccepted candidate and apply a patch without making a
+    /// second defensive copy. On failure the candidate is dropped, leaving the
+    /// caller's accepted tree untouched.
+    pub fn apply_patch_owned(
+        self,
+        patch: &NativePatchEnvelope,
+        manifest: &impl SurfaceBoundsProvider,
+        expected_surface_id: Option<&str>,
+        stylesheet: &StyleSheet,
+        generation: u64,
+        transport_bytes: usize,
+    ) -> Result<(Self, NativePatchApplyCounters), String> {
+        let Self {
+            node,
+            source,
+            generation: _,
+            nodes,
+            handler_slots,
+            sources,
+        } = self;
+        Self::apply_patch_parts(
+            source,
+            node,
+            sources,
+            nodes,
+            handler_slots,
+            patch,
+            manifest,
+            expected_surface_id,
+            stylesheet,
+            generation,
+            transport_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_patch_parts(
+        mut source: Value,
+        mut node: PanelNode,
+        sources: crate::virtual_source::VirtualSourceCatalog,
+        previous_nodes: BTreeMap<NativeNodeId, String>,
+        previous_handler_slots: BTreeMap<HandlerSlotId, usize>,
+        patch: &NativePatchEnvelope,
+        manifest: &impl SurfaceBoundsProvider,
+        expected_surface_id: Option<&str>,
+        stylesheet: &StyleSheet,
+        generation: u64,
+        transport_bytes: usize,
+    ) -> Result<(Self, NativePatchApplyCounters), String> {
         if patch.version != 1 || patch.operations.len() > 256 {
             return Err("unsupported or oversized native patch envelope".into());
         }
-        let mut source = self.source.clone();
-        let mut node = self.node.clone();
-        let sources = std::cell::RefCell::new(self.sources.clone());
+        let sources = std::cell::RefCell::new(sources);
         let mut visited = 0_u64;
         for operation in &patch.operations {
             // A fragment retains all source roots, but `node` represents only
@@ -5335,8 +5415,7 @@ impl RetainedPanelTree {
                     )?;
                 }
                 NativePatchOperation::ReplaceHandlerSlot { slot, action } => {
-                    let expected = self
-                        .handler_slots
+                    let expected = previous_handler_slots
                         .get(&HandlerSlotId(slot.clone()))
                         .ok_or_else(|| {
                             format!("native patch targets unknown handler slot {slot:?}")
@@ -5473,7 +5552,7 @@ impl RetainedPanelTree {
                     target,
                     node: replacement,
                 } => {
-                    if !self.nodes.contains_key(&NativeNodeId(target.clone())) {
+                    if !previous_nodes.contains_key(&NativeNodeId(target.clone())) {
                         return Err(format!("native patch targets unknown node {target:?}"));
                     }
                     let replacement_id = replacement
@@ -5516,7 +5595,21 @@ impl RetainedPanelTree {
         // Re-admission builds authoritative identity/handler indexes and
         // validates manifest/root constraints, but retain the incrementally
         // mutated typed tree rather than reparsing the complete candidate.
-        let (nodes, handler_slots) = index_native_source_checked(&source, true)?;
+        let structural = patch.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                NativePatchOperation::ReplaceHandlerSlot { .. }
+                    | NativePatchOperation::InsertChild { .. }
+                    | NativePatchOperation::RemoveChild { .. }
+                    | NativePatchOperation::MoveChild { .. }
+                    | NativePatchOperation::ReplaceSubtree { .. }
+            )
+        });
+        let (nodes, handler_slots) = if structural {
+            index_native_source_checked(&source, true)?
+        } else {
+            (previous_nodes, previous_handler_slots)
+        };
         if let Some(surface_id) = expected_surface_id {
             let grant = manifest
                 .surface_bounds()
@@ -5527,20 +5620,69 @@ impl RetainedPanelTree {
         }
         let mut sources = sources.into_inner();
         retain_collection_sources(&source, &mut sources);
-        *self = Self {
-            node,
-            source,
-            generation,
-            nodes,
-            handler_slots,
-            sources,
-        };
-        Ok(NativePatchApplyCounters {
-            transport_bytes,
-            nodes_visited: visited,
-            nodes_mutated: patch.operations.len() as u64,
-        })
+        Ok((
+            Self {
+                node,
+                source,
+                generation,
+                nodes,
+                handler_slots,
+                sources,
+            },
+            NativePatchApplyCounters {
+                transport_bytes,
+                nodes_visited: visited,
+                nodes_mutated: patch.operations.len() as u64,
+            },
+        ))
     }
+}
+
+fn find_source_node_paths(
+    source: &Value,
+    targets: &std::collections::HashSet<&str>,
+) -> Vec<String> {
+    fn visit(
+        source: &Value,
+        targets: &std::collections::HashSet<&str>,
+        id: &twinkle::UiId,
+        found: &mut Vec<String>,
+    ) {
+        if source
+            .get("__nativeId")
+            .and_then(Value::as_str)
+            .is_some_and(|target| targets.contains(target))
+        {
+            found.push(id.as_str().to_owned());
+        }
+        if let Some(children) = source.get("children").and_then(Value::as_array) {
+            for (index, child) in children.iter().enumerate() {
+                let child_id = child
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| id.scoped(format!("#{index}")), |child| id.scoped(child));
+                visit(child, targets, &child_id, found);
+            }
+        }
+    }
+
+    let mut found = Vec::with_capacity(targets.len());
+    if let Some(roots) = source.as_array() {
+        for root in roots {
+            let id = root.get("id").and_then(Value::as_str).map_or_else(
+                || twinkle::UiId::from("root"),
+                |root| twinkle::UiId::from("root").scoped(root),
+            );
+            visit(root, targets, &id, &mut found);
+        }
+        return found;
+    }
+    let id = source.get("id").and_then(Value::as_str).map_or_else(
+        || twinkle::UiId::from("root"),
+        |root| twinkle::UiId::from("root").scoped(root),
+    );
+    visit(source, targets, &id, &mut found);
+    found
 }
 
 fn retain_collection_sources(
@@ -6527,6 +6669,41 @@ mod class_lookup_tests {
     use super::{PanelNode, RetainedPanelTree};
     use serde_json::{Value, json};
     use twinkle_protocol::{NativePatchCounters, NativePatchEnvelope, NativePatchOperation};
+
+    #[test]
+    fn primitive_patch_paths_follow_native_ui_identity_without_leaf_ids() {
+        let source = json!({
+            "kind":"div", "id":"rows", "__nativeId":"root", "children":[
+                {"kind":"div", "__nativeId":"root/@cell-0", "children":[]},
+                {"kind":"text", "id":"score", "__nativeId":"root/@score", "children":["0"]}
+            ]
+        });
+        let manifest = twinkle_protocol::SurfaceBounds {
+            surfaces: Vec::new(),
+        };
+        let retained = RetainedPanelTree::admit(&source, &manifest, None, 1).unwrap();
+        let patch = NativePatchEnvelope {
+            version: 1,
+            counters: Default::default(),
+            operations: vec![
+                NativePatchOperation::SetPrimitive {
+                    target: "root/@cell-0".into(),
+                    property: "className".into(),
+                    value: json!("cell filled"),
+                },
+                NativePatchOperation::SetPrimitive {
+                    target: "root/@score".into(),
+                    property: "children".into(),
+                    value: json!(["1"]),
+                },
+            ],
+        };
+
+        assert_eq!(
+            retained.changed_element_ids(&patch),
+            Some(vec!["root/rows/#0".into(), "root/rows/score".into()])
+        );
+    }
 
     #[test]
     fn registered_virtual_sources_survive_compact_patches_and_retire_with_nodes() {

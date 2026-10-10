@@ -63,14 +63,16 @@ impl JsxApp {
                     .generation()
                     .checked_add(1)
                     .ok_or("render generation exhausted")?;
-                candidate.apply_patch(
-                    &patch,
-                    &self.bounds,
-                    Some("main"),
-                    &self.stylesheet,
-                    generation,
-                    transport_bytes,
-                )?;
+                candidate = candidate
+                    .apply_patch_owned(
+                        &patch,
+                        &self.bounds,
+                        Some("main"),
+                        &self.stylesheet,
+                        generation,
+                        transport_bytes,
+                    )?
+                    .0;
                 self.runtime.finish_patch_render(true)?;
             }
 

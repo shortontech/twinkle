@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use twinkle::{Application, HostBatch, UiHost, View, ViewContext};
+use twinkle::{Application, HostBatch, HostTelemetry, UiHost, UiId, View, ViewContext};
 use twinkle_jsx_runtime::{JsxModuleGraph, JsxRuntime, ModuleSource, ScheduledPatch};
 use twinkle_presentation::{
     components::{PluginImages, PluginMessage, RetainedPanelTree, render_retained_panel},
@@ -23,10 +23,11 @@ const MEASURED_ITERATIONS: usize = 1_000;
 
 const SOURCE: &str = r#"
     import './blocks.css';
+    const Cell = memo(function Cell({color}) {
+        return <Div className={color ? 'cell filled ' + color : 'cell'} />;
+    });
     export default function App() {
         const board = twinkle.data.board || [];
-        const cell = (color, index) =>
-            <Div key={index} className={color ? 'cell filled ' + color : 'cell'} />;
         return <Window id="main" width={800} height={720} title="Blocks admission" background={0xff101820}>
             <Column className="app">
                 <Row className="topbar">
@@ -34,7 +35,7 @@ const SOURCE: &str = r#"
                     <Text>{'Score ' + twinkle.data.score + '  ·  Lines ' + twinkle.data.lines + '  ·  Level ' + twinkle.data.level}</Text>
                 </Row>
                 <Row className="play">
-                    <Div className="board" role="group" aria-label="Game board">{board.map(cell)}</Div>
+                    <Div className="board" role="group" aria-label="Game board">{board.map((color, index) => <Cell key={index} color={color} />)}</Div>
                     <Column className="side">
                         <Text className="status">In play</Text>
                         <Text>Next</Text>
@@ -55,8 +56,8 @@ const CSS: &str = r#"
     .brand { font-size: 22px; flex-grow: 1; }
     .play { gap: 18px; justify-content: center; align-items: start; }
     .board { display: grid; grid-template-columns: repeat(10, 28px); gap: 2px; padding: 8px; background: #263845; border: 2px solid #496274; border-radius: 8px; }
-    .cell { width: 28px; height: 28px; background: #17242d; border-radius: 3px; }
-    .cell.filled { background: var(--accent); border: 2px solid #d3fff8; }
+    .cell { width: 28px; height: 28px; background: #17242d; border: 2px solid transparent; border-radius: 3px; }
+    .cell.filled { background: var(--accent); border-color: #d3fff8; }
     .cell.c2 { background: #b388ff; border-color: #efe2ff; }
     .side { width: 210px; gap: 9px; padding: 12px; background: var(--panel); border-radius: 8px; }
     .status { padding: 8px; background: #15232d; border-radius: 5px; }
@@ -79,6 +80,7 @@ struct BlocksAdmission {
     stylesheet: StyleSheet,
     images: PluginImages,
     sample: StageSample,
+    changed_view_ids: Option<Vec<UiId>>,
 }
 
 impl BlocksAdmission {
@@ -112,6 +114,7 @@ impl BlocksAdmission {
             stylesheet,
             images: PluginImages::default(),
             sample: StageSample::default(),
+            changed_view_ids: None,
         })
     }
 
@@ -138,6 +141,7 @@ impl BlocksAdmission {
         let started = Instant::now();
         let outcome = self.runtime.reconcile_data_patched(snapshot);
         self.sample.patch_reconciliation = started.elapsed();
+        let mut changed_view_ids = None;
         let result: Result<RetainedPanelTree, String> = (|| {
             let started = Instant::now();
             let mut candidate = self.accepted.clone();
@@ -148,14 +152,20 @@ impl BlocksAdmission {
                     transport_bytes,
                     ..
                 } => {
-                    candidate.apply_patch(
-                        &patch,
-                        &self.bounds,
-                        Some("main"),
-                        &self.stylesheet,
-                        candidate.generation() + 1,
-                        transport_bytes,
-                    )?;
+                    changed_view_ids = candidate
+                        .changed_element_ids(&patch)
+                        .map(|ids| ids.into_iter().map(UiId::from).collect());
+                    let generation = candidate.generation() + 1;
+                    candidate = candidate
+                        .apply_patch_owned(
+                            &patch,
+                            &self.bounds,
+                            Some("main"),
+                            &self.stylesheet,
+                            generation,
+                            transport_bytes,
+                        )?
+                        .0;
                     self.runtime.finish_patch_render(true)?;
                 }
             }
@@ -163,11 +173,11 @@ impl BlocksAdmission {
             if !self.runtime.take_effects()?.is_empty() {
                 return Err("snapshot reconciliation emitted an effect".into());
             }
-            self.runtime.finish_event(true)?;
             Ok(candidate)
         })();
         self.runtime.finish_transaction(result.is_ok())?;
         self.accepted = result?;
+        self.changed_view_ids = changed_view_ids;
         Ok(())
     }
 }
@@ -184,6 +194,10 @@ impl Application for BlocksAdmission {
     fn title(&self) -> &str {
         "Blocks admission"
     }
+
+    fn take_changed_view_ids(&mut self) -> Option<Vec<UiId>> {
+        self.changed_view_ids.take()
+    }
 }
 
 #[derive(Default)]
@@ -191,17 +205,31 @@ struct Samples {
     snapshot: Vec<Duration>,
     patch_reconciliation: Vec<Duration>,
     patch_admission: Vec<Duration>,
+    native_view: Vec<Duration>,
+    native_layout: Vec<Duration>,
     native_frame: Vec<Duration>,
     complete: Vec<Duration>,
+    last_telemetry: HostTelemetry,
 }
 
 impl Samples {
-    fn record(&mut self, sample: &StageSample, native_frame: Duration, complete: Duration) {
+    fn record(
+        &mut self,
+        sample: &StageSample,
+        native_view: Duration,
+        native_layout: Duration,
+        native_frame: Duration,
+        complete: Duration,
+        telemetry: HostTelemetry,
+    ) {
         self.snapshot.push(sample.snapshot);
         self.patch_reconciliation.push(sample.patch_reconciliation);
         self.patch_admission.push(sample.patch_admission);
+        self.native_view.push(native_view);
+        self.native_layout.push(native_layout);
         self.native_frame.push(native_frame);
         self.complete.push(complete);
+        self.last_telemetry = telemetry;
     }
 }
 
@@ -239,13 +267,20 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
             .advance(row)
             .expect("measured update");
         let native_started = Instant::now();
-        host.step(HostBatch {
+        let outcome = host.step(HostBatch {
             application_changed: true,
             ..HostBatch::default()
         });
         let native_frame = native_started.elapsed();
         let complete = complete_started.elapsed();
-        samples.record(&host.application().sample, native_frame, complete);
+        samples.record(
+            &host.application().sample,
+            Duration::from_micros(outcome.telemetry.paint_list_us),
+            Duration::from_micros(outcome.telemetry.layout_us),
+            native_frame,
+            complete,
+            outcome.telemetry,
+        );
         assert_eq!(host.semantic_nodes().len(), 7);
     }
     let workload_elapsed = workload_started.elapsed();
@@ -263,6 +298,14 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
             "iterations": MEASURED_ITERATIONS,
             "warmupIterations": WARMUP_ITERATIONS,
             "profile": "release",
+            "lastFrameWork": {
+                "nodesMeasured": samples.last_telemetry.nodes_measured,
+                "nodesPlaced": samples.last_telemetry.nodes_placed,
+                "paintFragmentsRebuilt": samples.last_telemetry.paint_fragments_rebuilt,
+                "paintFragmentsReused": samples.last_telemetry.paint_fragments_reused,
+                "semanticNodesRebuilt": samples.last_telemetry.semantic_nodes_rebuilt,
+                "semanticNodesReused": samples.last_telemetry.semantic_nodes_reused,
+            },
         },
         "summary": {
             "ticks": MEASURED_ITERATIONS,
@@ -274,6 +317,8 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
             "snapshot": { "p50_us": micros(percentile(&samples.snapshot, 50)), "p95_us": micros(percentile(&samples.snapshot, 95)) },
             "patchReconciliation": { "p50_us": micros(percentile(&samples.patch_reconciliation, 50)), "p95_us": micros(percentile(&samples.patch_reconciliation, 95)) },
             "patchAdmission": { "p50_us": micros(percentile(&samples.patch_admission, 50)), "p95_us": micros(percentile(&samples.patch_admission, 95)) },
+            "nativeView": { "p50_us": micros(percentile(&samples.native_view, 50)), "p95_us": micros(percentile(&samples.native_view, 95)) },
+            "nativeLayout": { "p50_us": micros(percentile(&samples.native_layout, 50)), "p95_us": micros(percentile(&samples.native_layout, 95)) },
             "nativeFrame": { "p50_us": micros(percentile(&samples.native_frame, 50)), "p95_us": micros(percentile(&samples.native_frame, 95)) },
             "complete": { "p50_us": micros(percentile(&samples.complete, 50)), "p95_us": micros(percentile(&samples.complete, 95)), "p99_us": micros(percentile(&samples.complete, 99)) },
         }
