@@ -689,19 +689,11 @@ impl JsxRuntime {
         ))
     }
 
-    pub fn register_component_surface(
-        &mut self,
-        id: &str,
-        selection: &str,
-        registered_page: bool,
-    ) -> Result<(), String> {
+    /// Mount an admitted public component without installing domain services.
+    pub fn register_component_mount(&mut self, id: &str, selection: &str) -> Result<(), String> {
         self.call_native_void(
-            "__nickelRegisterComponentSurface",
-            &[
-                Value::from(id),
-                Value::from(selection),
-                Value::Bool(registered_page),
-            ],
+            "__twinkleRegisterComponentMount",
+            &[Value::from(id), Value::from(selection)],
         )
     }
 
@@ -1121,6 +1113,60 @@ impl JsxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generic_public_component_mounts_share_code_and_keep_distinct_hook_state() {
+        let graph = JsxModuleGraph::new("main.js", [ModuleSource {
+            path: "main.js",
+            source: "export function App(){return null} export function Counter({label}){const [count,setCount]=useState(0);return h(Button,{onClick:()=>setCount(value=>value+1)},label+':'+count)}",
+        }]).unwrap().with_public_exports(&std::collections::BTreeMap::from([
+            ("counter".into(), "main.js#Counter".into()),
+        ])).unwrap();
+        let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
+        let before = runtime.script_compilation_count();
+        runtime.register_component_mount("left", "counter").unwrap();
+        runtime
+            .register_component_mount("right", "counter")
+            .unwrap();
+        assert_eq!(runtime.script_compilation_count(), before);
+        let data = std::rc::Rc::new(serde_json::json!({}));
+        runtime.select_surface("left").unwrap();
+        runtime
+            .set_mount_data(&data, None, &serde_json::json!({"label":"left"}))
+            .unwrap();
+        let left = runtime
+            .render("__nickelRender()", |node| Ok(node.clone()))
+            .unwrap();
+        let action = left["action"].as_u64().unwrap();
+        let changed = runtime
+            .render_native(Some(&serde_json::json!([[action, null]])), |node| {
+                Ok(node.clone())
+            })
+            .unwrap();
+        runtime.finish_event(true).unwrap();
+        assert_eq!(changed["children"][0], "left:1");
+        runtime.select_surface("right").unwrap();
+        runtime
+            .set_mount_data(&data, None, &serde_json::json!({"label":"right"}))
+            .unwrap();
+        let right = runtime
+            .render("__nickelRender()", |node| Ok(node.clone()))
+            .unwrap();
+        assert_eq!(left["children"][0], "left:0");
+        assert_eq!(right["children"][0], "right:0");
+        runtime.select_surface("left").unwrap();
+        runtime
+            .set_mount_data(&data, None, &serde_json::json!({"label":"left"}))
+            .unwrap();
+        let retained = runtime.render_current(|node| Ok(node.clone())).unwrap();
+        assert_eq!(retained["children"][0], "left:1");
+        assert!(runtime.register_component_mount("", "counter").is_err());
+        assert!(
+            runtime
+                .register_component_mount("missing", "unknown")
+                .is_err()
+        );
+    }
+
     #[test]
     fn generic_declarations_match_public_runtime_globals() {
         let declarations = include_str!("../types/twinkle.d.ts");

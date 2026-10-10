@@ -526,6 +526,21 @@ const twinkle = Object.freeze({
     }
 });
 
+// Public component mounting is generic; registered domain pages stay host-owned.
+function __twinkleRegisterComponentMount(id, selection) {
+    if (typeof id !== 'string' || !id.length || id.length > 512
+        || typeof selection !== 'string' || !selection.length || selection.length > 128)
+        throw Error('invalid component mount selection');
+    twinkle.component(selection);
+    __nickelRegisterSurfaceApp(id, function App() {
+        const value = __nickelData.__componentProps;
+        const hydrated = typeof __nickelHydrateComponentProps === 'function'
+            ? __nickelHydrateComponentProps(value) : value;
+        const {children, ...props} = hydrated;
+        return h(twinkle.component(selection), props, ...(children ?? []));
+    });
+}
+
 // Immutable native mount inventories never escape directly. Compatibility
 // fields are copied lazily on first public read; private resource reads can
 // continue to clone the host value without exposing that retained inventory.
