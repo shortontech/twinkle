@@ -509,6 +509,46 @@ impl<H: CompositionHost> CompositionRuntime<H> {
     /// code is first evaluated in isolated contexts. The accepted graph remains
     /// untouched if validation or evaluation fails.
 
+    /// Validate every accepted root against an isolated replacement host.
+    /// Cross-owner changes can affect roots whose own source is unchanged.
+    /// Candidate effects are discarded; accepted contexts and grants are untouched.
+    pub fn validate_replacement(&self, candidate: &mut Self) -> Result<(), String> {
+        if self.checkpoint.is_some() || candidate.checkpoint.is_some() {
+            return Err("cannot validate replacement during a composition transaction".into());
+        }
+        if !candidate.mounts.is_empty() {
+            return Err("replacement validation requires an unmounted candidate".into());
+        }
+        for accepted in self.packages.values() {
+            if candidate
+                .packages
+                .values()
+                .any(|replacement| std::rc::Rc::ptr_eq(&accepted.runtime, &replacement.runtime))
+            {
+                return Err("replacement validation requires isolated execution domains".into());
+            }
+        }
+        for state in self.mounts.values() {
+            let package = candidate
+                .packages
+                .get(&state.reference.owner)
+                .ok_or("candidate removed a mounted owner")?;
+            let reference = ComponentReference {
+                runtime: candidate.id,
+                owner: state.reference.owner.clone(),
+                implementation: state.reference.implementation.clone(),
+                incarnation: package.incarnation,
+            };
+            let mount = candidate.mount(&reference)?;
+            let rendered = candidate.render_expanded(&mount, &state.props, |_| Ok(()));
+            let cleanup = candidate.unmount(&mount);
+            candidate.take_effects();
+            rendered?;
+            cleanup?;
+        }
+        Ok(())
+    }
+
     pub fn participating_owners(&self) -> impl Iterator<Item = &H::Owner> {
         self.resolution
             .owner_order
@@ -3582,6 +3622,47 @@ mod tests {
             BTreeMap::from([("parent".into(), parent), ("provider".into(), child)]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn replacement_preflight_rejects_shared_execution_domains() {
+        let accepted = composed();
+        let mut candidate = CompositionRuntime::from_admitted_plan(
+            accepted.resolution.clone(),
+            OrdinaryCompositionHost,
+            accepted.packages.clone(),
+        )
+        .unwrap();
+        assert!(
+            accepted
+                .validate_replacement(&mut candidate)
+                .unwrap_err()
+                .contains("isolated execution domains")
+        );
+        assert_eq!(candidate.mount_count(), 0);
+    }
+
+    #[test]
+    fn replacement_checks_changed_provider_without_mutating_accepted_root() {
+        let mut accepted = composed();
+        let mount = accepted
+            .mount(&accepted.component("root").unwrap())
+            .unwrap();
+        let before = accepted
+            .render_expanded(&mount, &json!({}), |_| Ok(()))
+            .unwrap();
+        let mut candidate = composed();
+        candidate.packages.insert(
+            "provider".into(),
+            context("export function View(){throw new Error('broken replacement provider')}"),
+        );
+        assert!(accepted.validate_replacement(&mut candidate).is_err());
+        assert_eq!(candidate.mount_count(), 0);
+        assert!(candidate.take_effects().is_empty());
+        let after = accepted
+            .render_expanded(&mount, &json!({}), |_| Ok(()))
+            .unwrap();
+        assert_eq!(before.node, after.node);
     }
 
     #[test]
