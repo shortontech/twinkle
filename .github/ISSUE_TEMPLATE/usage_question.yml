@@ -1,0 +1,40 @@
+name: Usage question
+description: Ask for help using Twinkle or understanding its public API.
+title: "question: "
+labels: ["question"]
+body:
+  - type: input
+    id: revision
+    attributes:
+      label: Twinkle version or commit
+      placeholder: 0.2.0 or 0dfb284...
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: Windows 11 x86_64, or Ubuntu 26.04 x86_64 Wayland
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Describe the intended result and why it is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include a minimal code sample, commands, documentation consulted, and any errors.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I reviewed the getting-started guide and searched existing issues.
+          required: true

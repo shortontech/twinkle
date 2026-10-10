@@ -1,0 +1,62 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Twinkle.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. For security vulnerabilities, use private vulnerability reporting instead.
+  - type: input
+    id: revision
+    attributes:
+      label: Twinkle version or commit
+      description: Give the crate version or full Git commit used by the reproducer.
+      placeholder: 0.2.0 or 0dfb284...
+    validations:
+      required: true
+  - type: input
+    id: rust
+    attributes:
+      label: Rust toolchain
+      description: Paste the output of `rustc --version --verbose`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Include the operating system, architecture, and Wayland or X11 on Linux.
+      placeholder: Ubuntu 26.04, x86_64, Wayland
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest source example and exact commands that reproduce the problem.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and diagnostics
+      description: Add relevant compiler output, logs, backtraces, or screenshots. Remove private data first.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This report does not disclose a security vulnerability.
+          required: true

@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a new capability or public API improvement.
+title: "feature: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user need or limitation should Twinkle address? Include a concrete use case.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the desired API or behavior and show a brief usage example when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain current workarounds or other designs you considered.
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and platform impact
+      description: Note affected platforms, dependencies, public APIs, accessibility, or host-authority boundaries.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and documentation for this request.
+          required: true

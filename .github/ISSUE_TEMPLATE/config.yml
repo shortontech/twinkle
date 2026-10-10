@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/shortontech/twinkle/security/advisories/new
+    about: Report suspected vulnerabilities privately; do not open a public issue.
+  - name: Support and compatibility
+    url: https://github.com/shortontech/twinkle/blob/main/SUPPORT.md
+    about: Review supported platforms, compatibility, and the information to include.
