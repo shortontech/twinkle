@@ -1,3 +1,5 @@
+//! Controller actions, native discovery, and hosted-event admission evidence.
+
 #[cfg(any(feature = "native-controller", test))]
 use std::collections::BTreeMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -13,18 +15,28 @@ use twinkle_input::{
     controller::{AxisDirection, ControllerButton, ControllerId},
 };
 
+/// Logical navigation action normalized from a controller signal.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ControllerAction {
     /// Requests the host-defined menu action; the engine installs no shell operation.
     HostMenu,
+    /// Moves toward the previous vertical target.
     Up,
+    /// Moves toward the next vertical target.
     Down,
+    /// Moves toward the previous horizontal target or exits a nested scope.
     Left,
+    /// Moves toward the next horizontal target or enters a nested scope.
     Right,
+    /// Activates the selected target or begins value adjustment.
     Confirm,
+    /// Cancels the current operation or exits a navigation scope.
     Cancel,
+    /// Opens the selected target's context menu.
     ContextMenu,
+    /// Selects the previous sibling navigation pane.
     PreviousPane,
+    /// Selects the next sibling navigation pane.
     NextPane,
 }
 
@@ -34,30 +46,49 @@ pub enum ControllerAction {
 /// queue without executing another semantic action.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControllerEnvelope {
+    /// Backend-normalized physical connection lifetime.
     pub device: ControllerId,
+    /// Logical action, absent for release bookkeeping with no activation meaning.
     pub action: Option<ControllerAction>,
+    /// Press or release edge carried by this event.
     pub edge: KeyEdge,
+    /// Whether the edge was synthesized by held-input repeat.
     pub repeat: bool,
+    /// Display family resolved from backend-reported identity.
     pub family: ControllerFamily,
+    /// Physical and temporal source evidence.
     pub evidence: ControllerSourceEvidence,
 }
 
+/// Auditable native source details retained with a normalized controller action.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControllerSourceEvidence {
+    /// Logical input seat, currently zero for standalone discovery.
     pub seat: u64,
+    /// Namespace distinguishing the backend stream from other input sources.
     pub source_namespace: String,
+    /// Backend implementation that produced the signal.
     pub backend: String,
+    /// Lossless backend-native control identity.
     pub native: NativeCode,
+    /// Optional stable hardware fingerprint supplied by the backend.
     pub fingerprint: Option<String>,
+    /// Strength of identity evidence represented by `fingerprint` and `native`.
     pub identity_capability: &'static str,
+    /// Normalized physical control before logical action mapping.
     pub physical: ControllerPhysicalControl,
+    /// Monotonic order within the backend reader.
     pub backend_order: u64,
+    /// Production time as Unix milliseconds when the backend supplies it.
     pub produced_unix_ms: u64,
 }
 
+/// Normalized physical control responsible for a controller envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControllerPhysicalControl {
+    /// A named controller button.
     Button(ControllerButton),
+    /// A directional threshold crossing from a stick or directional control.
     Direction(AxisDirection),
 }
 
@@ -67,28 +98,45 @@ pub enum ControllerPhysicalControl {
 pub struct ControllerExecutionBinding {
     /// One physical connection lifetime, not the backend's reusable native slot.
     pub device_generation: u64,
+    /// Press or release edge authorized for execution.
     pub edge: KeyEdge,
+    /// Routing-table epoch selected by the session broker.
     pub routing_epoch: u64,
+    /// Unique event identity within the admitted stream generation.
     pub event_id: u64,
+    /// Lease generation owning the routed controller.
     pub lease_epoch: u64,
+    /// Host connection generation carrying the event.
     pub connection_generation: u64,
+    /// Controller event-stream generation.
     pub stream_generation: u64,
+    /// Optional terminal event identity accepted during handoff.
     pub cutoff: Option<u64>,
+    /// Optional generation of the destination surface.
     pub surface_generation: Option<u64>,
+    /// Whether this delivery is a held-input repeat.
     pub repeat: bool,
 }
 
+/// Current broker authority against which a delivered binding is revalidated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ControllerExecutionAuthority {
+    /// Current routing-table epoch.
     pub routing_epoch: u64,
+    /// Current ownership lease generation.
     pub lease_epoch: u64,
+    /// Current host connection generation.
     pub connection_generation: u64,
+    /// Current controller stream generation.
     pub stream_generation: u64,
+    /// Optional last event admitted during handoff.
     pub cutoff: Option<u64>,
+    /// Optional current destination-surface generation.
     pub surface_generation: Option<u64>,
 }
 
 impl ControllerExecutionAuthority {
+    /// Returns whether every authority dimension admits the supplied binding.
     pub fn admits(self, binding: ControllerExecutionBinding) -> bool {
         self.routing_epoch == binding.routing_epoch
             && self.lease_epoch == binding.lease_epoch
@@ -107,11 +155,14 @@ impl ControllerExecutionAuthority {
 /// how that state is transported.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ControllerFence {
+    /// Whether the destination currently rejects controller delivery.
     pub blocked: bool,
+    /// Events at or before this Unix-millisecond barrier are stale.
     pub barrier_unix_ms: u64,
 }
 
 impl ControllerFence {
+    /// Tests focus/ownership state and the production-time barrier.
     pub fn admits(&self, produced_at: SystemTime) -> bool {
         !self.blocked
             && (self.barrier_unix_ms == 0
@@ -121,11 +172,16 @@ impl ControllerFence {
     }
 }
 
+/// Controller artwork family inferred only from reported hardware identity.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ControllerFamily {
+    /// Sony PlayStation-style control labels.
     PlayStation,
+    /// Microsoft Xbox-style control labels.
     Xbox,
+    /// Nintendo Switch-style face-button ordering.
     Switch,
+    /// Product-neutral controller labels.
     #[default]
     Generic,
 }
@@ -175,7 +231,9 @@ impl ControllerFamily {
 const MAX_EVENTS_PER_POLL: usize = 256;
 
 #[cfg(target_os = "linux")]
+/// Linux device details exposed for bounded native state observation.
 pub struct NativeControllerDevice {
+    /// Input device node reported by gilrs.
     pub path: std::path::PathBuf,
     /// Backend event codes mapped to buttons, including analog triggers.
     pub button_codes: Vec<u32>,
@@ -184,13 +242,20 @@ pub struct NativeControllerDevice {
 /// Payload-free local controller ownership observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ControllerObservation {
+    /// Whether native controller discovery initialized successfully.
     pub available: bool,
+    /// Whether the normalizer retains pressed or directional input.
     pub held: bool,
+    /// Whether meaningful activity occurred in the most recent poll.
     pub activity: bool,
     /// The bounded drain may have left events pending. Do not infer an idle seat.
     pub backlog: bool,
 }
 
+/// Stateful native controller reader and logical-action normalizer.
+///
+/// This type remains available as an inert source when the `native-controller` feature is disabled,
+/// allowing hosted-controller applications to share configuration code.
 #[cfg(feature = "native-controller")]
 pub struct ControllerInput {
     gilrs: Option<Gilrs>,
@@ -209,6 +274,7 @@ pub struct ControllerInput {
 
 #[cfg(feature = "native-controller")]
 impl ControllerInput {
+    /// Retires the native reader and all normalized state after a terminal backend condition.
     fn retire_reader(&mut self) {
         self.gilrs = None;
         self.normalizer = ControllerNormalizer::default();
@@ -219,6 +285,7 @@ impl ControllerInput {
         self.active_family = None;
     }
 
+    /// Initializes native discovery, logging and retaining an unavailable source on failure.
     pub fn new() -> Self {
         let gilrs = Gilrs::new()
             .map_err(|error| tracing::warn!(%error, "controller input is unavailable"))
@@ -271,6 +338,7 @@ impl ControllerInput {
         }
     }
 
+    /// Reports whether at least one physical controller is connected.
     pub fn connected(&self) -> bool {
         self.connected
     }

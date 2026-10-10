@@ -11,7 +11,6 @@ extern crate self as twinkle_ui;
 pub mod approval;
 #[allow(missing_docs)]
 pub mod async_raster;
-#[allow(missing_docs)]
 pub mod controller;
 #[allow(missing_docs)]
 pub mod document_selection;
