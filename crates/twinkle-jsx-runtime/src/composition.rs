@@ -27,19 +27,19 @@ const MAX_HANDLERS: usize = 4096;
 const MAX_EFFECTS: usize = 1024;
 const MAX_TRANSPORT_TOKEN: u64 = (1u64 << 53) - 1;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AdmittedExport<O> {
     pub implemented_by: O,
     pub implementation: String,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AdmittedContribution<O> {
     pub contributed_by: O,
     pub implementation: String,
     pub key: String,
     pub metadata: Value,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AdmittedLinkPlan<O> {
     pub exports: BTreeMap<String, AdmittedExport<O>>,
     pub contributions: BTreeMap<String, Vec<AdmittedContribution<O>>>,
@@ -505,10 +505,6 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         }
     }
 
-    /// Atomically validates and admits a trusted development catalog. Candidate
-    /// code is first evaluated in isolated contexts. The accepted graph remains
-    /// untouched if validation or evaluation fails.
-
     /// Validate every accepted root against an isolated replacement host.
     /// Cross-owner changes can affect roots whose own source is unchanged.
     /// Candidate effects are discarded; accepted contexts and grants are untouched.
@@ -572,8 +568,62 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         })
     }
 
-    /// Reconcile already admitted native provider contexts. The active shell's
-    /// inheritance and replacement selections remain unchanged.
+    /// Reconcile contribution links using contexts admitted by the native host.
+    /// Existing owners cannot change code or bindings through this path. Removed
+    /// owners remain live until native admission succeeds and the host retires them.
+    /// The new catalog is published by the next production render, before guest
+    /// component execution; this operation itself executes no guest code.
+    pub fn sync_admitted_contributors(
+        &mut self,
+        resolution: AdmittedLinkPlan<H::Owner>,
+        contexts: &BTreeMap<H::Owner, ProviderContext<H>>,
+    ) -> Result<bool, String>
+    where
+        H::State: PartialEq,
+    {
+        if self.checkpoint.is_some() {
+            return Err("cannot reconcile contributors during a composition transaction".into());
+        }
+        if resolution.exports != self.resolution.exports
+            || resolution.owner_order != self.resolution.owner_order
+        {
+            return Err(
+                "public component selections changed during contributor reconciliation".into(),
+            );
+        }
+        let mut packages = self.packages.clone();
+        let mut added = false;
+        for (owner, context) in contexts {
+            if context.owner != *owner {
+                return Err("provider context identity mismatch".into());
+            }
+            if let Some(existing) = packages.get(owner) {
+                let supplied = &context.package;
+                if existing.source_digest != supplied.source_digest
+                    || existing.host_state != supplied.host_state
+                    || existing.exports != supplied.exports
+                    || existing.assets != supplied.assets
+                    || !std::rc::Rc::ptr_eq(&existing.runtime, &supplied.runtime)
+                {
+                    return Err("running contributor code or bindings changed".into());
+                }
+            } else {
+                let mut supplied = context.package.clone();
+                // A retained execution domain can return after retirement. Its
+                // former reference must never regain authority in this host.
+                supplied.incarnation = allocate_identity(&NEXT_RUNTIME)?;
+                packages.insert(owner.clone(), supplied);
+                added = true;
+            }
+        }
+        // Reuse the complete bounded admission checks before changing live maps.
+        // This constructor does not evaluate code or publish a guest catalog.
+        let candidate = Self::from_admitted_plan(resolution, self.extensions.clone(), packages)?;
+        let changed = added || candidate.resolution != self.resolution;
+        self.resolution = candidate.resolution;
+        self.packages = candidate.packages;
+        Ok(changed)
+    }
 
     fn contribution_catalog(&self) -> Value {
         let catalog = self
@@ -3622,6 +3672,46 @@ mod tests {
             BTreeMap::from([("parent".into(), parent), ("provider".into(), child)]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn contributor_reimport_does_not_revive_retired_reference() {
+        let mut host = composed();
+        let owner = "provider".to_owned();
+        let old = host.component("widget").unwrap();
+        let retained = host.provider_context(&owner).unwrap();
+        let plan = host.resolution.clone();
+        host.retire(&owner);
+        assert!(
+            host.sync_admitted_contributors(plan, &BTreeMap::from([(owner.clone(), retained)]))
+                .unwrap()
+        );
+        assert!(host.mount(&old).is_err());
+        let fresh = host.component("widget").unwrap();
+        assert!(host.mount(&fresh).is_ok());
+    }
+
+    #[test]
+    fn contributor_sync_rejects_invalid_links_without_changing_live_catalog() {
+        let mut host = composed();
+        let original = host.resolution.clone();
+        let mut invalid = original.clone();
+        invalid.contributions.insert(
+            "items".into(),
+            vec![AdmittedContribution {
+                contributed_by: "missing".into(),
+                implementation: "entry".into(),
+                key: "missing-item".into(),
+                metadata: json!({}),
+            }],
+        );
+        assert!(
+            host.sync_admitted_contributors(invalid, &BTreeMap::new())
+                .is_err()
+        );
+        assert_eq!(host.resolution, original);
+        let mount = host.mount(&host.component("root").unwrap()).unwrap();
+        assert!(host.render_expanded(&mount, &json!({}), |_| Ok(())).is_ok());
     }
 
     #[test]
