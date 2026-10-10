@@ -614,9 +614,27 @@ impl ViewContext {
     }
 }
 
+/// Application state managed by Twinkle's native runtime.
+///
+/// An application follows a conventional unidirectional loop: user interaction emits a
+/// [`Message`](Application::Message), [`update`](Application::update) mutates application state,
+/// and [`view`](Application::view) declares the UI for that state. The runtime rebuilds the view
+/// after updates and owns the platform event loop, windows, input dispatch, and presentation.
+///
+/// Most applications only need to implement [`Message`](Application::Message),
+/// [`update`](Application::update), and [`view`](Application::view). The remaining methods are
+/// integration hooks with conservative defaults.
 pub trait Application: Sized {
+    /// A user or host action that can update the application.
+    ///
+    /// Messages are cloned when a single declared action must be delivered through more than one
+    /// runtime path, so they should usually be small values or cheaply cloned handles.
     type Message: Clone;
 
+    /// Applies one message to application state.
+    ///
+    /// The runtime calls this before rebuilding the declarative view. Implementations should not
+    /// start another platform event loop or retain references into a previous view.
     fn update(&mut self, message: Self::Message);
 
     /// Apply messages emitted by one UI transition in order. Applications
@@ -725,6 +743,11 @@ pub trait Application: Sized {
         })
     }
 
+    /// Declares the UI for the current application state and host context.
+    ///
+    /// The returned view is consumed by the runtime and may be rebuilt frequently. Keep durable
+    /// state on the application rather than in the declaration. Use `context` for host-owned facts
+    /// such as viewport size and current input modality.
     fn view(&self, context: ViewContext) -> impl View<Self::Message>;
 
     /// Opt in only when `view` depends exclusively on application state and its
@@ -3979,10 +4002,26 @@ fn apply_frame_overlays<Message: Clone>(
     failures
 }
 
+/// Runs an application in a native window using the default host integration.
+///
+/// This function owns the platform event loop and normally returns after all application windows
+/// close. Call it on the platform's main thread. Windows also exposes the
+/// `run_with_adapter_on_any_thread` variant for callers that deliberately need another thread.
+///
+/// # Errors
+///
+/// Returns an error if the platform event loop cannot be created or run, the background raster
+/// worker cannot start, or native presentation fails. The boxed error preserves the originating
+/// platform, I/O, or host-adapter error.
 pub fn run<A: Application>(application: A) -> Result<(), Box<dyn Error>> {
     run_with_adapter(application, DefaultHostAdapter)
 }
 
+/// Runs an application with a custom native host adapter.
+///
+/// # Errors
+///
+/// Returns the same failures as [`run`], including errors returned by [`HostAdapter`] callbacks.
 pub fn run_with_adapter<A: Application>(
     application: A,
     adapter: impl HostAdapter<A>,
@@ -3990,7 +4029,11 @@ pub fn run_with_adapter<A: Application>(
     run_with_controller_source(application, adapter, ControllerSource::Standalone)
 }
 
-/// Runs with an explicitly selected controller ingress; never discovers a host session.
+/// Runs with an explicitly selected controller ingress and never discovers a host session.
+///
+/// # Errors
+///
+/// Returns the same failures as [`run_with_adapter`].
 pub fn run_with_controller_source<A: Application>(
     application: A,
     adapter: impl HostAdapter<A>,
@@ -4000,6 +4043,11 @@ pub fn run_with_controller_source<A: Application>(
 }
 
 #[cfg(target_os = "windows")]
+/// Runs with a custom host adapter while permitting the event loop on a non-main thread.
+///
+/// # Errors
+///
+/// Returns the same failures as [`run_with_adapter`].
 pub fn run_with_adapter_on_any_thread<A: Application>(
     application: A,
     adapter: impl HostAdapter<A>,
@@ -4008,6 +4056,11 @@ pub fn run_with_adapter_on_any_thread<A: Application>(
 }
 
 #[cfg(target_os = "windows")]
+/// Runs with explicit controller ingress while permitting the event loop on a non-main thread.
+///
+/// # Errors
+///
+/// Returns the same failures as [`run_with_controller_source`].
 pub fn run_with_controller_source_on_any_thread<A: Application>(
     application: A,
     adapter: impl HostAdapter<A>,
