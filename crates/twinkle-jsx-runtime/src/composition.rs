@@ -600,7 +600,7 @@ impl<H: CompositionHost> CompositionRuntime<H> {
                         old.source_digest != new.source_digest
                             || old.host_state != new.host_state
                             || old.exports != new.exports
-                            || old.assets != new.assets
+                            || !old.assets.keys().eq(new.assets.keys())
                     })
             })
             .cloned()
@@ -618,7 +618,7 @@ impl<H: CompositionHost> CompositionRuntime<H> {
                         .is_some_and(|(old, new)| {
                             old.host_state == new.host_state
                                 && old.exports == new.exports
-                                && old.assets == new.assets
+                                && old.assets.keys().eq(new.assets.keys())
                         })
             })
             .cloned()
@@ -4020,6 +4020,8 @@ mod tests {
     #[test]
     fn compatible_reload_preserves_hooks_and_changes_implementation() {
         let mut accepted = composed();
+        accepted.packages.get_mut("provider").unwrap().assets =
+            BTreeMap::from([("icon".into(), "composition.asset.accepted".into())]);
         let mount = accepted
             .mount(&accepted.component("widget").unwrap())
             .unwrap();
@@ -4032,6 +4034,8 @@ mod tests {
         let mut candidate = composed();
         let mut replacement = context(source);
         replacement.source_digest = "changed".into();
+        replacement.assets =
+            BTreeMap::from([("icon".into(), "composition.asset.replacement".into())]);
         candidate.packages.insert("provider".into(), replacement);
         let signatures = BTreeMap::from([("main.js#View".into(), "state".into())]);
         let result = accepted
@@ -4050,6 +4054,33 @@ mod tests {
         assert_eq!(result.preserved_packages, vec!["provider"]);
         assert!(format!("{:?}", result.patches[0].patch.operations).contains("updated:1"));
         assert!(accepted.dispatch(&event, &Value::Null).is_err());
+    }
+
+    #[test]
+    fn candidate_local_asset_aliases_do_not_make_unchanged_code_restart() {
+        let mut accepted = composed();
+        accepted.packages.get_mut("provider").unwrap().assets =
+            BTreeMap::from([("icon".into(), "composition.asset.accepted".into())]);
+        let mount = accepted
+            .mount(&accepted.component("widget").unwrap())
+            .unwrap();
+        let initial = accepted
+            .render_expanded(&mount, &json!({}), |_| Ok(()))
+            .unwrap();
+        let event = initial.events.values().next().unwrap().clone();
+        let mut candidate = composed();
+        candidate.packages.get_mut("provider").unwrap().assets =
+            BTreeMap::from([("icon".into(), "composition.asset.candidate".into())]);
+        let result = accepted
+            .reload_admitted(candidate, &BTreeMap::new(), &BTreeMap::new())
+            .unwrap();
+        assert!(result.patches.is_empty());
+        assert!(result.restarted_packages.is_empty());
+        assert!(accepted.dispatch(&event, &Value::Null).is_ok());
+        assert_eq!(
+            accepted.asset_key(&"provider".into(), "icon"),
+            Some("composition.asset.accepted")
+        );
     }
 
     #[test]
