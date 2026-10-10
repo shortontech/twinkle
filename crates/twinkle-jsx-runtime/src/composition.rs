@@ -1042,7 +1042,7 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         )
     }
 
-    fn contribution(&self, key: &str) -> Option<ComponentReference<H>> {
+    pub fn contribution(&self, key: &str) -> Option<ComponentReference<H>> {
         self.resolution
             .contributions
             .values()
@@ -4420,6 +4420,13 @@ mod tests {
 
     #[test]
     fn missing_nested_patch_authority_isolated_before_any_package_runs() {
+        missing_patch_authority_check(true);
+    }
+    #[test]
+    fn admitted_mount_without_patch_authority_fails_before_running_its_event() {
+        missing_patch_authority_check(false);
+    }
+    fn missing_patch_authority_check(nested: bool) {
         let mut host = composed();
         for (_, context) in host.owner_contexts() {
             context
@@ -4432,7 +4439,8 @@ mod tests {
         let initial = host.render_expanded(&root, &json!({}), |_| Ok(())).unwrap();
         let event = initial.events.values().next().unwrap().clone();
         assert_ne!(event.mount, root.id);
-        let authority = host.patch_authority.remove(&event.mount).unwrap();
+        let authority_mount = if nested { event.mount } else { root.id };
+        let authority = host.patch_authority.remove(&authority_mount).unwrap();
         let error = host
             .dispatch_expanded_batch_scheduled_pending_validated(
                 &root,
@@ -4455,7 +4463,7 @@ mod tests {
                 0
             );
         }
-        host.patch_authority.insert(event.mount, authority);
+        host.patch_authority.insert(authority_mount, authority);
         let outcome = host
             .dispatch_expanded_batch_scheduled_pending_validated(
                 &root,
@@ -4467,5 +4475,25 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, ScheduledExpandedBatch::Patched { .. }));
         host.finish_transaction(true).unwrap();
+    }
+    #[test]
+    fn native_snapshot_checkpoint_retains_original_data_owner() {
+        let mut host = composed();
+        let owner = "parent".to_owned();
+        let initial =
+            json!({"inventory":(0..1000).map(|index|json!({"id":index})).collect::<Vec<_>>()});
+        host.update_snapshot(&owner, &initial).unwrap();
+        let original = host.packages[&owner].data.clone();
+        host.begin_transaction().unwrap();
+        assert!(std::rc::Rc::ptr_eq(
+            &original,
+            &host.checkpoint.as_ref().unwrap().data[&owner]
+        ));
+        host.update_snapshot(&owner, &json!({"inventory":[]}))
+            .unwrap();
+        assert!(!std::rc::Rc::ptr_eq(&original, &host.packages[&owner].data));
+        host.finish_transaction(false).unwrap();
+        assert!(std::rc::Rc::ptr_eq(&original, &host.packages[&owner].data));
+        assert_eq!(host.snapshot(&owner).unwrap(), &initial);
     }
 }
