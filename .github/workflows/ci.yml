@@ -1,0 +1,20 @@
+name: Twinkle
+on: [push, pull_request]
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install native input and window dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev libwayland-dev libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - name: Check independent workspace
+        run: cargo check --workspace --all-targets --all-features --locked
+      - name: Test independent workspace
+        run: cargo test --workspace --all-features --locked
+      - name: Verify aliased macro consumer
+        run: cargo check --manifest-path crates/twinkle/tests/fixtures/renamed-dependency/Cargo.toml
+      - name: Check workspace formatting
+        run: cargo fmt --check -p twinkle -p twinkle-input -p twinkle-render-assets -p twinkle-macros -p twinkle-testkit -p twinkle-workbench -p twinkle-jsx-runtime -p twinkle-presentation -p twinkle-theme -p twinkle-protocol

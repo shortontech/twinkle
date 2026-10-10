@@ -4254,7 +4254,7 @@ fn semantic_action_for_target(target: &SemanticNodeSnapshot, action: ActionKind)
 
 fn parse_controller_action(value: &str) -> Option<ControllerAction> {
     Some(match value {
-        "Launcher" => ControllerAction::Launcher,
+        "HostMenu" => ControllerAction::HostMenu,
         "Up" => ControllerAction::Up,
         "Down" => ControllerAction::Down,
         "Left" => ControllerAction::Left,

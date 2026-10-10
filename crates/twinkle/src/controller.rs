@@ -14,7 +14,8 @@ use twinkle_input::{
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ControllerAction {
-    Launcher,
+    /// Requests the host-defined menu action; the engine installs no shell operation.
+    HostMenu,
     Up,
     Down,
     Left,
@@ -204,6 +205,16 @@ pub struct ControllerInput {
 }
 
 impl ControllerInput {
+    fn retire_reader(&mut self) {
+        self.gilrs = None;
+        self.normalizer = ControllerNormalizer::default();
+        self.connected = false;
+        self.devices.current.clear();
+        self.identities.clear();
+        self.families.clear();
+        self.active_family = None;
+    }
+
     pub fn new() -> Self {
         let gilrs = Gilrs::new()
             .map_err(|error| tracing::warn!(%error, "controller input is unavailable"))
@@ -220,7 +231,9 @@ impl ControllerInput {
                 .filter(|(_, gamepad)| gamepad.is_connected())
             {
                 let native = usize::from(id) as u64;
-                let id = devices.connect(native);
+                let Some(id) = devices.connect(native) else {
+                    break;
+                };
                 families.insert(
                     id,
                     ControllerFamily::from_reported_identity(gamepad.name(), gamepad.vendor_id()),
@@ -445,12 +458,20 @@ impl ControllerInput {
         for event in events {
             let admitted = fence.admits(event.time);
             let produced_at = event.time;
-            self.backend_order = self.backend_order.wrapping_add(1).max(1);
+            let Some(order) = self.backend_order.checked_add(1) else {
+                self.retire_reader();
+                return Vec::new();
+            };
+            self.backend_order = order;
             let reported_name = gilrs.gamepad(event.id).name().to_owned();
 
             let native = usize::from(event.id) as u64;
             let id = if matches!(event.event, gilrs::EventType::Connected) {
-                self.devices.connect(native)
+                let Some(id) = self.devices.connect(native) else {
+                    self.retire_reader();
+                    return Vec::new();
+                };
+                id
             } else if let Some(id) = self.devices.current(native) {
                 id
             } else {
@@ -548,14 +569,14 @@ struct NativeControllerGenerations {
 }
 
 impl NativeControllerGenerations {
-    fn connect(&mut self, native: u64) -> ControllerId {
+    fn connect(&mut self, native: u64) -> Option<ControllerId> {
         if let Some(id) = self.current.get(&native) {
-            return *id;
+            return Some(*id);
         }
-        self.next = self.next.wrapping_add(1).max(1);
+        self.next = self.next.checked_add(1)?;
         let id = ControllerId(self.next);
         self.current.insert(native, id);
-        id
+        Some(id)
     }
 
     fn current(&self, native: u64) -> Option<ControllerId> {
@@ -660,7 +681,7 @@ fn button_action(button: &ControllerButton, family: ControllerFamily) -> Option<
         ControllerButton::Start => Some(ControllerAction::ContextMenu),
         ControllerButton::LeftShoulder => Some(ControllerAction::PreviousPane),
         ControllerButton::RightShoulder => Some(ControllerAction::NextPane),
-        ControllerButton::Guide => Some(ControllerAction::Launcher),
+        ControllerButton::Guide => Some(ControllerAction::HostMenu),
         _ => None,
     }
 }
@@ -761,12 +782,30 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_connection_generation_never_reuses_a_lifetime() {
+        let mut devices = NativeControllerGenerations {
+            next: u64::MAX - 1,
+            ..Default::default()
+        };
+        let final_id = devices.connect(7).unwrap();
+        assert_eq!(final_id.0, u64::MAX);
+        assert_eq!(devices.connect(8), None);
+        devices.disconnect(7, final_id);
+        assert_eq!(devices.connect(7), None);
+        assert!(devices.current.is_empty());
+    }
+
+    #[test]
     fn reused_native_slot_gets_a_fresh_connection_generation() {
         let mut devices = NativeControllerGenerations::default();
-        let first = devices.connect(7);
-        assert_eq!(devices.connect(7), first, "duplicate connect is idempotent");
+        let first = devices.connect(7).unwrap();
+        assert_eq!(
+            devices.connect(7),
+            Some(first),
+            "duplicate connect is idempotent"
+        );
         devices.disconnect(7, first);
-        let replacement = devices.connect(7);
+        let replacement = devices.connect(7).unwrap();
         assert_ne!(replacement, first);
         devices.disconnect(7, first);
         assert_eq!(
@@ -894,7 +933,7 @@ mod tests {
                 edge: twinkle_input::KeyEdge::Pressed,
                 repeat: false,
             }),
-            Some(ControllerAction::Launcher)
+            Some(ControllerAction::HostMenu)
         );
     }
 

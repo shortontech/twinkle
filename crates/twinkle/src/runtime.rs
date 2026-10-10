@@ -927,7 +927,7 @@ fn controller_ui_event(action: ControllerAction) -> Option<UiEvent> {
         ControllerAction::Cancel => Some(UiEvent::ControllerBack),
         ControllerAction::PreviousPane => Some(UiEvent::ControllerPreviousPane),
         ControllerAction::NextPane => Some(UiEvent::ControllerNextPane),
-        ControllerAction::Launcher => None,
+        ControllerAction::HostMenu => None,
         ControllerAction::ContextMenu => Some(UiEvent::ControllerContextMenu),
     }
 }
@@ -1289,7 +1289,8 @@ pub struct NormalizedRecipientBinding {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GlobalAction {
-    ToggleLauncher,
+    /// Requests the host-defined menu action; the engine installs no shell operation.
+    HostMenu,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3678,9 +3679,9 @@ impl<A: Application> UiHost<A> {
                 };
             }
         }
-        if action == ControllerAction::Launcher {
+        if action == ControllerAction::HostMenu {
             return HostEventOutcome {
-                global_actions: vec![GlobalAction::ToggleLauncher],
+                global_actions: vec![GlobalAction::HostMenu],
                 ..HostEventOutcome::default()
             };
         }
@@ -10041,10 +10042,10 @@ mod tests {
     #[test]
     fn guide_action_is_reported_globally_without_entering_application_dispatch() {
         let mut host = UiHost::new(InputApplication::default(), 320, 48);
-        let outcome = host.handle_controller_action(ControllerAction::Launcher);
+        let outcome = host.handle_controller_action(ControllerAction::HostMenu);
 
         assert!(!outcome.changed);
-        assert_eq!(outcome.global_actions, [GlobalAction::ToggleLauncher]);
+        assert_eq!(outcome.global_actions, [GlobalAction::HostMenu]);
         assert_eq!(host.inspect().frame_generation, 1);
     }
 
@@ -10408,7 +10409,7 @@ mod tests {
                 action: SemanticAction::SetValue(SemanticValueInput::Text("accessible".into())),
             },
             HostEvent::Shortcut(Shortcut::Submit),
-            HostEvent::Controller(ControllerAction::Launcher),
+            HostEvent::Controller(ControllerAction::HostMenu),
             HostEvent::Ui(UiEvent::FocusLost),
             HostEvent::Poll,
         ];
