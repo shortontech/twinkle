@@ -24,7 +24,7 @@ twinkle-jsx-runtime = { version = "0.2.0", path = "../twinkle-jsx-runtime", opti
 twinkle-presentation = { version = "0.2.0", path = "../twinkle-presentation", features = ["jsx"], optional = true }
 twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol", optional = true }
 serde_json = { workspace = true, optional = true }
-twinkle = { version = "0.2.0", path = "../twinkle" }
+twinkle = { package = "twinkle-ui", version = "0.2.0", path = "../twinkle" }
 twinkle-testkit = { version = "0.2.0", path = "../twinkle-testkit" }
 image.workspace = true
 

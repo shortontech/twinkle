@@ -23,7 +23,7 @@ Loading, empty, and error states accept ordinary declarative slots as well as co
 Verification command:
 
 ```text
-cargo test -p twinkle primitives::tests --lib
-cargo test -p twinkle ui::collection::tests --lib
-cargo test -p twinkle overlay::tests --lib
+cargo test -p twinkle-ui primitives::tests --lib
+cargo test -p twinkle-ui ui::collection::tests --lib
+cargo test -p twinkle-ui overlay::tests --lib
 ```

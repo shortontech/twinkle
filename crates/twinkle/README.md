@@ -8,11 +8,11 @@ provide any required session discovery and transport through host adapters.
 New to Twinkle? Start with the repository's
 [external-consumer guide](../../docs/getting-started.md) for prerequisites, dependency setup, and a
 complete application. This document is the conceptual component and layout guide. Generate the API
-reference locally with `cargo doc -p twinkle --open`; after publication it will also be available
-on [docs.rs](https://docs.rs/twinkle).
+reference locally with `cargo doc -p twinkle-ui --open`; after publication it will also be available
+on [docs.rs](https://docs.rs/twinkle-ui).
 
 ~~~rust
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 
 #[derive(Clone)]
 enum Message {
@@ -163,9 +163,9 @@ Raw commands are intentionally available only through the explicit `backend` mod
 painters and platform presenters.
 
 ~~~rust
-use twinkle::backend::PaintCommand;
-use twinkle::prelude::*;
-use twinkle::Rect;
+use twinkle_ui::backend::PaintCommand;
+use twinkle_ui::prelude::*;
+use twinkle_ui::Rect;
 
 #[derive(Clone)]
 enum Message { Activate }
@@ -178,7 +178,7 @@ let _graph = CustomPaint::new(paint)
     .id("graph")
     .width(160.0)
     .height(80.0)
-    .semantic_role(twinkle::SemanticRole::Button)
+    .semantic_role(twinkle_ui::SemanticRole::Button)
     .accessibility_label("Open graph")
     .message(Message::Activate);
 ~~~
@@ -188,26 +188,26 @@ let _graph = CustomPaint::new(paint)
 Unknown properties are rejected at their invocation:
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 let _ = ui! { <Text unknown_property={3}>{"No"}</Text> };
 ~~~
 
 Duplicate properties and missing required event properties are rejected by `ui!`:
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 let _ = ui! { <Column gap={2.0} gap={3.0} /> };
 ~~~
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 let _ = ui! { <Button>{"Save"}</Button> };
 ~~~
 
 Components that do not own children reject them:
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 #[derive(Clone)] enum Message { Set(f32) }
 fn set(value: f32) -> Message { Message::Set(value) }
 let _ = ui! { <Slider value={0.5} on_change={set}><Text>{"No"}</Text></Slider> };
@@ -216,14 +216,14 @@ let _ = ui! { <Slider value={0.5} on_change={set}><Text>{"No"}</Text></Slider> }
 Message mapper and identity types remain ordinary checked Rust types:
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 #[derive(Clone)] enum Message { Set(String) }
 fn set(value: String) -> Message { Message::Set(value) }
 let _ = ui! { <Slider value={0.5} on_change={set} /> };
 ~~~
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 struct NotAnId;
 let _ = ui! { <Text id={NotAnId}>{"No"}</Text> };
 ~~~
@@ -231,8 +231,8 @@ let _ = ui! { <Text id={NotAnId}>{"No"}</Text> };
 Custom-paint callbacks must accept the allocated rectangle and return only backend paint commands:
 
 ~~~compile_fail
-use twinkle::prelude::*;
-use twinkle::Rect;
+use twinkle_ui::prelude::*;
+use twinkle_ui::Rect;
 fn invalid_paint(_: Rect) -> u32 { 7 }
 let _ = CustomPaint::<()>::new(invalid_paint);
 ~~~
@@ -240,7 +240,7 @@ let _ = CustomPaint::<()>::new(invalid_paint);
 Semantic selectors are typed; renderer strings cannot stand in for semantic roles:
 
 ~~~compile_fail
-use twinkle::{SemanticSelector};
+use twinkle_ui::{SemanticSelector};
 let _ = SemanticSelector::RoleAndName {
     role: "button",
     name: "Save".into(),
@@ -250,26 +250,26 @@ let _ = SemanticSelector::RoleAndName {
 Ordinary consumers cannot import the renderer command stream from the authoring root:
 
 ~~~compile_fail
-use twinkle::PaintCommand;
+use twinkle_ui::PaintCommand;
 let _ = std::mem::size_of::<PaintCommand>();
 ~~~
 
 ~~~compile_fail
-use twinkle::ui::PaintCommand;
+use twinkle_ui::ui::PaintCommand;
 let _ = std::mem::size_of::<PaintCommand>();
 ~~~
 
 Accessibility and action declarations retain their exact public types:
 
 ~~~compile_fail
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 let _ = Container::<()>::new().semantic_role("button");
 ~~~
 
 Consumer crates cannot bypass production navigation transitions by mutating focus or scope state:
 
 ~~~compile_fail
-use twinkle::{NavigationScope, UiId, UiStateStore};
+use twinkle_ui::{NavigationScope, UiId, UiStateStore};
 let mut state = UiStateStore::default();
 state.navigation_mut().set_controller_scope(Some(UiId::from("private-scope")));
 ~~~
@@ -277,14 +277,14 @@ state.navigation_mut().set_controller_scope(Some(UiId::from("private-scope")));
 Navigation topology cannot be inferred from identifier-string prefixes:
 
 ~~~compile_fail
-use twinkle::NavigationScope;
+use twinkle_ui::NavigationScope;
 let _ = NavigationScope::group().parent_prefix("root/sidebar");
 ~~~
 
 ~~~compile_fail
-use twinkle::backend::PaintCommand;
-use twinkle::prelude::*;
-use twinkle::Rect;
+use twinkle_ui::backend::PaintCommand;
+use twinkle_ui::prelude::*;
+use twinkle_ui::Rect;
 #[derive(Clone)] enum Message { Activate }
 fn paint(bounds: Rect) -> Vec<PaintCommand> {
     vec![PaintCommand::Fill { rect: bounds, color: 0 }]

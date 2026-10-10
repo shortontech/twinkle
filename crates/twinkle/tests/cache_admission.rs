@@ -4,7 +4,7 @@ use std::time::Instant;
 mod release_admission;
 
 use release_admission::AdmissionReport;
-use twinkle::{
+use twinkle_ui::{
     Button, Column, Component, Container, Invalidation, Length, Point, Rect, SelectionRegion,
     SemanticRole, SemanticSelector, SoftwareRenderer, Text, UiEvent, UiFrame, UiStateStore,
     text_layout_cache_diagnostics,
@@ -307,7 +307,7 @@ fn long_unicode_hit_testing_and_selection_emit_bounded_release_evidence() {
         if reference
             .handle_event(&mut setup_state, UiEvent::PointerPressed(candidate))
             .disposition
-            == twinkle::EventDisposition::Handled
+            == twinkle_ui::EventDisposition::Handled
         {
             points.push(candidate);
             if points.len() == INTERACTION_SAMPLES {
@@ -338,7 +338,7 @@ fn long_unicode_hit_testing_and_selection_emit_bounded_release_evidence() {
         let moved = reference.handle_event(&mut state, UiEvent::PointerMoved(destination));
         selection_update.push(update_started.elapsed());
 
-        handled_hits += usize::from(pressed.disposition == twinkle::EventDisposition::Handled);
+        handled_hits += usize::from(pressed.disposition == twinkle_ui::EventDisposition::Handled);
         checksum_invalidation(&mut checksum, pressed.invalidation);
         checksum_invalidation(&mut checksum, moved.invalidation);
         let selection_started = Instant::now();

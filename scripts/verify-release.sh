@@ -16,7 +16,7 @@ leaf_packages=(
 )
 
 dependent_packages=(
-  twinkle
+  twinkle-ui
   twinkle-jsx-runtime
   twinkle-testkit
   twinkle-presentation

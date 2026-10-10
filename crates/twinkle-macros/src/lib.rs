@@ -8,10 +8,10 @@ use syn::{
 };
 
 fn engine_path() -> Result<TokenStream2> {
-    match proc_macro_crate::crate_name("twinkle") {
+    match proc_macro_crate::crate_name("twinkle-ui") {
         // Integration tests and examples of Twinkle itself are separate crates.
         // The engine exports this stable self-alias for both those and its library.
-        Ok(proc_macro_crate::FoundCrate::Itself) => Ok(quote! { ::twinkle }),
+        Ok(proc_macro_crate::FoundCrate::Itself) => Ok(quote! { ::twinkle_ui }),
         Ok(proc_macro_crate::FoundCrate::Name(name)) => {
             let name = Ident::new(&name, Span::call_site());
             Ok(quote! { ::#name })
@@ -663,7 +663,7 @@ mod tests {
         });
 
         assert_eq!(input.0.len(), 1);
-        let expanded = expand_root(input.0, &quote! { ::twinkle })
+        let expanded = expand_root(input.0, &quote! { ::twinkle_ui })
             .expect("valid component tree should expand")
             .to_string();
         assert!(expanded.contains("SourceLocation"));
@@ -688,13 +688,13 @@ mod tests {
     #[test]
     fn expansion_rejects_missing_required_values_and_invalid_builtin_children() {
         let missing = parse(quote! { <Button> "Save" </Button> });
-        let error = expand_root(missing.0, &quote! { ::twinkle })
+        let error = expand_root(missing.0, &quote! { ::twinkle_ui })
             .expect_err("Button without on_press must be rejected")
             .to_string();
         assert_eq!(error, "missing required property `on_press`");
 
         let child = parse(quote! { <Slider value={value} on_change={change}> "bad" </Slider> });
-        let error = expand_root(child.0, &quote! { ::twinkle })
+        let error = expand_root(child.0, &quote! { ::twinkle_ui })
             .expect_err("Slider children must be rejected")
             .to_string();
         assert_eq!(error, "`Slider` does not accept children");

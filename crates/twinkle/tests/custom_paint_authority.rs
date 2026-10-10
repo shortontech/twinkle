@@ -1,5 +1,5 @@
-use twinkle::backend::PaintCommand;
-use twinkle::{
+use twinkle_ui::backend::PaintCommand;
+use twinkle_ui::{
     ActionKind, ComponentBuilderExt, CustomPaint, Rect, Row, SemanticAction, SemanticRole,
     SemanticSelector, Spacer, UiFrame,
 };

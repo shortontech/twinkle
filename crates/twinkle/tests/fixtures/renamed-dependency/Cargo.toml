@@ -7,4 +7,4 @@ publish = false
 [workspace]
 
 [dependencies]
-lights = { package = "twinkle", path = "../../.." }
+lights = { package = "twinkle-ui", path = "../../.." }

@@ -6,7 +6,7 @@ mod release_admission;
 use std::time::{Duration, Instant};
 
 use release_admission::AdmissionReport;
-use twinkle::{
+use twinkle_ui::{
     Application, Button, FrameOverlay, HostBatch, HostEventOutcome, InputModality, Invalidation,
     OverlayAnchor, OverlayId, OverlayMenu, OverlayMenuItem, OverlayStyle, Point, SemanticRole,
     SemanticSelector, SoftwareRenderer, UiEvent, UiHost, UiId, View, ViewContext,

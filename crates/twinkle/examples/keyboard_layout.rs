@@ -1,6 +1,6 @@
 //! Render the production keyboard component without opening a native window.
 //! This is visual component evidence, not native delivery acceptance.
-use twinkle::{
+use twinkle_ui::{
     Application, SoftwareRenderer, UiHost,
     on_screen_keyboard::{KeyboardApp, KeyboardMessage},
 };
@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args()
         .nth(1)
         .ok_or("usage: keyboard_layout OUTPUT.png")?;
-    let mut app = KeyboardApp::new(twinkle::SemanticTokenSet::standard(
+    let mut app = KeyboardApp::new(twinkle_ui::SemanticTokenSet::standard(
         0xff17191d, 0xff202329, 0xff292d35, 0xff353a44, 0xff353a44, 0xfff0f1f3, 0xffa6adb8,
         0xff77a8ff, 0xff31466b, 0xffaf91ff, 0xffaf91ff,
     ));

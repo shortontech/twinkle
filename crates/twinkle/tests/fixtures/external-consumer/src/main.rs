@@ -1,4 +1,4 @@
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 
 #[derive(Default)]
 struct Greeting {
@@ -19,7 +19,7 @@ impl Application for Greeting {
         }
     }
 
-    fn view(&self, _context: twinkle::ViewContext) -> impl View<Message> {
+    fn view(&self, _context: twinkle_ui::ViewContext) -> impl View<Message> {
         ui! {
             <Column gap={12.0} padding={Insets::all(24.0)}>
                 <Text>{format!("Greetings: {}", self.clicks)}</Text>

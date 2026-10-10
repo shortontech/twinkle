@@ -1,4 +1,4 @@
-use twinkle::{Button, Column, Constraints, Insets, Row, Size, Spacer, Text};
+use twinkle_ui::{Button, Column, Constraints, Insets, Row, Size, Spacer, Text};
 
 #[derive(Clone)]
 enum Message {
@@ -16,7 +16,7 @@ fn main() {
                 .child(Button::new(Message::Save, "Save")),
         );
 
-    let measured =
-        twinkle::Component::into_element(view).measure(Constraints::loose(Size::new(640.0, 480.0)));
+    let measured = twinkle_ui::Component::into_element(view)
+        .measure(Constraints::loose(Size::new(640.0, 480.0)));
     assert!(measured.width >= 0.0 && measured.height >= 0.0);
 }

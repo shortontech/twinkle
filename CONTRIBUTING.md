@@ -20,7 +20,7 @@ Before submitting a change, run:
 cargo fmt --check --all
 cargo check --workspace --all-targets --all-features --locked
 cargo test --workspace --all-features --locked
-cargo doc -p twinkle --no-deps
+cargo doc -p twinkle-ui --no-deps
 ```
 
 Keep changes focused, add tests for observable behavior, and update public documentation when an

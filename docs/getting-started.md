@@ -31,17 +31,17 @@ commit you have tested:
 
 ```toml
 [dependencies]
-twinkle = { git = "https://github.com/shortontech/twinkle.git", rev = "REPLACE_WITH_A_COMMIT_SHA" }
+twinkle-ui = { git = "https://github.com/shortontech/twinkle.git", rev = "REPLACE_WITH_A_COMMIT_SHA" }
 ```
 
-After publication, use the versioned dependency `twinkle = "0.2"` instead.
+After publication, use the versioned dependency `twinkle-ui = "0.2"` instead.
 
 ## 3. Create the application
 
 Put this in `src/main.rs`:
 
 ```rust,no_run
-use twinkle::prelude::*;
+use twinkle_ui::prelude::*;
 
 #[derive(Default)]
 struct Counter {
@@ -64,7 +64,7 @@ impl Application for Counter {
         }
     }
 
-    fn view(&self, _context: twinkle::ViewContext) -> impl View<Message> {
+    fn view(&self, _context: twinkle_ui::ViewContext) -> impl View<Message> {
         ui! {
             <Column gap={12.0} padding={Insets::all(24.0)}>
                 <Text scale={2.0}>{format!("Count: {}", self.value)}</Text>
@@ -113,12 +113,12 @@ launcher composition, layout, custom painting, and the compile-time guarantees o
 the complete API reference with:
 
 ```sh
-cargo doc -p twinkle --open
+cargo doc -p twinkle-ui --open
 ```
 
 ## Current feature surface
 
-The `twinkle` crate currently exposes no Cargo feature flags. A normal dependency includes native
+The `twinkle-ui` package currently exposes no Cargo feature flags. A normal dependency includes native
 windowing, controller input, clipboard support, image support, and software presentation. It does
 not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and
 `twinkle-workbench` crates and is enabled there with their `jsx` feature.

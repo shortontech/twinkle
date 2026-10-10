@@ -3,7 +3,7 @@
 mod controller_host;
 pub use controller_host::{ControllerSource, HostedControllerDelivery, HostedControllerSource};
 
-extern crate self as twinkle;
+extern crate self as twinkle_ui;
 
 pub mod approval;
 pub mod async_raster;

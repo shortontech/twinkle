@@ -15,7 +15,7 @@ cssparser = "0.38.0"
 image.workspace = true
 twinkle-jsx-runtime = { version = "0.2.0", path = "../twinkle-jsx-runtime", optional = true }
 twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol" }
-twinkle = { version = "0.2.0", path = "../twinkle" }
+twinkle = { package = "twinkle-ui", version = "0.2.0", path = "../twinkle" }
 serde_json.workspace = true
 
 [features]
