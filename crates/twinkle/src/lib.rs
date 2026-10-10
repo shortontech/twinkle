@@ -1,7 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
-#[allow(missing_docs)]
 mod controller_host;
 pub use controller_host::{ControllerSource, HostedControllerDelivery, HostedControllerSource};
 
@@ -16,7 +15,6 @@ pub mod controller;
 pub mod document_selection;
 #[allow(missing_docs)]
 pub mod gpu;
-#[allow(missing_docs)]
 pub mod input;
 #[allow(missing_docs)]
 mod internal_surface;

@@ -8,27 +8,42 @@ use twinkle_input::{
 
 use crate::{Point, Shortcut, UiEvent};
 
+/// State required to arbitrate a normalized input event against focused UI ownership.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InputContext {
+    /// Whether the authoritative focused target accepts text editing.
     pub text_focused: bool,
     /// A retained controller/tree target takes precedence over a stale text
     /// focus when keyboard keys are serving as the controller proxy.
     pub navigation_active: bool,
+    /// Whether a selectable document currently owns selection commands.
     pub selection_owned: bool,
 }
 
+/// Canonical operation emitted after focused-input policy is applied.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InputCommand {
+    /// Deliver a normalized event to the component tree.
     Ui(UiEvent),
+    /// Offer an application shortcut, with an optional UI fallback when unhandled.
     Application {
+        /// Semantic application shortcut.
         shortcut: Shortcut,
+        /// Component-tree event used when the application declines the shortcut.
         fallback: Option<UiEvent>,
     },
+    /// Copy the current text or document selection.
     Copy,
+    /// Cut the current editable selection.
     Cut,
+    /// Paste host-supplied clipboard content.
     Paste,
 }
 
+/// Stateful policy adapter from normalized device events to Twinkle commands.
+///
+/// The dispatcher correlates keyboard commands with IME text, tracks pointer/touch completion
+/// ownership, and prevents one physical interaction from being delivered twice.
 #[derive(Clone, Debug, Default)]
 pub struct FocusedInputDispatcher {
     pointer: Point,
@@ -69,10 +84,12 @@ impl FocusedInputDispatcher {
         self.active_pointer.is_some()
     }
 
+    /// Dispatches an event using a context with no focused editor or retained selection.
     pub fn dispatch(&mut self, event: &InputEvent) -> Vec<InputCommand> {
         self.dispatch_with_context(event, InputContext::default())
     }
 
+    /// Dispatches an event using current focus, navigation, and selection ownership.
     pub fn dispatch_with_context(
         &mut self,
         event: &InputEvent,
