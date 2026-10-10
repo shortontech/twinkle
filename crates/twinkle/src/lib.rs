@@ -72,8 +72,8 @@ pub use runtime::{
     HostTelemetry, MessageEvidence, NativeFrameCorrelation, NormalizedAdmissionBinding,
     NormalizedIngressAuthority, NormalizedInputEnvelope, NormalizedRecipientBinding,
     NormalizedSourceBinding, OutboundFileDrag, OverlayDeclarationFailure, Popover, ScrollAnchor,
-    SemanticActionFailure, Shortcut, ShortcutOutcome, Tooltip, UiHost, UiHostViewport, ViewContext,
-    run, run_with_adapter, run_with_controller_source,
+    SemanticActionFailure, Shortcut, ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost,
+    UiHostViewport, ViewContext, run, run_with_adapter, run_with_controller_source,
 };
 #[cfg(target_os = "windows")]
 pub use runtime::{run_with_adapter_on_any_thread, run_with_controller_source_on_any_thread};

@@ -1,8 +1,11 @@
 use crate::{ControllerSource, HostedControllerSource};
 use std::{
     any::Any,
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     error::Error,
     num::NonZeroU32,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -98,12 +101,18 @@ fn local_controller_poll_lease(
     })
 }
 
+use winit::event_loop::run_on_demand::EventLoopExtRunOnDemand;
 use winit::{
     application::ApplicationHandler,
+    cursor::CursorIcon,
+    data_transfer::{DataTransferId, DataTransferSendBuilder, SendData, TypeHint},
     dpi::LogicalSize,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle},
-    window::{CursorIcon, Window, WindowAttributes, WindowId},
+    event_loop::{ActiveEventLoop, ControlFlow, DndAction, EventLoop, OwnedDisplayHandle},
+    window::{
+        ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, Window, WindowAttributes,
+        WindowId,
+    },
 };
 
 use crate::async_raster::{AsyncRasterWorker, RasterRequest};
@@ -316,143 +325,6 @@ fn native_input_source_binding(
         identity_capability: "backend_generation".into(),
         reconnect_generation: device_generation,
     }
-}
-
-#[cfg(target_os = "linux")]
-fn file_uri_list(paths: &[std::path::PathBuf]) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let mut payload = Vec::new();
-    for path in paths {
-        payload.extend_from_slice(b"file://");
-        for byte in path.as_os_str().as_bytes() {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
-                payload.push(*byte);
-            } else {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                payload.extend_from_slice(&[
-                    b'%',
-                    HEX[(byte >> 4) as usize],
-                    HEX[(byte & 15) as usize],
-                ]);
-            }
-        }
-        payload.extend_from_slice(b"\r\n");
-    }
-    payload
-}
-
-#[cfg(target_os = "windows")]
-#[windows::core::implement(windows::Win32::System::Ole::IDropSource)]
-struct WindowsFileDropSource;
-
-#[cfg(target_os = "windows")]
-impl windows::Win32::System::Ole::IDropSource_Impl for WindowsFileDropSource_Impl {
-    fn QueryContinueDrag(
-        &self,
-        escape_pressed: windows::core::BOOL,
-        key_state: windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS,
-    ) -> windows::core::HRESULT {
-        use windows::Win32::{
-            Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, S_OK},
-            System::SystemServices::MK_LBUTTON,
-        };
-        if escape_pressed.as_bool() {
-            DRAGDROP_S_CANCEL
-        } else if !key_state.contains(MK_LBUTTON) {
-            DRAGDROP_S_DROP
-        } else {
-            S_OK
-        }
-    }
-
-    fn GiveFeedback(
-        &self,
-        _effect: windows::Win32::System::Ole::DROPEFFECT,
-    ) -> windows::core::HRESULT {
-        windows::Win32::Foundation::DRAGDROP_S_USEDEFAULTCURSORS
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn start_windows_file_drag(paths: &[std::path::PathBuf]) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::Win32::{
-        System::{
-            Com::IDataObject,
-            Ole::{DROPEFFECT_COPY, DROPEFFECT_MOVE, IDropSource, OleInitialize, OleUninitialize},
-        },
-        UI::Shell::{ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject, SHDoDragDrop},
-    };
-    use windows::core::{ComObject, PCWSTR};
-    // Shell drag/drop is an OLE operation and the Winit UI thread is otherwise not initialized
-    // as an OLE apartment. Every successful S_OK/S_FALSE initialization requires a matching
-    // uninitialize on this same thread.
-    unsafe { OleInitialize(None) }.map_err(|error| error.to_string())?;
-    struct OleApartment;
-    impl Drop for OleApartment {
-        fn drop(&mut self) {
-            unsafe { OleUninitialize() };
-        }
-    }
-    let _ole_apartment = OleApartment;
-    let parent = paths
-        .first()
-        .and_then(|path| path.parent())
-        .ok_or("file drag has no parent directory")?;
-    if paths.iter().any(|path| path.parent() != Some(parent)) {
-        return Err("file drag sources do not share a parent directory".into());
-    }
-    let parent_wide = parent
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let parent_pidl = unsafe { ILCreateFromPathW(PCWSTR(parent_wide.as_ptr())) };
-    if parent_pidl.is_null() {
-        return Err("could not create shell drag parent".into());
-    }
-    let wide = paths
-        .iter()
-        .map(|path| {
-            path.as_os_str()
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let pidls = wide
-        .iter()
-        .map(|path| unsafe { ILCreateFromPathW(PCWSTR(path.as_ptr())) })
-        .collect::<Vec<_>>();
-    if pidls.iter().any(|pidl| pidl.is_null()) {
-        unsafe { ILFree(Some(parent_pidl.cast())) };
-        for pidl in pidls.into_iter().filter(|pidl| !pidl.is_null()) {
-            unsafe { ILFree(Some(pidl.cast())) };
-        }
-        return Err("could not create shell drag items".into());
-    }
-    let pointers = pidls
-        .iter()
-        .map(|pidl| unsafe { ILFindLastID(*pidl) as *const _ })
-        .collect::<Vec<_>>();
-    let result = unsafe {
-        let data: IDataObject = SHCreateDataObject(
-            Some(parent_pidl as *const _),
-            Some(&pointers),
-            None::<&IDataObject>,
-        )
-        .map_err(|error| error.to_string())?;
-        let source: IDropSource = ComObject::new(WindowsFileDropSource).into_interface();
-        SHDoDragDrop(None, &data, &source, DROPEFFECT_COPY | DROPEFFECT_MOVE)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    };
-    for pidl in pidls {
-        unsafe { ILFree(Some(pidl.cast())) }
-    }
-    unsafe { ILFree(Some(parent_pidl.cast())) };
-    result
 }
 
 fn wait_duration(
@@ -1377,12 +1249,62 @@ impl AdapterOutcome {
 /// Rendering, normalized input, clipboard routing, and controller navigation
 /// remain owned by [`UiHost`].
 pub struct HostServices<'a> {
-    window: &'a Window,
+    window: &'a dyn Window,
+    transients: &'a TransientWindowSpawner,
 }
 
 impl<'a> HostServices<'a> {
-    pub fn window(&self) -> &'a Window {
+    pub fn window(&self) -> &'a dyn Window {
         self.window
+    }
+
+    /// Opens an independently rendered Twinkle window on this runtime's event loop.
+    ///
+    /// The request is realized after the current host callback returns. Closing the
+    /// transient stops only that window; the primary application keeps running.
+    pub fn open_transient<A, H>(&self, application: A, adapter: H)
+    where
+        A: Application + 'static,
+        H: HostAdapter<A> + 'static,
+    {
+        self.transients.open(application, adapter);
+    }
+}
+
+type TransientRequest = Box<
+    dyn FnOnce(
+        OwnedDisplayHandle,
+        AsyncRasterWorker,
+        TransientWindowSpawner,
+    ) -> Box<dyn RuntimeWindow>,
+>;
+
+/// A cloneable capability for scheduling additional Twinkle windows on the
+/// event loop that owns the current application window.
+#[derive(Clone, Default)]
+pub struct TransientWindowSpawner {
+    pending: Rc<RefCell<Vec<TransientRequest>>>,
+}
+
+impl TransientWindowSpawner {
+    pub fn open<A, H>(&self, application: A, adapter: H)
+    where
+        A: Application + 'static,
+        H: HostAdapter<A> + 'static,
+    {
+        self.pending
+            .borrow_mut()
+            .push(Box::new(move |display, raster, spawner| {
+                Box::new(ApplicationRuntime::new(
+                    application,
+                    adapter,
+                    display,
+                    raster,
+                    ControllerSource::Disabled,
+                    spawner,
+                    false,
+                ))
+            }));
     }
 }
 
@@ -4101,17 +4023,29 @@ pub fn run_with_controller_source_on_any_thread<A: Application>(
 fn run_with_event_loop<A: Application>(
     application: A,
     adapter: impl HostAdapter<A>,
-    event_loop: EventLoop<()>,
+    mut event_loop: EventLoop,
     source: ControllerSource,
 ) -> Result<(), Box<dyn Error>> {
     let display = event_loop.owned_display_handle();
     let proxy = event_loop.create_proxy();
+    let wake_proxy = proxy.clone();
     let raster = AsyncRasterWorker::new("twinkle-raster", move || {
-        let _ = proxy.send_event(());
+        let _ = wake_proxy.wake_up();
     })?;
-    let mut runtime = ApplicationRuntime::new(application, adapter, display, raster, source);
-    event_loop.run_app(&mut runtime)?;
-    if let Some(error) = runtime.error {
+    let spawner = TransientWindowSpawner::default();
+    let primary = ApplicationRuntime::new(
+        application,
+        adapter,
+        display.clone(),
+        raster,
+        source,
+        spawner.clone(),
+        true,
+    );
+    let mut runtime = MultiWindowRuntime::new(primary, display, proxy, spawner);
+    event_loop.run_app_on_demand(&mut runtime)?;
+    runtime.stop_all();
+    if let Some(error) = runtime.take_error() {
         Err(error)
     } else {
         Ok(())
@@ -4123,8 +4057,8 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     application: Option<A>,
     adapter: H,
     display: OwnedDisplayHandle,
-    window: Option<Arc<Window>>,
-    surface: Option<softbuffer::Surface<OwnedDisplayHandle, Arc<Window>>>,
+    window: Option<Arc<dyn Window>>,
+    surface: Option<softbuffer::Surface<OwnedDisplayHandle, Arc<dyn Window>>>,
     raster: AsyncRasterWorker,
     raster_revision: u64,
     input: twinkle_input::winit::Adapter,
@@ -4152,6 +4086,12 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     native_touch_recipient: NormalizedRecipientBinding,
     native_touch_stream_generation: u64,
     native_stream_reset_pending: bool,
+    file_drag_paths: HashMap<DataTransferId, Vec<std::path::PathBuf>>,
+    requested_file_drags: HashSet<DataTransferId>,
+    dropped_file_drags: HashSet<DataTransferId>,
+    transients: TransientWindowSpawner,
+    primary: bool,
+    close_requested: bool,
 }
 
 impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
@@ -4221,6 +4161,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         display: OwnedDisplayHandle,
         raster: AsyncRasterWorker,
         source: ControllerSource,
+        transients: TransientWindowSpawner,
+        primary: bool,
     ) -> Self {
         let now = Instant::now();
         let native_host_generation = NEXT_NATIVE_HOST_GENERATION
@@ -4272,11 +4214,33 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             },
             native_touch_stream_generation: native_host_generation,
             native_stream_reset_pending: false,
+            file_drag_paths: HashMap::new(),
+            requested_file_drags: HashSet::new(),
+            dropped_file_drags: HashSet::new(),
+            transients,
+            primary,
+            close_requested: false,
         }
     }
 
-    fn apply_input_outcome(&mut self, window: &Window, outcome: HostEventOutcome) {
-        window.set_ime_allowed(outcome.text_input_active);
+    fn request_exit(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.primary {
+            event_loop.exit();
+        } else {
+            self.close_requested = true;
+        }
+    }
+
+    fn apply_input_outcome(&mut self, window: &dyn Window, outcome: HostEventOutcome) {
+        let ime_request = if outcome.text_input_active {
+            ImeRequest::Enable(
+                ImeEnableRequest::new(ImeCapabilities::default(), ImeRequestData::default())
+                    .expect("empty IME request is valid"),
+            )
+        } else {
+            ImeRequest::Disable
+        };
+        let _ = window.request_ime_update(ime_request);
         if let Some(text) = outcome.clipboard_text
             && let Some(clipboard) = &mut self.clipboard
         {
@@ -4285,11 +4249,14 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         if let Some(host) = &self.host {
             let next_icon = host.inspect().pointer_icon;
             if next_icon != self.pointer_icon {
-                window.set_cursor(match next_icon {
-                    PointerIcon::Default => CursorIcon::Default,
-                    PointerIcon::Hand => CursorIcon::Pointer,
-                    PointerIcon::Text => CursorIcon::Text,
-                });
+                window.set_cursor(
+                    match next_icon {
+                        PointerIcon::Default => CursorIcon::Default,
+                        PointerIcon::Hand => CursorIcon::Pointer,
+                        PointerIcon::Text => CursorIcon::Text,
+                    }
+                    .into(),
+                );
                 self.pointer_icon = next_icon;
             }
         }
@@ -4301,8 +4268,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
 
     fn dispatch_normalized_input(
         &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Window,
+        event_loop: &dyn ActiveEventLoop,
+        window: &dyn Window,
         inputs: Vec<twinkle_input::InputEvent>,
         clipboard_text: Option<String>,
     ) {
@@ -4312,8 +4279,14 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         let mut adapter_exit = false;
         for input in inputs {
             let adapted = self.host.as_mut().map(|host| {
-                self.adapter
-                    .normalized_input(host, &input, HostServices { window })
+                self.adapter.normalized_input(
+                    host,
+                    &input,
+                    HostServices {
+                        window,
+                        transients: &self.transients,
+                    },
+                )
             });
             let consume = match adapted {
                 Some(Ok(outcome)) => {
@@ -4409,7 +4382,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             }
         }
         if adapter_exit {
-            event_loop.exit();
+            self.request_exit(event_loop);
         }
         if events.is_empty() && !adapter_changed {
             return;
@@ -4422,12 +4395,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             ..HostBatch::default()
         });
         self.apply_input_outcome(window, outcome);
-        self.start_pending_file_drag(window);
+        self.start_pending_file_drag(event_loop, window);
     }
 
-    fn start_pending_file_drag(&mut self, window: &Window) {
-        #[cfg(target_os = "windows")]
-        let _ = window;
+    fn start_pending_file_drag(&mut self, event_loop: &dyn ActiveEventLoop, window: &dyn Window) {
         let Some(drag) = self
             .host
             .as_mut()
@@ -4435,23 +4406,24 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         else {
             return;
         };
-        #[cfg(target_os = "linux")]
+        let paths = drag.paths;
+        let data = DataTransferSendBuilder::new(paths)
+            .with_type(TypeHint::UriList, |paths, _| {
+                SendData::from_file_paths(paths)
+            })
+            .build();
+        if let Err(error) =
+            event_loop.start_drag(window.id(), data, &[DndAction::Move, DndAction::Copy], None)
         {
-            use winit::platform::wayland::WindowExtWayland;
-            let payload = file_uri_list(&drag.paths);
-            if let Err(error) = window.start_file_drag(payload) {
-                tracing::warn!(%error, "could not begin native Wayland file drag");
-            }
+            tracing::warn!(%error, "could not begin native file drag");
         }
-        #[cfg(target_os = "windows")]
-        if let Err(error) = start_windows_file_drag(&drag.paths) {
-            tracing::warn!(%error, "could not begin native Windows file drag");
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        let _ = (drag, window);
     }
 
-    fn flush_pending_continuous_input(&mut self, event_loop: &ActiveEventLoop, window: &Window) {
+    fn flush_pending_continuous_input(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window: &dyn Window,
+    ) {
         if self.pending_continuous_input.is_empty() {
             return;
         }
@@ -4475,7 +4447,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             match self.adapter.normalized_input(
                 self.host.as_mut().unwrap(),
                 &sample.envelope.input,
-                HostServices { window },
+                HostServices {
+                    window,
+                    transients: &self.transients,
+                },
             ) {
                 Ok(outcome) if outcome.disposition != crate::EventDisposition::Unhandled => {
                     changed |= outcome.changed;
@@ -4494,7 +4469,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             }
         }
         if exit {
-            event_loop.exit();
+            self.request_exit(event_loop);
         }
         if events.is_empty() && !changed {
             if reset_pending && reset_reconciled {
@@ -4510,14 +4485,18 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 ..Default::default()
             });
             self.apply_input_outcome(window, outcome);
-            self.start_pending_file_drag(window);
+            self.start_pending_file_drag(event_loop, window);
         }
         if reset_pending && reset_reconciled {
             self.recover_native_pointer_focus(event_loop, window);
         }
     }
 
-    fn recover_native_pointer_focus(&mut self, event_loop: &ActiveEventLoop, window: &Window) {
+    fn recover_native_pointer_focus(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window: &dyn Window,
+    ) {
         let generation = NEXT_NATIVE_HOST_GENERATION
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .max(1);
@@ -4533,8 +4512,14 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             order: twinkle_input::EventOrder(order),
         });
         let adapted = self.host.as_mut().map(|host| {
-            self.adapter
-                .normalized_input(host, &sample.envelope.input, HostServices { window })
+            self.adapter.normalized_input(
+                host,
+                &sample.envelope.input,
+                HostServices {
+                    window,
+                    transients: &self.transients,
+                },
+            )
         });
         match adapted {
             Some(Ok(outcome)) if outcome.disposition != crate::EventDisposition::Unhandled => {
@@ -4542,7 +4527,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             }
             Some(Ok(outcome)) => {
                 if outcome.exit {
-                    event_loop.exit();
+                    self.request_exit(event_loop);
                 }
                 let Some(host) = &mut self.host else { return };
                 let host_outcome = host.step(HostBatch {
@@ -4558,12 +4543,12 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         }
     }
 
-    fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl Into<Box<dyn Error>>) {
+    fn fail(&mut self, event_loop: &dyn ActiveEventLoop, error: impl Into<Box<dyn Error>>) {
         self.error = Some(error.into());
         event_loop.exit();
     }
 
-    fn apply_adapter_outcome(&mut self, event_loop: &ActiveEventLoop, outcome: AdapterOutcome) {
+    fn apply_adapter_outcome(&mut self, event_loop: &dyn ActiveEventLoop, outcome: AdapterOutcome) {
         if outcome.changed
             && let Some(host) = &mut self.host
         {
@@ -4571,7 +4556,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             self.scheduler.invalidate();
         }
         if outcome.exit {
-            event_loop.exit();
+            self.request_exit(event_loop);
         }
     }
 
@@ -4579,7 +4564,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         let (Some(host), Some(window)) = (self.host.as_ref(), self.window.as_ref()) else {
             return;
         };
-        let size = window.inner_size();
+        let size = window.surface_size();
         self.raster_revision = self.raster_revision.wrapping_add(1).max(1);
         self.raster.submit(RasterRequest {
             surface: self.native_host_generation,
@@ -4599,7 +4584,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         let (Some(surface), Some(window)) = (self.surface.as_mut(), self.window.as_ref()) else {
             return Ok(());
         };
-        let size = window.inner_size();
+        let size = window.surface_size();
         if self.scheduler.dirty
             || result.revision != self.raster_revision
             || result.width != size.width.max(1)
@@ -4625,10 +4610,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         Ok(())
     }
 
-    fn tick(&mut self, event_loop: &ActiveEventLoop) {
+    fn tick(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
         let now = Instant::now();
         let Some(window) = self.window.clone() else {
-            return;
+            return None;
         };
         if now >= self.next_caret_blink {
             self.next_caret_blink = now + Duration::from_millis(500);
@@ -4664,15 +4649,20 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 .next_deadline(now)
                 .is_some_and(|deadline| now >= deadline);
         if adapter_due {
-            let outcome = self
-                .host
-                .as_mut()
-                .map(|host| self.adapter.poll(host, HostServices { window: &window }));
+            let outcome = self.host.as_mut().map(|host| {
+                self.adapter.poll(
+                    host,
+                    HostServices {
+                        window: window.as_ref(),
+                        transients: &self.transients,
+                    },
+                )
+            });
             match outcome {
                 Some(Ok(outcome)) => self.apply_adapter_outcome(event_loop, outcome),
                 Some(Err(error)) => {
                     self.fail(event_loop, error);
-                    return;
+                    return None;
                 }
                 None => {}
             }
@@ -4690,7 +4680,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             .is_some()
             {
                 let Some(controller) = &mut self.controller else {
-                    return;
+                    return None;
                 };
                 let actions: Vec<_> = controller
                     .poll(now, focused)
@@ -4750,8 +4740,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                     && outcome.text_input_active
                     && host.controller_targets_text_input()
                 {
-                    self.adapter
-                        .request_text_entry(HostServices { window: &window });
+                    self.adapter.request_text_entry(HostServices {
+                        window: window.as_ref(),
+                        transients: &self.transients,
+                    });
                 }
                 if outcome.changed {
                     self.scheduler.invalidate();
@@ -4764,22 +4756,30 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                     }
                 }
                 for action in outcome.global_actions {
-                    match self
-                        .adapter
-                        .global_action(host, action, HostServices { window: &window })
-                    {
+                    match self.adapter.global_action(
+                        host,
+                        action,
+                        HostServices {
+                            window: window.as_ref(),
+                            transients: &self.transients,
+                        },
+                    ) {
                         Ok(outcome) => {
                             if outcome.changed {
                                 host.rebuild();
                                 self.scheduler.invalidate();
                             }
                             if outcome.exit {
-                                event_loop.exit();
+                                if self.primary {
+                                    event_loop.exit();
+                                } else {
+                                    self.close_requested = true;
+                                }
                             }
                         }
                         Err(error) => {
                             self.fail(event_loop, error);
-                            return;
+                            return None;
                         }
                     }
                 }
@@ -4801,7 +4801,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             ],
         )
         .map(|wait| now + wait);
-        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        deadline
     }
 
     fn stop(&mut self) {
@@ -4810,7 +4810,13 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         }
         self.stopped = true;
         if let (Some(host), Some(window)) = (self.host.as_mut(), self.window.as_ref()) {
-            if let Err(error) = self.adapter.stopped(host, HostServices { window }) {
+            if let Err(error) = self.adapter.stopped(
+                host,
+                HostServices {
+                    window: window.as_ref(),
+                    transients: &self.transients,
+                },
+            ) {
                 self.error.get_or_insert(error);
             }
             host.shutdown();
@@ -4821,8 +4827,198 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
     }
 }
 
+trait RuntimeWindow {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop);
+    fn window_id(&self) -> Option<WindowId>;
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    );
+    fn tick(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant>;
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop);
+    fn close_requested(&self) -> bool;
+    fn stop(&mut self);
+    fn take_error(&mut self) -> Option<Box<dyn Error>>;
+}
+
+impl<A: Application, H: HostAdapter<A>> RuntimeWindow for ApplicationRuntime<A, H> {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        ApplicationHandler::can_create_surfaces(self, event_loop);
+    }
+
+    fn window_id(&self) -> Option<WindowId> {
+        self.window.as_ref().map(|window| window.id())
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        ApplicationHandler::window_event(self, event_loop, window_id, event);
+    }
+
+    fn tick(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
+        ApplicationRuntime::tick(self, event_loop)
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        ApplicationHandler::proxy_wake_up(self, event_loop);
+    }
+
+    fn close_requested(&self) -> bool {
+        self.close_requested
+    }
+
+    fn stop(&mut self) {
+        ApplicationRuntime::stop(self);
+    }
+
+    fn take_error(&mut self) -> Option<Box<dyn Error>> {
+        self.error.take()
+    }
+}
+
+struct MultiWindowRuntime<A: Application, H: HostAdapter<A>> {
+    primary: ApplicationRuntime<A, H>,
+    children: HashMap<WindowId, Box<dyn RuntimeWindow>>,
+    display: OwnedDisplayHandle,
+    proxy: winit::event_loop::EventLoopProxy,
+    transients: TransientWindowSpawner,
+    error: Option<Box<dyn Error>>,
+}
+
+impl<A: Application, H: HostAdapter<A>> MultiWindowRuntime<A, H> {
+    fn new(
+        primary: ApplicationRuntime<A, H>,
+        display: OwnedDisplayHandle,
+        proxy: winit::event_loop::EventLoopProxy,
+        transients: TransientWindowSpawner,
+    ) -> Self {
+        Self {
+            primary,
+            children: HashMap::new(),
+            display,
+            proxy,
+            transients,
+            error: None,
+        }
+    }
+
+    fn realize_transients(&mut self, event_loop: &dyn ActiveEventLoop) {
+        loop {
+            let requests = std::mem::take(&mut *self.transients.pending.borrow_mut());
+            if requests.is_empty() {
+                break;
+            }
+            for request in requests {
+                let proxy = self.proxy.clone();
+                let raster = match AsyncRasterWorker::new("twinkle-raster", move || {
+                    let _ = proxy.wake_up();
+                }) {
+                    Ok(raster) => raster,
+                    Err(error) => {
+                        self.error = Some(error.into());
+                        event_loop.exit();
+                        return;
+                    }
+                };
+                let mut child = request(self.display.clone(), raster, self.transients.clone());
+                child.can_create_surfaces(event_loop);
+                let Some(window_id) = child.window_id() else {
+                    if let Some(error) = child.take_error() {
+                        self.error = Some(error);
+                    }
+                    event_loop.exit();
+                    return;
+                };
+                self.children.insert(window_id, child);
+            }
+        }
+    }
+
+    fn reap_closed(&mut self) {
+        let ids: Vec<_> = self
+            .children
+            .iter()
+            .filter_map(|(id, child)| child.close_requested().then_some(*id))
+            .collect();
+        for id in ids {
+            if let Some(mut child) = self.children.remove(&id) {
+                child.stop();
+            }
+        }
+    }
+
+    fn stop_all(&mut self) {
+        self.primary.stop();
+        for child in self.children.values_mut() {
+            child.stop();
+        }
+        self.children.clear();
+    }
+
+    fn take_error(&mut self) -> Option<Box<dyn Error>> {
+        self.error
+            .take()
+            .or_else(|| self.primary.error.take())
+            .or_else(|| {
+                self.children
+                    .values_mut()
+                    .find_map(|child| child.take_error())
+            })
+    }
+}
+
+impl<A: Application, H: HostAdapter<A>> ApplicationHandler for MultiWindowRuntime<A, H> {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        ApplicationHandler::can_create_surfaces(&mut self.primary, event_loop);
+        self.realize_transients(event_loop);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        if self.primary.window_id() == Some(window_id) {
+            ApplicationHandler::window_event(&mut self.primary, event_loop, window_id, event);
+        } else if let Some(child) = self.children.get_mut(&window_id) {
+            child.window_event(event_loop, window_id, event);
+        }
+        self.reap_closed();
+        self.realize_transients(event_loop);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let mut deadline = self.primary.tick(event_loop);
+        for child in self.children.values_mut() {
+            if let Some(child_deadline) = child.tick(event_loop) {
+                deadline =
+                    Some(deadline.map_or(child_deadline, |current| current.min(child_deadline)));
+            }
+        }
+        self.reap_closed();
+        self.realize_transients(event_loop);
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        ApplicationHandler::proxy_wake_up(&mut self.primary, event_loop);
+        for child in self.children.values_mut() {
+            child.proxy_wake_up(event_loop);
+        }
+        self.reap_closed();
+        self.realize_transients(event_loop);
+    }
+}
+
 impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntime<A, H> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
@@ -4833,11 +5029,11 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         let (width, height) = application.initial_size();
         let attributes = WindowAttributes::default()
             .with_title(application.title())
-            .with_inner_size(LogicalSize::new(width, height))
+            .with_surface_size(LogicalSize::new(width, height))
             .with_resizable(true);
         let attributes = self.adapter.window_attributes(application, attributes);
         let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
+            Ok(window) => Arc::<dyn Window>::from(window),
             Err(error) => {
                 self.fail(event_loop, error);
                 return;
@@ -4846,23 +5042,28 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         self.scale = window.scale_factor() as f32;
         self.transform_generation = self.transform_generation.wrapping_add(1).max(1);
         self.input.set_scale_factor(window.scale_factor());
-        let logical = window.inner_size().to_logical::<u32>(window.scale_factor());
+        let logical = window
+            .surface_size()
+            .to_logical::<u32>(window.scale_factor());
         let mut host = UiHost::new(
             self.application.take().expect("application available"),
             logical.width,
             logical.height,
         );
         host.set_scale_factor(self.scale);
-        match self
-            .adapter
-            .started(&mut host, HostServices { window: &window })
-        {
+        match self.adapter.started(
+            &mut host,
+            HostServices {
+                window: window.as_ref(),
+                transients: &self.transients,
+            },
+        ) {
             Ok(outcome) => {
                 if outcome.changed {
                     host.rebuild();
                 }
                 if outcome.exit {
-                    event_loop.exit();
+                    self.request_exit(event_loop);
                 }
             }
             Err(error) => {
@@ -4895,7 +5096,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
@@ -4906,8 +5107,14 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
             return;
         }
         let adapted = self.host.as_mut().map(|host| {
-            self.adapter
-                .event(host, &event, HostServices { window: &window })
+            self.adapter.event(
+                host,
+                &event,
+                HostServices {
+                    window: window.as_ref(),
+                    transients: &self.transients,
+                },
+            )
         });
         let consume = match adapted {
             Some(Ok(outcome)) => {
@@ -4926,17 +5133,17 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         }
         match &event {
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                self.request_exit(event_loop);
                 return;
             }
             WindowEvent::RedrawRequested => {
-                self.flush_pending_continuous_input(event_loop, &window);
+                self.flush_pending_continuous_input(event_loop, window.as_ref());
                 if self.scheduler.begin_present() {
                     self.queue_raster();
                 }
                 return;
             }
-            WindowEvent::Resized(size) => {
+            WindowEvent::SurfaceResized(size) => {
                 self.transform_generation = self.transform_generation.wrapping_add(1).max(1);
                 let logical = size.to_logical::<u32>(window.scale_factor());
                 if let Some(host) = &mut self.host {
@@ -4948,7 +5155,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 self.scale = *scale_factor as f32;
                 self.transform_generation = self.transform_generation.wrapping_add(1).max(1);
                 self.input.set_scale_factor(*scale_factor);
-                let logical = window.inner_size().to_logical::<u32>(*scale_factor);
+                let logical = window.surface_size().to_logical::<u32>(*scale_factor);
                 if let Some(host) = &mut self.host {
                     host.resize(logical.width, logical.height);
                     host.set_scale_factor(self.scale);
@@ -4962,15 +5169,42 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 return;
             }
             WindowEvent::Occluded(false) => self.scheduler.invalidate(),
-            WindowEvent::HoveredFile(path) => {
-                if self.host.as_mut().is_some_and(|host| {
-                    host.application_mut()
-                        .file_drag_event(FileDragEvent::Hovered(path.clone()))
-                }) {
+            WindowEvent::DragEntered { id, .. } => {
+                if let Err(error) =
+                    event_loop.set_valid_dnd_actions(*id, &[DndAction::Move, DndAction::Copy])
+                {
+                    tracing::warn!(%error, "could not accept native file drag");
+                }
+                match event_loop.fetch_data_transfer(*id, &TypeHint::UriList) {
+                    Ok(_) => {
+                        self.requested_file_drags.insert(*id);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not request native file drag paths")
+                    }
+                }
+            }
+            WindowEvent::DragPosition {
+                proposed_action, ..
+            } => {
+                let action = match proposed_action {
+                    Some(DndAction::Move) => Some(FileDragAction::Move),
+                    Some(DndAction::Copy) => Some(FileDragAction::Copy),
+                    _ => None,
+                };
+                if let Some(action) = action
+                    && self.host.as_mut().is_some_and(|host| {
+                        host.application_mut()
+                            .file_drag_event(FileDragEvent::ActionChanged(action))
+                    })
+                {
                     self.scheduler.invalidate();
                 }
             }
-            WindowEvent::HoveredFileCancelled => {
+            WindowEvent::DragLeft { id } => {
+                self.file_drag_paths.remove(id);
+                self.requested_file_drags.remove(id);
+                self.dropped_file_drags.remove(id);
                 if self.host.as_mut().is_some_and(|host| {
                     host.application_mut()
                         .file_drag_event(FileDragEvent::HoverCancelled)
@@ -4978,25 +5212,72 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                     self.scheduler.invalidate();
                 }
             }
-            WindowEvent::FileDropActionChanged(action) => {
-                let action = match action {
-                    winit::event::FileDropAction::Copy => FileDragAction::Copy,
-                    winit::event::FileDropAction::Move => FileDragAction::Move,
+            WindowEvent::DragDropped {
+                id,
+                proposed_action,
+            } => {
+                self.dropped_file_drags.insert(*id);
+                let action = match proposed_action {
+                    Some(DndAction::Move) => Some(FileDragAction::Move),
+                    Some(DndAction::Copy) => Some(FileDragAction::Copy),
+                    _ => None,
                 };
-                if self.host.as_mut().is_some_and(|host| {
-                    host.application_mut()
-                        .file_drag_event(FileDragEvent::ActionChanged(action))
-                }) {
+                let mut handled = action.is_some_and(|action| {
+                    self.host.as_mut().is_some_and(|host| {
+                        host.application_mut()
+                            .file_drag_event(FileDragEvent::ActionChanged(action))
+                    })
+                });
+                if let Some(paths) = self.file_drag_paths.remove(id) {
+                    self.dropped_file_drags.remove(id);
+                    for path in paths {
+                        handled |= self.host.as_mut().is_some_and(|host| {
+                            host.application_mut()
+                                .file_drag_event(FileDragEvent::Dropped(path))
+                        });
+                    }
+                } else if !self.requested_file_drags.contains(id) {
+                    match event_loop.fetch_data_transfer(*id, &TypeHint::UriList) {
+                        Ok(_) => {
+                            self.requested_file_drags.insert(*id);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not request dropped native file paths")
+                        }
+                    }
+                }
+                if handled {
                     self.scheduler.invalidate();
                 }
             }
-            WindowEvent::DroppedFile(path) => {
-                let handled = self.host.as_mut().is_some_and(|host| {
-                    host.application_mut()
-                        .file_drag_event(FileDragEvent::Dropped(path.clone()))
-                });
-                if handled {
-                    self.scheduler.invalidate();
+            WindowEvent::DataTransferReceived { id, value, .. } => {
+                self.requested_file_drags.remove(id);
+                match value.try_as_file_paths() {
+                    Ok(paths) => {
+                        let dropped = self.dropped_file_drags.remove(id);
+                        if dropped {
+                            for path in paths {
+                                if self.host.as_mut().is_some_and(|host| {
+                                    host.application_mut()
+                                        .file_drag_event(FileDragEvent::Dropped(path))
+                                }) {
+                                    self.scheduler.invalidate();
+                                }
+                            }
+                        } else {
+                            self.file_drag_paths.insert(*id, paths.clone());
+                            for path in paths {
+                                if self.host.as_mut().is_some_and(|host| {
+                                    host.application_mut()
+                                        .file_drag_event(FileDragEvent::Hovered(path))
+                                }) {
+                                    self.scheduler.invalidate();
+                                }
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => tracing::warn!(%error, "could not read native file drag paths"),
                 }
             }
             _ => {}
@@ -5024,7 +5305,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 self.scheduler.invalidate();
                 continue;
             }
-            self.flush_pending_continuous_input(event_loop, &window);
+            self.flush_pending_continuous_input(event_loop, window.as_ref());
             let image_pasted = if is_clipboard_paste(&normalized) {
                 self.clipboard
                     .as_mut()
@@ -5048,23 +5329,23 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 .clipboard
                 .as_mut()
                 .and_then(|clipboard| clipboard.get_text().ok());
-            self.dispatch_normalized_input(event_loop, &window, vec![normalized], clipboard_text);
+            self.dispatch_normalized_input(
+                event_loop,
+                window.as_ref(),
+                vec![normalized],
+                clipboard_text,
+            );
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.tick(event_loop);
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let deadline = self.tick(event_loop);
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Err(error) = self.present_completed_raster() {
             self.fail(event_loop, error);
         }
-    }
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(source) = self.session_controller.as_mut() {
-            source.relinquish();
-        }
-        self.stop();
     }
 }
 
@@ -10795,21 +11076,6 @@ mod tests {
         assert_eq!(
             host.inspect().available_semantic_actions,
             [crate::ActionKind::Activate]
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn outbound_file_drag_uses_encoded_crlf_uri_list() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let paths = [
-            std::path::PathBuf::from("/tmp/a file.txt"),
-            std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/nonutf8-\xff".to_vec())),
-        ];
-        assert_eq!(
-            super::file_uri_list(&paths),
-            b"file:///tmp/a%20file.txt\r\nfile:///tmp/nonutf8-%FF\r\n"
         );
     }
 }

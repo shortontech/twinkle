@@ -1,11 +1,9 @@
 # Native window dependency
 
-Twinkle currently requires the vendored winit 0.30.13 fork, whose upstream repository is `https://github.com/rust-windowing/winit`. Its Apache-2.0 license is retained in `vendor/winit/LICENSE`. The original manifest and upstream metadata are retained alongside the source.
+Twinkle uses the crates.io release of winit 0.31. Its upstream repository is `https://github.com/rust-windowing/winit`, and winit is licensed under Apache-2.0. The dependency is resolved normally by Cargo; Twinkle carries no vendored window-system source or downstream patch.
 
-The workspace declares this fork as a direct path dependency and excludes `vendor/winit` from workspace membership, so workspace tests/features do not implicitly include the fork’s development targets. A consumer cannot rely on a `[patch.crates-io]` declaration in Twinkle's workspace: Cargo applies patches from the consuming workspace root. Native file dragging uses the fork's `WindowExtWayland::start_file_drag`, `WindowEvent::FileDropActionChanged`, and `FileDropAction`; upstream 0.30.13 lacks these APIs.
+winit 0.31 provides the cross-platform data-transfer API used by Twinkle for native file dragging. Twinkle publishes URI-list payloads through `ActiveEventLoop::start_drag`, accepts incoming URI-list transfers, reports the negotiated Copy or Move action to the application, and converts received URIs into file paths. Wayland seat, serial, surface, and data-device ownership remain inside winit.
 
-Relevant Nickel history includes `85ec42bc` (start native Wayland file drags), `da53b778` (receive negotiated native file drops), `e4c3fb77` (native input work), and `3afb751a` (Windows shell input). Extraction must preserve the complete relevant vendor history, including upstream source and licenses, rather than importing only those four commits or silently substituting crates.io winit.
+Older Nickel code patched winit 0.30.13 for this behavior and for multiple Windows event loops. The data-transfer patches became unnecessary with winit 0.31. Nickel removed the multiple-loop requirement by launching file windows in child processes and rendering context menus in their owning window.
 
-Twinkle's standalone workspace must carry this fork. Downstream Nickel must resolve its direct winit dependency and Twinkle's dependency to the same Cargo source/revision so window/event types retain one identity. This fork does not require importing Smithay or PipeWire into Twinkle; those remain Nickel compositor dependencies.
-
-The renamed-dependency fixture is a separate Cargo workspace, so its compilation verifies that the engine's window dependency resolves without Nickel's root patch configuration. It also verifies the `ui!` and `id!` macros when the Cargo dependency is named `lights`.
+The renamed-dependency fixture is a separate Cargo workspace, so its compilation verifies that the engine's window dependency resolves without root patch configuration. It also verifies the `ui!` and `id!` macros when the Cargo dependency is named `lights`.

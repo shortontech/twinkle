@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use winit::{
     event::{
-        ElementState, Ime, KeyEvent as WinitKeyEvent, Modifiers, MouseButton, MouseScrollDelta,
-        TouchPhase, WindowEvent,
+        ButtonSource, ElementState, Ime, KeyEvent as WinitKeyEvent, Modifiers, MouseButton,
+        MouseScrollDelta, PointerKind, PointerSource, WindowEvent,
     },
     keyboard::{
         Key as WinitKey, KeyCode as WinitKeyCode, KeyLocation as WinitLocation, ModifiersKeyState,
@@ -30,6 +30,7 @@ pub struct Adapter {
     modifiers: ModifierState,
     pointer_positions: BTreeMap<DeviceId, Point>,
     pointer_inside: HashSet<DeviceId>,
+    touch_contacts: HashSet<(DeviceId, u64)>,
     focused: bool,
     ime_active: bool,
     scale_factor: f64,
@@ -42,6 +43,7 @@ impl Default for Adapter {
             modifiers: ModifierState::default(),
             pointer_positions: BTreeMap::new(),
             pointer_inside: HashSet::new(),
+            touch_contacts: HashSet::new(),
             focused: false,
             ime_active: false,
             scale_factor: 1.0,
@@ -147,8 +149,18 @@ impl Adapter {
                     selection: None,
                 })]
             }
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::PointerMoved {
+                position, source, ..
+            } => {
                 let position = logical_point(position.x, position.y, scale_factor);
+                if let PointerSource::Touch { finger_id, .. } = source {
+                    return vec![InputEvent::Touch(TouchEvent::Moved {
+                        device,
+                        order,
+                        contact: TouchId(finger_id.into_raw() as u64),
+                        position,
+                    })];
+                }
                 let delta = self
                     .pointer_positions
                     .insert(device, position)
@@ -163,7 +175,13 @@ impl Adapter {
                     delta,
                 })]
             }
-            WindowEvent::CursorEntered { .. } if self.pointer_inside.insert(device) => {
+            WindowEvent::PointerEntered {
+                kind: PointerKind::Touch(_),
+                ..
+            } => Vec::new(),
+            WindowEvent::PointerEntered { position, .. } if self.pointer_inside.insert(device) => {
+                self.pointer_positions
+                    .insert(device, logical_point(position.x, position.y, scale_factor));
                 vec![InputEvent::Pointer(PointerEvent::Enter {
                     device,
                     order,
@@ -174,16 +192,69 @@ impl Adapter {
                         .unwrap_or(Point { x: 0.0, y: 0.0 }),
                 })]
             }
-            WindowEvent::CursorLeft { .. } if self.pointer_inside.remove(&device) => {
+            WindowEvent::PointerLeft {
+                kind: PointerKind::Touch(finger_id),
+                ..
+            } => {
+                let contact = finger_id.into_raw() as u64;
+                if self.touch_contacts.remove(&(device, contact)) {
+                    vec![InputEvent::Touch(TouchEvent::Cancelled {
+                        device,
+                        order,
+                        contact: TouchId(contact),
+                    })]
+                } else {
+                    Vec::new()
+                }
+            }
+            WindowEvent::PointerLeft { .. } if self.pointer_inside.remove(&device) => {
                 vec![InputEvent::Pointer(PointerEvent::Leave { device, order })]
             }
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::PointerButton {
+                state,
+                button: ButtonSource::Touch { finger_id, .. },
+                position,
+                ..
+            } => {
+                let position = logical_point(position.x, position.y, scale_factor);
+                let contact = TouchId(finger_id.into_raw() as u64);
+                let event = match state {
+                    ElementState::Pressed => {
+                        self.touch_contacts.insert((device, contact.0));
+                        TouchEvent::Started {
+                            device,
+                            order,
+                            contact,
+                            position,
+                        }
+                    }
+                    ElementState::Released => {
+                        self.touch_contacts.remove(&(device, contact.0));
+                        TouchEvent::Ended {
+                            device,
+                            order,
+                            contact,
+                            position,
+                        }
+                    }
+                };
+                vec![InputEvent::Touch(event)]
+            }
+            WindowEvent::PointerButton {
+                state,
+                button,
+                position,
+                ..
+            } => {
+                let Some(button) = button.clone().mouse_button() else {
+                    return Vec::new();
+                };
                 vec![pointer_button_event(
                     device,
                     order,
-                    *button,
+                    button,
                     *state,
-                    self.pointer_positions.get(&device).copied(),
+                    Some(logical_point(position.x, position.y, scale_factor)),
                 )]
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -194,36 +265,6 @@ impl Adapter {
                     scale_factor,
                     self.pointer_positions.get(&device).copied(),
                 )]
-            }
-            WindowEvent::Touch(touch) => {
-                let position = logical_point(touch.location.x, touch.location.y, scale_factor);
-                let contact = TouchId(touch.id);
-                let event = match touch.phase {
-                    TouchPhase::Started => TouchEvent::Started {
-                        device,
-                        order,
-                        contact,
-                        position,
-                    },
-                    TouchPhase::Moved => TouchEvent::Moved {
-                        device,
-                        order,
-                        contact,
-                        position,
-                    },
-                    TouchPhase::Ended => TouchEvent::Ended {
-                        device,
-                        order,
-                        contact,
-                        position,
-                    },
-                    TouchPhase::Cancelled => TouchEvent::Cancelled {
-                        device,
-                        order,
-                        contact,
-                    },
-                };
-                vec![InputEvent::Touch(event)]
             }
             WindowEvent::Focused(true) if !self.focused => {
                 self.focused = true;
@@ -344,7 +385,7 @@ fn pointer_button(button: MouseButton) -> PointerButton {
         MouseButton::Middle => PointerButton::Middle,
         MouseButton::Back => PointerButton::Back,
         MouseButton::Forward => PointerButton::Forward,
-        MouseButton::Other(value) => PointerButton::Native(value),
+        other => PointerButton::Native(other as u8 as u16),
     }
 }
 
@@ -389,6 +430,7 @@ fn wheel_event(
                 None,
             )
         }
+        _ => (Vector { x: 0.0, y: 0.0 }, None),
     };
     InputEvent::Pointer(PointerEvent::Axis {
         device,
@@ -436,7 +478,7 @@ fn modifier_state(modifiers: &Modifiers) -> ModifierState {
         (native.shift_key(), AggregateModifier::Shift),
         (native.control_key(), AggregateModifier::Control),
         (native.alt_key(), AggregateModifier::Alt),
-        (native.super_key(), AggregateModifier::Super),
+        (native.meta_key(), AggregateModifier::Super),
     ]
     .into_iter()
     .filter_map(|(pressed, aggregate)| {
@@ -496,8 +538,8 @@ pub fn physical_key(key: WinitPhysicalKey) -> PhysicalKey {
         WinitKeyCode::ControlRight => KeyCode::ControlRight,
         WinitKeyCode::AltLeft => KeyCode::AltLeft,
         WinitKeyCode::AltRight => KeyCode::AltRight,
-        WinitKeyCode::SuperLeft => KeyCode::SuperLeft,
-        WinitKeyCode::SuperRight => KeyCode::SuperRight,
+        WinitKeyCode::MetaLeft => KeyCode::SuperLeft,
+        WinitKeyCode::MetaRight => KeyCode::SuperRight,
         WinitKeyCode::PrintScreen => KeyCode::PrintScreen,
         WinitKeyCode::ContextMenu => KeyCode::ContextMenu,
         // Preserve portable command/navigation identities for both native desktop
@@ -590,7 +632,6 @@ fn named_key(key: WinitNamedKey) -> Option<NamedKey> {
         WinitNamedKey::PageDown => NamedKey::PageDown,
         WinitNamedKey::PageUp => NamedKey::PageUp,
         WinitNamedKey::Shift => NamedKey::Shift,
-        WinitNamedKey::Space => NamedKey::Space,
         WinitNamedKey::Tab => NamedKey::Tab,
         WinitNamedKey::ArrowDown => NamedKey::ArrowDown,
         WinitNamedKey::ArrowLeft => NamedKey::ArrowLeft,
@@ -620,6 +661,7 @@ fn native_physical(key: NativeKeyCode) -> PhysicalKey {
         NativeKeyCode::MacOS(code) => ("macos-scancode", code as u64),
         NativeKeyCode::Windows(code) => ("windows-scancode", code as u64),
         NativeKeyCode::Xkb(code) => ("xkb-keycode", code as u64),
+        _ => ("winit-native-keycode", 0),
     };
     PhysicalKey::Native(NativeKey {
         namespace: namespace.into(),
@@ -635,6 +677,7 @@ fn native_logical(key: &WinitNativeKey) -> LogicalKey {
         WinitNativeKey::Windows(code) => ("windows-virtual-key", NativeCode::Numeric(*code as u64)),
         WinitNativeKey::Xkb(code) => ("xkb-keysym", NativeCode::Numeric(*code as u64)),
         WinitNativeKey::Web(code) => ("web-key", NativeCode::Text(code.to_string())),
+        _ => ("winit-native-key", NativeCode::Numeric(0)),
     };
     LogicalKey::Native(NativeKey {
         namespace: namespace.into(),
@@ -768,7 +811,7 @@ mod tests {
 
     #[test]
     fn opaque_native_device_identity_is_stable_for_its_lifetime() {
-        let native = winit::event::DeviceId::dummy();
+        let native = winit::event::DeviceId::from_raw(1);
         let mut registry = DeviceRegistry::default();
         let first = registry.get_or_insert(native);
 
@@ -784,11 +827,13 @@ mod tests {
         let mut adapter = Adapter::default();
         let first_device = DeviceId(1);
         let second_device = DeviceId(2);
-        let move_to = |device_id, x, y| WindowEvent::CursorMoved {
-            device_id,
+        let move_to = |device_id, x, y| WindowEvent::PointerMoved {
+            device_id: Some(device_id),
             position: PhysicalPosition::new(x, y),
+            primary: true,
+            source: PointerSource::Mouse,
         };
-        let native = winit::event::DeviceId::dummy();
+        let native = winit::event::DeviceId::from_raw(1);
 
         let first = adapter.normalize_at_scale(first_device, 2.0, &move_to(native, 40.0, 60.0));
         let second = adapter.normalize_at_scale(second_device, 1.0, &move_to(native, 40.0, 60.0));
@@ -868,47 +913,76 @@ mod tests {
 
         let mut adapter = Adapter::default();
         let device = DeviceId(6);
-        let native = winit::event::DeviceId::dummy();
+        let native = winit::event::DeviceId::from_raw(1);
         adapter.normalize_at_scale(
             device,
             2.0,
-            &WindowEvent::CursorMoved {
-                device_id: native,
+            &WindowEvent::PointerMoved {
+                device_id: Some(native),
                 position: PhysicalPosition::new(24.0, 30.0),
+                primary: true,
+                source: PointerSource::Mouse,
             },
         );
-        let entered = adapter.normalize(device, &WindowEvent::CursorEntered { device_id: native });
+        let entered = adapter.normalize(
+            device,
+            &WindowEvent::PointerEntered {
+                device_id: Some(native),
+                position: PhysicalPosition::new(24.0, 30.0),
+                primary: true,
+                kind: PointerKind::Mouse,
+            },
+        );
         assert!(matches!(
             entered.as_slice(),
             [InputEvent::Pointer(PointerEvent::Enter {
-                position: Point { x: 12.0, y: 15.0 },
+                position: Point { x: 24.0, y: 30.0 },
                 ..
             })]
         ));
         assert!(
             adapter
-                .normalize(device, &WindowEvent::CursorEntered { device_id: native })
+                .normalize(
+                    device,
+                    &WindowEvent::PointerEntered {
+                        device_id: Some(native),
+                        position: PhysicalPosition::new(24.0, 30.0),
+                        primary: true,
+                        kind: PointerKind::Mouse,
+                    }
+                )
                 .is_empty()
         );
 
         let button = adapter.normalize(
             device,
-            &WindowEvent::MouseInput {
-                device_id: native,
+            &WindowEvent::PointerButton {
+                device_id: Some(native),
                 state: ElementState::Pressed,
-                button: MouseButton::Left,
+                position: PhysicalPosition::new(24.0, 30.0),
+                primary: true,
+                button: ButtonSource::Mouse(MouseButton::Left),
+                is_macos_activation_click: false,
             },
         );
         assert!(matches!(
             button.as_slice(),
             [InputEvent::Pointer(PointerEvent::Button {
-                position: Some(Point { x: 12.0, y: 15.0 }),
+                position: Some(Point { x: 24.0, y: 30.0 }),
                 ..
             })]
         ));
 
         assert_eq!(
-            adapter.normalize(device, &WindowEvent::CursorLeft { device_id: native }),
+            adapter.normalize(
+                device,
+                &WindowEvent::PointerLeft {
+                    device_id: Some(native),
+                    position: Some(PhysicalPosition::new(24.0, 30.0)),
+                    primary: true,
+                    kind: PointerKind::Mouse,
+                }
+            ),
             vec![InputEvent::Pointer(PointerEvent::Leave {
                 device,
                 order: EventOrder(5),
@@ -916,7 +990,15 @@ mod tests {
         );
         assert!(
             adapter
-                .normalize(device, &WindowEvent::CursorLeft { device_id: native })
+                .normalize(
+                    device,
+                    &WindowEvent::PointerLeft {
+                        device_id: Some(native),
+                        position: Some(PhysicalPosition::new(24.0, 30.0)),
+                        primary: true,
+                        kind: PointerKind::Mouse,
+                    }
+                )
                 .is_empty()
         );
     }
@@ -963,27 +1045,44 @@ mod tests {
 
     #[test]
     fn touch_contacts_keep_identity_through_end_and_cancellation() {
-        use winit::{dpi::PhysicalPosition, event::Touch};
+        use winit::{dpi::PhysicalPosition, event::FingerId};
 
         let mut adapter = Adapter::default();
         let device = DeviceId(8);
-        let native = winit::event::DeviceId::dummy();
-        let touch = |phase, id, x, y| {
-            WindowEvent::Touch(Touch {
-                device_id: native,
-                phase,
-                location: PhysicalPosition::new(x, y),
+        let source = |id| PointerSource::Touch {
+            finger_id: FingerId::from_raw(id),
+            force: None,
+        };
+        let button = |id, state, x, y| WindowEvent::PointerButton {
+            device_id: None,
+            state,
+            position: PhysicalPosition::new(x, y),
+            primary: id == 10,
+            button: ButtonSource::Touch {
+                finger_id: FingerId::from_raw(id),
                 force: None,
-                id,
-            })
+            },
+            is_macos_activation_click: false,
+        };
+        let moved = |id, x, y| WindowEvent::PointerMoved {
+            device_id: None,
+            position: PhysicalPosition::new(x, y),
+            primary: id == 10,
+            source: source(id),
+        };
+        let left = |id, x, y| WindowEvent::PointerLeft {
+            device_id: None,
+            position: Some(PhysicalPosition::new(x, y)),
+            primary: id == 10,
+            kind: PointerKind::Touch(FingerId::from_raw(id)),
         };
 
         let events = [
-            touch(TouchPhase::Started, 10, 20.0, 30.0),
-            touch(TouchPhase::Started, 11, 40.0, 50.0),
-            touch(TouchPhase::Moved, 10, 24.0, 34.0),
-            touch(TouchPhase::Ended, 10, 24.0, 34.0),
-            touch(TouchPhase::Cancelled, 11, 40.0, 50.0),
+            button(10, ElementState::Pressed, 20.0, 30.0),
+            button(11, ElementState::Pressed, 40.0, 50.0),
+            moved(10, 24.0, 34.0),
+            button(10, ElementState::Released, 24.0, 34.0),
+            left(11, 40.0, 50.0),
         ]
         .iter()
         .flat_map(|event| adapter.normalize_at_scale(device, 2.0, event))
@@ -1032,9 +1131,11 @@ mod tests {
         );
         adapter.normalize(
             device,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
+            &WindowEvent::PointerMoved {
+                device_id: Some(winit::event::DeviceId::from_raw(1)),
                 position: PhysicalPosition::new(20.0, 30.0),
+                primary: true,
+                source: PointerSource::Mouse,
             },
         );
         adapter.normalize(device, &WindowEvent::Focused(true));
@@ -1051,9 +1152,11 @@ mod tests {
         );
         adapter.normalize(
             device,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
+            &WindowEvent::PointerMoved {
+                device_id: Some(winit::event::DeviceId::from_raw(1)),
                 position: PhysicalPosition::new(40.0, 50.0),
+                primary: true,
+                source: PointerSource::Mouse,
             },
         );
         assert!(matches!(
