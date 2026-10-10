@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+exclude = ["vendor/winit"]
+members = [
+    "crates/twinkle",
+    "crates/twinkle-input",
+    "crates/twinkle-jsx-runtime",
+    "crates/twinkle-macros",
+    "crates/twinkle-presentation",
+    "crates/twinkle-protocol",
+    "crates/twinkle-render-assets",
+    "crates/twinkle-testkit",
+    "crates/twinkle-theme",
+    "crates/twinkle-workbench",
+]
+default-members = ["crates/twinkle", "crates/twinkle-workbench"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.96"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[workspace.dependencies]
+cosmic-text = "0.19.0"
+gilrs = "0.11.2"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+sha2 = "0.10.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "0.9.8"
+tracing = "0.1.44"
+softbuffer = "0.4.8"
+smallvec = "1.15.1"
+syn = { version = "2.0.106", features = ["full", "visit"] }
+unicode-segmentation = "1.12.0"
+proc-macro2 = { version = "1.0.101", features = ["span-locations"] }
+proptest = "1"
+winit = { path = "vendor/winit", version = "0.30.13" }
+windows = "0.62.2"
