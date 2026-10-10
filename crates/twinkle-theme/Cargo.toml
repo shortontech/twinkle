@@ -4,4 +4,7 @@ version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/twinkle-theme"
 description = "Portable appearance parameters, palettes and perceptual color math"

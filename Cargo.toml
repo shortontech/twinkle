@@ -18,6 +18,9 @@ default-members = ["crates/twinkle", "crates/twinkle-workbench"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.96"
+repository = "https://github.com/shortontech/twinkle"
+homepage = "https://github.com/shortontech/twinkle"
+documentation = "https://docs.rs/twinkle"
 
 [profile.dev]
 debug = "line-tables-only"

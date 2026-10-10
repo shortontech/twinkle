@@ -4,10 +4,13 @@ version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/twinkle-testkit"
 description = "Semantic fixture and scenario tooling for twinkle"
 
 [dependencies]
-twinkle-input = { path = "../twinkle-input" }
-twinkle = { path = "../twinkle" }
+twinkle-input = { version = "0.2.0", path = "../twinkle-input" }
+twinkle = { version = "0.2.0", path = "../twinkle" }
 serde.workspace = true
 serde_json.workspace = true
