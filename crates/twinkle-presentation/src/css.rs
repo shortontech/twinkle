@@ -900,98 +900,6 @@ impl<'i> RuleBodyItemParser<'i, ParsedDeclaration, String> for CssDeclarationPar
     }
 }
 
-fn palette_properties(palette: ThemePalette) -> HashMap<String, String> {
-    let mut properties = HashMap::new();
-    let blend = |base: u32, foreground: u32, foreground_percent: u32| -> u32 {
-        let channel = |shift: u32| {
-            let base = (base >> shift) & 0xff;
-            let foreground = (foreground >> shift) & 0xff;
-            (base * (100 - foreground_percent) + foreground * foreground_percent + 50) / 100
-        };
-        (channel(16) << 16) | (channel(8) << 8) | channel(0)
-    };
-    let light = palette.mode == twinkle_theme::ThemeMode::Light;
-    let raised = if light {
-        blend(palette.surface, 0x00ff_ffff, 35)
-    } else {
-        blend(palette.panel, palette.text, 10)
-    };
-    let control = if light {
-        blend(palette.surface, 0x00ff_ffff, 15)
-    } else {
-        blend(palette.panel, palette.text, 15)
-    };
-    for (name, color) in [
-        ("background", palette.background),
-        (
-            "background-raised",
-            if light {
-                blend(palette.background, 0x00ff_ffff, 18)
-            } else {
-                palette.background
-            },
-        ),
-        (
-            "panel-raised",
-            if light {
-                blend(palette.panel, 0x00ff_ffff, 12)
-            } else {
-                palette.panel
-            },
-        ),
-        ("panel", palette.panel),
-        ("surface", palette.surface),
-        (
-            "card",
-            if light {
-                twinkle_theme::shifted_surface_hue(blend(palette.background, 0x00ff_ffff, 18), 8.0)
-            } else {
-                palette.surface
-            },
-        ),
-        ("surface-hover", palette.surface_hover),
-        ("text", palette.text),
-        ("muted", palette.muted),
-        ("accent", palette.accent),
-        ("accent-soft", palette.accent_soft),
-        ("complement", palette.complement),
-        ("raised", raised),
-        ("control", control),
-        ("border", blend(palette.panel, palette.text, 30)),
-        ("soft-text", blend(palette.muted, palette.text, 40)),
-        ("selected", blend(control, palette.accent, 25)),
-        ("selected-border", blend(palette.accent, palette.text, 35)),
-        ("panel-soft", blend(palette.panel, palette.text, 4)),
-        ("border-soft", blend(palette.panel, palette.text, 12)),
-        ("divider-soft", blend(palette.panel, palette.text, 8)),
-        ("control-soft", blend(palette.panel, palette.text, 7)),
-        ("text-soft", blend(palette.panel, palette.text, 88)),
-        ("selection-soft", blend(palette.panel, palette.accent, 24)),
-        ("focus-soft", blend(palette.panel, palette.accent, 48)),
-        ("action-soft", blend(palette.panel, palette.accent, 72)),
-    ] {
-        properties.insert(
-            format!("--twinkle-{name}"),
-            format!("#{:06x}", color & 0x00ff_ffff),
-        );
-    }
-    for (name, value) in [
-        ("surface-raised", format!("#{:06x}", raised & 0x00ff_ffff)),
-        (
-            "text-muted",
-            format!("#{:06x}", palette.muted & 0x00ff_ffff),
-        ),
-        ("radius-control", "8px".into()),
-        ("radius-card", "12px".into()),
-        ("spacing-control", "8px".into()),
-        ("font-size", "14px".into()),
-        ("line-height", "20px".into()),
-    ] {
-        properties.insert(format!("--twinkle-{name}"), value);
-    }
-    properties
-}
-
 fn var_call(source: &str, offset: usize) -> Result<(usize, &str, Option<&str>), String> {
     let arguments_start = offset + 4;
     let mut depth = 1_u8;
@@ -1198,6 +1106,7 @@ pub struct StyleSheet {
     rules: Vec<Rule>,
     palette: Option<ThemePalette>,
     uses_palette: bool,
+    host_properties: HashMap<String, String>,
     reading_direction: ReadingDirection,
     resolved: RefCell<HashMap<u64, (StyleCacheKey, ControlStyle)>>,
     interaction_rules: [Vec<usize>; 3],
@@ -1212,6 +1121,25 @@ impl StyleSheet {
     }
 
     pub fn compile_with_palette(source: &str, palette: ThemePalette) -> Result<Self, String> {
+        Self::compile_with_context(source, palette, HashMap::new())
+    }
+
+    pub fn compile_with_host_properties(
+        source: &str,
+        properties: HashMap<String, String>,
+    ) -> Result<Self, String> {
+        Self::compile_with_context(
+            source,
+            ThemePalette::from_appearance(Appearance::default()),
+            properties,
+        )
+    }
+
+    fn compile_with_context(
+        source: &str,
+        palette: ThemePalette,
+        host_properties: HashMap<String, String>,
+    ) -> Result<Self, String> {
         if source.len() > MAX_CSS_SOURCE_BYTES {
             return Err("plugin stylesheet exceeds 256 KiB".into());
         }
@@ -1246,12 +1174,12 @@ impl StyleSheet {
                 }
             }
         }
-        let uses_palette =
-            source.contains("--twinkle-") || rules.iter().any(|rule| rule.color_schemes != 3);
+        let uses_palette = rules.iter().any(|rule| rule.color_schemes != 3);
         let sheet = Self {
             rules,
             palette: Some(palette),
             uses_palette,
+            host_properties,
             reading_direction: ReadingDirection::LeftToRight,
             resolved: RefCell::default(),
             interaction_rules,
@@ -1297,6 +1225,37 @@ impl StyleSheet {
         Ok(self.uses_palette)
     }
 
+    /// Replaces host-owned root custom properties without assigning them a
+    /// toolkit namespace or meaning.
+    pub fn set_host_properties(
+        &mut self,
+        properties: HashMap<String, String>,
+    ) -> Result<bool, String> {
+        if properties.len() > 128
+            || properties.iter().any(|(name, value)| {
+                !name.starts_with("--")
+                    || name.len() <= 2
+                    || name.len() > 128
+                    || value.is_empty()
+                    || value.len() > 4096
+                    || validate_var_syntax(value).is_err()
+            })
+        {
+            return Err("invalid host CSS custom properties".into());
+        }
+        if self.host_properties == properties {
+            return Ok(false);
+        }
+        let prior = std::mem::replace(&mut self.host_properties, properties);
+        if let Err(error) = self.validate() {
+            self.host_properties = prior;
+            return Err(error);
+        }
+        self.resolved.get_mut().clear();
+        *self.interactions.get_mut() = InteractionCache::default();
+        Ok(true)
+    }
+
     fn rule_active(&self, rule: &Rule) -> bool {
         let palette = self
             .palette
@@ -1310,10 +1269,7 @@ impl StyleSheet {
     }
 
     fn validate(&self) -> Result<(), String> {
-        let palette = self
-            .palette
-            .unwrap_or_else(|| ThemePalette::from_appearance(Appearance::default()));
-        let mut root_properties = palette_properties(palette);
+        let mut root_properties = HashMap::new();
         let mut declared = HashSet::new();
         for rule in self.rules.iter().filter(|rule| self.rule_active(rule)) {
             for parsed in &rule.declarations {
@@ -1325,6 +1281,7 @@ impl StyleSheet {
                 }
             }
         }
+        root_properties.extend(self.host_properties.clone());
         for rule in self.rules.iter().filter(|rule| self.rule_active(rule)) {
             if rule.selectors.iter().any(|selector| selector.root)
                 && rule
@@ -1402,10 +1359,7 @@ impl StyleSheet {
             id.map(str::to_owned),
             class_name.map(str::to_owned),
         ));
-        let mut properties = palette_properties(
-            self.palette
-                .unwrap_or_else(|| ThemePalette::from_appearance(Appearance::default())),
-        );
+        let mut properties = HashMap::new();
         for rule in self.rules.iter().filter(|rule| self.rule_active(rule)) {
             if rule.selectors.iter().any(|selector| selector.root) {
                 for declaration in &rule.declarations {
@@ -1415,6 +1369,7 @@ impl StyleSheet {
                 }
             }
         }
+        properties.extend(self.host_properties.clone());
         properties.extend(inherited.clone());
         for rule in self.rules.iter().filter(|rule| self.rule_active(rule)) {
             if rule
@@ -1851,37 +1806,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn palette_color_tokens_recompile_for_theme_changes() {
-        let dark = ThemePalette::from_appearance(Appearance::default());
-        let light = ThemePalette::from_appearance(Appearance {
-            mode: twinkle_theme::ThemeMode::Light,
-            ..Appearance::default()
-        });
-        let mut sheet = StyleSheet::compile_with_palette(
-            "window { background: var(--twinkle-panel); border: 1px solid var(--twinkle-muted); } text { color: var(--twinkle-text); }",
-            dark,
+    fn host_color_tokens_recompile_without_toolkit_semantics() {
+        let mut properties = HashMap::from([
+            ("--host-panel".into(), "#112233".into()),
+            ("--host-muted".into(), "#445566".into()),
+            ("--host-text".into(), "#778899".into()),
+        ]);
+        let mut sheet = StyleSheet::compile_with_host_properties(
+            "window { background: var(--host-panel); border: 1px solid var(--host-muted); } text { color: var(--host-text); }",
+            properties.clone(),
         )
         .unwrap();
         assert_eq!(
             sheet.resolve("window", None, None).background,
-            Some(0xff00_0000 | dark.panel)
+            Some(0xff11_2233)
         );
-        assert_eq!(
-            sheet.resolve("text", None, None).color,
-            Some(0xff00_0000 | dark.text)
-        );
+        assert_eq!(sheet.resolve("text", None, None).color, Some(0xff77_8899));
         assert!(sheet.set_reading_direction(ReadingDirection::RightToLeft));
-        assert!(sheet.set_palette(light).unwrap());
+        properties.insert("--host-panel".into(), "#abcdef".into());
+        assert!(sheet.set_host_properties(properties.clone()).unwrap());
         assert_eq!(sheet.reading_direction(), ReadingDirection::RightToLeft);
         assert_eq!(
             sheet.resolve("window", None, None).background,
-            Some(0xff00_0000 | light.panel)
+            Some(0xffab_cdef)
         );
-        assert_eq!(
-            sheet.resolve("text", None, None).color,
-            Some(0xff00_0000 | light.text)
-        );
-        assert!(!sheet.set_palette(light).unwrap());
+        assert!(!sheet.set_host_properties(properties).unwrap());
         assert!(StyleSheet::compile("text { color: var(--unknown); }").is_err());
     }
 
@@ -1916,19 +1865,15 @@ mod tests {
 
     #[test]
     fn var_fallbacks_nest_and_semantic_defaults_remain_overridable() {
-        let default =
-            StyleSheet::compile("text { color: var(--missing, var(--twinkle-text)); }").unwrap();
-        assert_eq!(
-            default.resolve("text", None, None).color,
-            Some(
-                0xff00_0000
-                    | ThemePalette::from_appearance(Appearance::default()).text & 0x00ff_ffff
-            )
-        );
+        let default = StyleSheet::compile(
+            ":root { --host-text: #123456; } text { color: var(--missing, var(--host-text)); }",
+        )
+        .unwrap();
+        assert_eq!(default.resolve("text", None, None).color, Some(0xff12_3456));
 
         let overridden = StyleSheet::compile(
-            ":root { --twinkle-text: #abcdef; }
-             text { color: var(--missing, var(--twinkle-text)); }",
+            ":root { --host-text: #abcdef; }
+             text { color: var(--missing, var(--host-text)); }",
         )
         .unwrap();
         assert_eq!(
@@ -1966,8 +1911,9 @@ mod tests {
     #[test]
     fn semantic_metrics_and_variable_chain_limits_are_available() {
         let css = StyleSheet::compile(
-            "text { font-size: var(--twinkle-font-size); line-height: var(--twinkle-line-height); }
-             button { padding: var(--twinkle-spacing-control); border-radius: var(--twinkle-radius-control); }",
+            ":root { --host-font-size: 14px; --host-line-height: 20px; --host-spacing-control: 8px; --host-radius-control: 8px; }
+             text { font-size: var(--host-font-size); line-height: var(--host-line-height); }
+             button { padding: var(--host-spacing-control); border-radius: var(--host-radius-control); }",
         ).unwrap();
         assert_eq!(css.resolve("text", None, None).font_size, Some(14.0));
         assert_eq!(css.resolve("button", None, None).radius, Some(8.0));
