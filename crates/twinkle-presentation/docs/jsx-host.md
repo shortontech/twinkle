@@ -42,6 +42,9 @@ The example follows this sequence:
    the event, apply any bounded native patch to a clone of the accepted tree, validate requested
    effects against the host's own schema and policy, then accept both the tree and JS state only if
    validation succeeds. On failure, reject the transaction and keep the prior native tree.
+7. Publish recurring Rust-owned state with `JsxRuntime::reconcile_data_patched`, not another cold
+   `render_retained_panel` call. Apply and validate that typed patch under the same transaction
+   boundary used for event patches.
 
 Run the example from the workspace root:
 
@@ -59,6 +62,29 @@ an unsigned integer payload; unknown operations and malformed values are rejecte
 important host boundary: JSX can request an operation, while Rust decides whether the operation is
 recognized and what authority it receives. Do not dispatch arbitrary guest-provided objects to
 application services or operating-system APIs.
+
+## Recurring host-data updates
+
+`render_retained_panel` is the cold path for an initial mount, package reload, or explicit cold
+oracle. It materializes and transports the complete native tree. Do not call it from an animation,
+game tick, streaming-data callback, or other recurring update loop.
+
+When Rust owns changing application state, open a transaction and use
+`JsxRuntime::reconcile_data_patched(snapshot)`. The runtime republishes the snapshot, reruns only
+its affected readers, and returns a bounded typed patch. Apply that patch to a clone of the accepted
+`RetainedPanelTree`, validate effects under host policy, then commit the patch, pending event, and
+transaction together. Reject the transaction on any failure so both the JSX runtime and native tree
+retain their previous accepted state.
+
+The lifecycle distinction is:
+
+- initial mount or reload: `render_retained_panel`;
+- native input event: `dispatch_batch_patched` or `dispatch_slots_patched`;
+- recurring Rust-owned snapshot: `reconcile_data_patched`.
+
+This distinction is important for performance. Calling the cold path after `set_data_value` rebuilds,
+materializes, serializes, transports, parses, and indexes the complete tree even when only a few
+leaf properties changed. Patched snapshot reconciliation transports only admitted changes.
 
 ## Package modules and TypeScript
 

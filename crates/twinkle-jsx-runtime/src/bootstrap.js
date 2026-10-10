@@ -517,7 +517,7 @@ function __twinkleIdentity(id) {
 }
 // Ordinary application data/effects; an effect is a request for the trusted host.
 const twinkle = Object.freeze({
-    get data() { return __twinkleData; },
+    get data() { __twinkleMarkResourceRead('*'); return __twinkleData; },
     request(effect) { __effects.push(effect); },
     component(contract) {
         const component = __twinklePublicComponents.get(contract);
@@ -588,8 +588,8 @@ function __twinklePublishData(data) {
     const changed = new Map();
     const fieldChanged = name => {
         if (!changed.has(name)) {
-            const previous = __twinkleProjectionField(__twinkleData, name);
-            const next = __twinkleProjectionField(data, name);
+            const previous = name === '*' ? __twinkleData : __twinkleProjectionField(__twinkleData, name);
+            const next = name === '*' ? data : __twinkleProjectionField(data, name);
             changed.set(name, !Object.is(previous, next) && JSON.stringify(previous) !== JSON.stringify(next));
         }
         return changed.get(name);
