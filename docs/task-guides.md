@@ -69,12 +69,40 @@ fn controller_input(
 }
 ```
 
-Track held controls in application state from press and release edges when the domain needs them.
-Clear every held control for the indicated device on `RouteNeutralized`; Twinkle sends it when the
-focused route retires so an application cannot retain a stuck input across focus changes.
-Axis values are finite and normalized to `-1.0..=1.0`. Do not create one focusable button per game
-action or open a second controller backend; both physical application input and semantic fallback
-share Twinkle's focused, fenced controller reader. Hosted sources currently carry semantic actions
+Use `poll_controller` for simulation-owned held input instead of reconstructing state or depending
+on backend key repeat. Its `ControllerSnapshot` retains held buttons and latest axes; pressed and
+released edges accumulate between application polls and are visible for exactly one poll.
+
+```rust
+fn poll_controller(&mut self, input: &ControllerSnapshot) -> bool {
+    if input.button_pressed(&ControllerButton::South) {
+        self.rotate();
+    }
+    if input.button_down(&ControllerButton::DPadDown) {
+        self.soft_drop();
+    }
+    self.steer(input.axis(&ControllerAxis::LeftX));
+    true
+}
+
+fn poll_interval_controller(&self, input: &ControllerSnapshot) -> Option<Duration> {
+    Some(if input.button_down(&ControllerButton::DPadDown) {
+        Duration::from_millis(40)
+    } else {
+        self.gravity_interval()
+    })
+}
+```
+
+Use the device-specific queries when players or seats must remain distinct. Combined axis queries
+select the value with greatest absolute magnitude deterministically. Axis values are finite and
+clamped to `-1.0..=1.0`; the native reader suppresses sub-epsilon changes and coalesces superseded
+samples for one device/axis before waking the host. Button edges are never coalesced.
+
+Twinkle blocks on its controller reader and wakes the native event loop when useful input arrives;
+an idle connected controller does not impose a UI polling timer. Do not create one focusable button
+per game action or open a second controller backend. Physical application input and semantic
+fallback share Twinkle's focused, fenced reader. Hosted sources currently carry semantic actions
 only and do not fabricate physical events.
 
 ## Headless testing

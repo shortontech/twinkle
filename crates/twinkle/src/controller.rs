@@ -134,6 +134,140 @@ pub enum ApplicationControllerInput {
     },
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ControllerDeviceSnapshot {
+    buttons: std::collections::BTreeSet<ControllerButton>,
+    pressed: std::collections::BTreeSet<ControllerButton>,
+    released: std::collections::BTreeSet<ControllerButton>,
+    axes: std::collections::BTreeMap<twinkle_input::controller::ControllerAxis, f32>,
+}
+
+/// Read-only physical controller state sampled at an application update boundary.
+///
+/// Held buttons and axes persist across updates. Pressed and released edges are
+/// accumulated without loss and remain visible for exactly one application poll.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ControllerSnapshot {
+    devices: std::collections::BTreeMap<ControllerId, ControllerDeviceSnapshot>,
+}
+
+impl ControllerSnapshot {
+    /// Connected device lifetimes represented by this snapshot.
+    pub fn devices(&self) -> impl Iterator<Item = ControllerId> + '_ {
+        self.devices.keys().copied()
+    }
+
+    /// Whether any admitted controller currently holds this button.
+    pub fn button_down(&self, button: &ControllerButton) -> bool {
+        self.devices
+            .values()
+            .any(|device| device.buttons.contains(button))
+    }
+
+    /// Whether any controller pressed this button since the previous poll.
+    pub fn button_pressed(&self, button: &ControllerButton) -> bool {
+        self.devices
+            .values()
+            .any(|device| device.pressed.contains(button))
+    }
+
+    /// Whether any controller released this button since the previous poll.
+    pub fn button_released(&self, button: &ControllerButton) -> bool {
+        self.devices
+            .values()
+            .any(|device| device.released.contains(button))
+    }
+
+    /// Whether one connected-device lifetime currently holds this button.
+    pub fn device_button_down(&self, device: ControllerId, button: &ControllerButton) -> bool {
+        self.devices
+            .get(&device)
+            .is_some_and(|state| state.buttons.contains(button))
+    }
+
+    /// Whether one device pressed this button since the previous poll.
+    pub fn device_button_pressed(&self, device: ControllerId, button: &ControllerButton) -> bool {
+        self.devices
+            .get(&device)
+            .is_some_and(|state| state.pressed.contains(button))
+    }
+
+    /// Whether one device released this button since the previous poll.
+    pub fn device_button_released(&self, device: ControllerId, button: &ControllerButton) -> bool {
+        self.devices
+            .get(&device)
+            .is_some_and(|state| state.released.contains(button))
+    }
+
+    /// Latest axis value for one connected-device lifetime.
+    pub fn device_axis(
+        &self,
+        device: ControllerId,
+        axis: &twinkle_input::controller::ControllerAxis,
+    ) -> f32 {
+        self.devices
+            .get(&device)
+            .and_then(|state| state.axes.get(axis))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Latest combined value for an axis across connected controllers.
+    ///
+    /// The value with the greatest absolute magnitude wins. Equal magnitudes
+    /// retain connected-device order, making the merge deterministic.
+    pub fn axis(&self, axis: &twinkle_input::controller::ControllerAxis) -> f32 {
+        self.devices
+            .values()
+            .filter_map(|state| state.axes.get(axis).copied())
+            .max_by(|left, right| {
+                left.abs()
+                    .partial_cmp(&right.abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(0.0)
+    }
+
+    pub(crate) fn apply(&mut self, event: &ApplicationControllerEvent) {
+        match &event.input {
+            ApplicationControllerInput::Connected => {
+                self.devices.entry(event.device).or_default();
+            }
+            ApplicationControllerInput::Disconnected
+            | ApplicationControllerInput::RouteNeutralized => {
+                self.devices.remove(&event.device);
+            }
+            ApplicationControllerInput::Button { button, edge, .. } => {
+                let state = self.devices.entry(event.device).or_default();
+                match edge {
+                    KeyEdge::Pressed => {
+                        state.buttons.insert(button.clone());
+                        state.pressed.insert(button.clone());
+                    }
+                    KeyEdge::Released => {
+                        state.buttons.remove(button);
+                        state.released.insert(button.clone());
+                    }
+                }
+            }
+            ApplicationControllerInput::Axis { axis, value } => {
+                self.devices
+                    .entry(event.device)
+                    .or_default()
+                    .axes
+                    .insert(axis.clone(), value.clamp(-1.0, 1.0));
+            }
+        }
+    }
+
+    pub(crate) fn finish_poll(&mut self) {
+        for state in self.devices.values_mut() {
+            state.pressed.clear();
+            state.released.clear();
+        }
+    }
+}
+
 /// Immutable execution identity assigned by the session broker and routing
 /// authority. Primitive fields keep the UI crate independent of its transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -405,6 +539,35 @@ impl ControllerInput {
         self.normalizer.suppress_held();
     }
 
+    /// Neutralizes application-visible held state at a focus/route boundary.
+    pub fn neutralize_application_route(&mut self) -> Vec<ApplicationControllerEvent> {
+        self.normalizer.suppress_held();
+        let produced_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |age| age.as_millis() as u64);
+        let families: Vec<_> = self
+            .families
+            .iter()
+            .map(|(device, family)| (*device, *family))
+            .collect();
+        let mut events = Vec::with_capacity(families.len());
+        for (device, family) in families {
+            let Some(order) = self.backend_order.checked_add(1) else {
+                self.retire_reader();
+                return Vec::new();
+            };
+            self.backend_order = order;
+            events.push(ApplicationControllerEvent {
+                device,
+                family,
+                backend_order: order,
+                produced_unix_ms,
+                input: ApplicationControllerInput::RouteNeutralized,
+            });
+        }
+        events
+    }
+
     /// Device nodes already identified as controllers by the active backend.
     /// This supports native state queries without scanning unrelated input devices.
     #[cfg(target_os = "linux")]
@@ -540,6 +703,34 @@ impl ControllerInput {
         };
         let first = gilrs.next_event_blocking(Some(timeout));
         self.poll_envelopes_inner::<fn() -> ControllerFence>(Instant::now(), None, first)
+    }
+
+    /// Blocks for native activity, then drains one application and semantic batch.
+    ///
+    /// This is intended for a dedicated reader which wakes the owning event loop
+    /// only after useful input arrives. Focus is sampled after the blocking wait,
+    /// so an input route retired while the reader slept cannot replay held state.
+    pub fn wait_application(
+        &mut self,
+        idle_timeout: std::time::Duration,
+        window_focused: bool,
+    ) -> (Vec<ApplicationControllerEvent>, Vec<ControllerEnvelope>) {
+        let Some(gilrs) = &mut self.gilrs else {
+            std::thread::sleep(idle_timeout);
+            return (Vec::new(), Vec::new());
+        };
+        let timeout = if self.normalizer.has_pending_repeat() {
+            idle_timeout.min(crate::ControllerPollSchedule::CONNECTED_INTERVAL)
+        } else {
+            idle_timeout
+        };
+        let first = gilrs.next_event_blocking(Some(timeout));
+        let envelopes = self.poll_envelopes_inner(
+            Instant::now(),
+            Some((window_focused, ControllerFence::default)),
+            first,
+        );
+        (std::mem::take(&mut self.application_events), envelopes)
     }
 
     fn poll_envelopes_inner<F>(
@@ -907,6 +1098,11 @@ impl ControllerInput {
     /// Retiring a route is a no-op when there is no native reader.
     pub fn retire_route_epoch(&mut self, _handoff: SystemTime) {}
 
+    /// Returns no neutralization events because native discovery is disabled.
+    pub fn neutralize_application_route(&mut self) -> Vec<ApplicationControllerEvent> {
+        Vec::new()
+    }
+
     /// Reports an unavailable, idle native source.
     #[must_use]
     pub const fn observe(&mut self, _now: Instant) -> ControllerObservation {
@@ -967,6 +1163,16 @@ impl ControllerInput {
         std::thread::sleep(idle_timeout);
         Vec::new()
     }
+
+    /// Waits for the requested bound and returns no native application input.
+    pub fn wait_application(
+        &mut self,
+        idle_timeout: std::time::Duration,
+        _window_focused: bool,
+    ) -> (Vec<ApplicationControllerEvent>, Vec<ControllerEnvelope>) {
+        std::thread::sleep(idle_timeout);
+        (Vec::new(), Vec::new())
+    }
 }
 
 #[cfg(any(feature = "native-controller", test))]
@@ -1002,30 +1208,7 @@ fn signal_action_for_family(
     signal: ControllerSignal,
     family: ControllerFamily,
 ) -> Option<ControllerAction> {
-    match signal {
-        ControllerSignal::Button {
-            button: ControllerButton::Start,
-            edge: twinkle_input::KeyEdge::Pressed,
-            repeat: true,
-            ..
-        } => None,
-        ControllerSignal::Button {
-            button,
-            edge: twinkle_input::KeyEdge::Pressed,
-            ..
-        } => button_action(&button, family),
-        ControllerSignal::Direction {
-            direction,
-            edge: twinkle_input::KeyEdge::Pressed,
-            ..
-        } => Some(match direction {
-            AxisDirection::Up => ControllerAction::Up,
-            AxisDirection::Down => ControllerAction::Down,
-            AxisDirection::Left => ControllerAction::Left,
-            AxisDirection::Right => ControllerAction::Right,
-        }),
-        _ => None,
-    }
+    signal_physical_action_for_family(&signal, family)
 }
 
 #[cfg(any(feature = "native-controller", test))]
@@ -1034,12 +1217,22 @@ fn signal_physical_action_for_family(
     family: ControllerFamily,
 ) -> Option<ControllerAction> {
     match signal {
-        ControllerSignal::Button { button, repeat, .. }
-            if !(*repeat && *button == ControllerButton::Start) =>
-        {
-            button_action(button, family)
-        }
-        ControllerSignal::Direction { direction, .. } => Some(match direction {
+        ControllerSignal::Button {
+            button: ControllerButton::Start,
+            edge: KeyEdge::Pressed,
+            repeat: true,
+            ..
+        } => None,
+        ControllerSignal::Button {
+            button,
+            edge: KeyEdge::Pressed,
+            ..
+        } => button_action(&button, family),
+        ControllerSignal::Direction {
+            direction,
+            edge: KeyEdge::Pressed,
+            ..
+        } => Some(match direction {
             AxisDirection::Up => ControllerAction::Up,
             AxisDirection::Down => ControllerAction::Down,
             AxisDirection::Left => ControllerAction::Left,
@@ -1060,8 +1253,8 @@ fn signal_id(signal: &ControllerSignal) -> Option<ControllerId> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationControllerInput, ControllerAction, ControllerFamily, ControllerFence,
-        NativeControllerGenerations, application_controller_event, signal_action,
+        ApplicationControllerEvent, ApplicationControllerInput, ControllerAction, ControllerFamily,
+        ControllerFence, NativeControllerGenerations, application_controller_event, signal_action,
         signal_action_for_family, signal_envelope,
     };
 
@@ -1272,7 +1465,7 @@ mod tests {
         assert_eq!(released.edge, twinkle_input::KeyEdge::Released);
         assert!(!released.repeat);
         assert_eq!(released.family, ControllerFamily::PlayStation);
-        assert_eq!(released.action, Some(ControllerAction::Confirm));
+        assert_eq!(released.action, None);
 
         let repeated = signal_envelope(
             ControllerSignal::Direction {
@@ -1495,5 +1688,35 @@ mod tests {
                 .all(|signal| signal_action(signal).is_none()),
             "only a meaningful normalized controller action may select controller modality"
         );
+    }
+
+    #[test]
+    fn snapshot_preserves_between_tick_edges_and_held_state_independently() {
+        let id = ControllerId(7);
+        let button = ControllerButton::South;
+        let event = |edge| ApplicationControllerEvent {
+            device: id,
+            family: ControllerFamily::Xbox,
+            backend_order: 1,
+            produced_unix_ms: 1,
+            input: ApplicationControllerInput::Button {
+                button: button.clone(),
+                edge,
+                repeat: false,
+            },
+        };
+        let mut snapshot = super::ControllerSnapshot::default();
+        snapshot.apply(&event(twinkle_input::KeyEdge::Pressed));
+        snapshot.apply(&event(twinkle_input::KeyEdge::Released));
+
+        assert!(!snapshot.button_down(&button));
+        assert!(snapshot.button_pressed(&button));
+        assert!(snapshot.button_released(&button));
+        assert!(snapshot.device_button_pressed(id, &button));
+        assert!(snapshot.device_button_released(id, &button));
+
+        snapshot.finish_poll();
+        assert!(!snapshot.button_pressed(&button));
+        assert!(!snapshot.button_released(&button));
     }
 }

@@ -8,8 +8,10 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver},
     },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -99,6 +101,155 @@ fn local_controller_poll_lease(
     lease.filter(|lease| {
         mode == ControllerDiscoveryMode::Standalone && lease.role == ControllerRole::Local
     })
+}
+
+struct NativeControllerBatch {
+    application_events: Vec<crate::ApplicationControllerEvent>,
+    envelopes: Vec<crate::ControllerEnvelope>,
+}
+
+struct NativeControllerWorker {
+    batches: Receiver<NativeControllerBatch>,
+    focused: Arc<AtomicBool>,
+    focus_generation: Arc<AtomicU64>,
+    wake_pending: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct ControllerAxisFilter {
+    delivered: HashMap<(crate::ControllerId, crate::ControllerAxis), f32>,
+}
+
+impl ControllerAxisFilter {
+    const EPSILON: f32 = 1.0 / 1024.0;
+
+    fn retain_meaningful(&mut self, events: &mut Vec<crate::ApplicationControllerEvent>) {
+        events.retain_mut(|event| match &mut event.input {
+            crate::ApplicationControllerInput::Axis { axis, value } => {
+                *value = value.clamp(-1.0, 1.0);
+                let key = (event.device, axis.clone());
+                if self
+                    .delivered
+                    .get(&key)
+                    .is_some_and(|previous| (*previous - *value).abs() < Self::EPSILON)
+                {
+                    false
+                } else {
+                    self.delivered.insert(key, *value);
+                    true
+                }
+            }
+            crate::ApplicationControllerInput::Disconnected
+            | crate::ApplicationControllerInput::RouteNeutralized => {
+                self.delivered
+                    .retain(|(device, _), _| *device != event.device);
+                true
+            }
+            _ => true,
+        });
+    }
+}
+
+fn coalesce_controller_axes(events: &mut Vec<crate::ApplicationControllerEvent>) {
+    let mut latest = HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        if let crate::ApplicationControllerInput::Axis { axis, .. } = &event.input {
+            latest.insert((event.device, axis.clone()), index);
+        }
+    }
+    let mut index = 0;
+    events.retain(|event| {
+        let retain = match &event.input {
+            crate::ApplicationControllerInput::Axis { axis, .. } => {
+                latest.get(&(event.device, axis.clone())) == Some(&index)
+            }
+            _ => true,
+        };
+        index += 1;
+        retain
+    });
+}
+
+impl NativeControllerWorker {
+    fn spawn(mut controller: ControllerInput, proxy: winit::event_loop::EventLoopProxy) -> Self {
+        let (sender, batches) = mpsc::channel();
+        let focused = Arc::new(AtomicBool::new(false));
+        let focus_generation = Arc::new(AtomicU64::new(1));
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_focused = Arc::clone(&focused);
+        let worker_focus_generation = Arc::clone(&focus_generation);
+        let worker_wake_pending = Arc::clone(&wake_pending);
+        let worker_stop = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("twinkle-controller".into())
+            .spawn(move || {
+                let mut axis_filter = ControllerAxisFilter::default();
+                let mut observed_focus_generation = worker_focus_generation.load(Ordering::Acquire);
+                while !worker_stop.load(Ordering::Acquire) {
+                    let (application_events, envelopes) = controller.wait_application(
+                        Duration::from_millis(250),
+                        worker_focused.load(Ordering::Acquire),
+                    );
+                    let focus_generation = worker_focus_generation.load(Ordering::Acquire);
+                    let (mut application_events, envelopes) =
+                        if focus_generation != observed_focus_generation {
+                            observed_focus_generation = focus_generation;
+                            (controller.neutralize_application_route(), Vec::new())
+                        } else {
+                            (application_events, envelopes)
+                        };
+                    coalesce_controller_axes(&mut application_events);
+                    axis_filter.retain_meaningful(&mut application_events);
+                    if application_events.is_empty() && envelopes.is_empty() {
+                        continue;
+                    }
+                    if sender
+                        .send(NativeControllerBatch {
+                            application_events,
+                            envelopes,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+                        let _ = proxy.wake_up();
+                    }
+                }
+            })
+            .expect("native controller worker should start");
+        Self {
+            batches,
+            focused,
+            focus_generation,
+            wake_pending,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn set_focused(&self, focused: bool) {
+        if self.focused.swap(focused, Ordering::AcqRel) != focused {
+            self.focus_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn drain(&self) -> impl Iterator<Item = NativeControllerBatch> + '_ {
+        self.wake_pending.store(false, Ordering::Release);
+        self.batches.try_iter()
+    }
+}
+
+impl Drop for NativeControllerWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 use winit::event_loop::run_on_demand::EventLoopExtRunOnDemand;
@@ -367,6 +518,13 @@ impl ControllerPollSchedule {
                 Self::DISCONNECTED_INTERVAL
             };
     }
+}
+
+fn hosted_controller_deadline(
+    mode: ControllerDiscoveryMode,
+    schedule: ControllerPollSchedule,
+) -> Option<Instant> {
+    (mode == ControllerDiscoveryMode::Session).then(|| schedule.deadline())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -778,10 +936,25 @@ pub trait Application: Sized {
         false
     }
 
+    /// Poll application-owned work with a tick-scoped physical input snapshot.
+    ///
+    /// The default preserves existing applications by delegating to [`Self::poll`].
+    /// Held state persists between calls; press and release edges are visible for
+    /// this call only, independently of how often the view is rebuilt or painted.
+    fn poll_controller(&mut self, _input: &crate::ControllerSnapshot) -> bool {
+        self.poll()
+    }
+
     /// Declares the cadence for application-owned completion polling.
     /// `None` means the application is event-driven and must not be woken.
     fn poll_interval(&self) -> Option<Duration> {
         None
+    }
+
+    /// Declares the next simulation/update cadence with current physical input.
+    /// The default preserves the application's ordinary polling cadence.
+    fn poll_interval_controller(&self, _input: &crate::ControllerSnapshot) -> Option<Duration> {
+        self.poll_interval()
     }
 
     /// Explicit application-level keyboard semantics before ordinary component activation.
@@ -901,6 +1074,7 @@ pub struct UiHost<A: Application> {
     pointer_icon: PointerIcon,
     overlay_failures: Vec<OverlayDeclarationFailure>,
     next_application_deadline: Option<Instant>,
+    controller_snapshot: crate::ControllerSnapshot,
     pending_long_press: Option<PendingLongPress>,
     admitted_controller_presses: std::collections::BTreeSet<AdmittedControllerPress>,
     controller_press_authority: Option<ControllerExecutionAuthority>,
@@ -927,6 +1101,7 @@ pub struct UiHostViewport<Message> {
     pointer_icon: PointerIcon,
     overlay_failures: Vec<OverlayDeclarationFailure>,
     next_application_deadline: Option<Instant>,
+    controller_snapshot: crate::ControllerSnapshot,
     pending_long_press: Option<PendingLongPress>,
     admitted_controller_presses: std::collections::BTreeSet<AdmittedControllerPress>,
     controller_press_authority: Option<ControllerExecutionAuthority>,
@@ -1376,6 +1551,7 @@ impl TransientWindowSpawner {
                     ControllerSource::Disabled,
                     spawner,
                     false,
+                    None,
                 ))
             }));
     }
@@ -1917,8 +2093,9 @@ impl<A: Application> UiHost<A> {
             overlay_failures,
             next_application_deadline: self
                 .application
-                .poll_interval()
+                .poll_interval_controller(&crate::ControllerSnapshot::default())
                 .map(|interval| Instant::now() + interval),
+            controller_snapshot: crate::ControllerSnapshot::default(),
             pending_long_press: None,
             admitted_controller_presses: std::collections::BTreeSet::new(),
             controller_press_authority: None,
@@ -1965,6 +2142,10 @@ impl<A: Application> UiHost<A> {
             next_application_deadline: std::mem::replace(
                 &mut self.next_application_deadline,
                 viewport.next_application_deadline,
+            ),
+            controller_snapshot: std::mem::replace(
+                &mut self.controller_snapshot,
+                viewport.controller_snapshot,
             ),
             pending_long_press: std::mem::replace(
                 &mut self.pending_long_press,
@@ -2037,7 +2218,9 @@ impl<A: Application> UiHost<A> {
         );
         let overlay_failures =
             apply_frame_overlays(&mut tree, &mut state, application.frame_overlays(context));
-        let next_application_deadline = application.poll_interval().map(|interval| now + interval);
+        let next_application_deadline = application
+            .poll_interval_controller(&crate::ControllerSnapshot::default())
+            .map(|interval| now + interval);
         Self {
             tree_remote_access_protected: application.remote_access_protected(),
             application,
@@ -2052,6 +2235,7 @@ impl<A: Application> UiHost<A> {
             pointer_icon: PointerIcon::Default,
             overlay_failures,
             next_application_deadline,
+            controller_snapshot: crate::ControllerSnapshot::default(),
             pending_long_press: None,
             admitted_controller_presses: std::collections::BTreeSet::new(),
             controller_press_authority: None,
@@ -2066,6 +2250,11 @@ impl<A: Application> UiHost<A> {
 
     pub fn application(&self) -> &A {
         &self.application
+    }
+
+    /// Current physical controller state, including edges pending the next poll.
+    pub fn controller_snapshot(&self) -> &crate::ControllerSnapshot {
+        &self.controller_snapshot
     }
 
     pub fn commands(&self) -> &[crate::PaintCommand] {
@@ -2089,7 +2278,7 @@ impl<A: Application> UiHost<A> {
     pub fn resume(&mut self, now: Instant) {
         self.next_application_deadline = self
             .application
-            .poll_interval()
+            .poll_interval_controller(&self.controller_snapshot)
             .map(|interval| now + interval);
     }
 
@@ -3261,11 +3450,12 @@ impl<A: Application> UiHost<A> {
                         }
                     }
                     HostEvent::Poll => {
-                        let changed =
-                            self.application.poll() || self.state.geometry_animation_active();
+                        let changed = self.application.poll_controller(&self.controller_snapshot)
+                            || self.state.geometry_animation_active();
+                        self.controller_snapshot.finish_poll();
                         self.next_application_deadline = self
                             .application
-                            .poll_interval()
+                            .poll_interval_controller(&self.controller_snapshot)
                             .map(|interval| now + interval);
                         HostEventOutcome {
                             changed,
@@ -3440,7 +3630,8 @@ impl<A: Application> UiHost<A> {
         }
         self.next_application_deadline = match (
             self.next_application_deadline,
-            self.application.poll_interval(),
+            self.application
+                .poll_interval_controller(&self.controller_snapshot),
         ) {
             (_, None) => None,
             (Some(deadline), Some(_)) => Some(deadline),
@@ -3512,9 +3703,23 @@ impl<A: Application> UiHost<A> {
         &mut self,
         event: crate::ApplicationControllerEvent,
     ) -> ControllerInputOutcome {
+        self.controller_snapshot.apply(&event);
         let outcome = self.application.controller_input(event);
+        self.next_application_deadline = self
+            .application
+            .poll_interval_controller(&self.controller_snapshot)
+            .map(|interval| Instant::now() + interval);
         if outcome.changed {
             self.rebuild();
+            if let Some(id) = self.application.take_transient_dismissal()
+                && self.state.open_overlay_id() == Some(&id)
+            {
+                self.state.dismiss_overlay(crate::DismissReason::Action);
+                self.rebuild();
+            }
+            if let Some((id, anchor)) = self.application.take_transient_request() {
+                let _ = self.open_transient(id, anchor);
+            }
         }
         outcome
     }
@@ -4157,6 +4362,7 @@ fn run_with_event_loop<A: Application>(
         source,
         spawner.clone(),
         true,
+        Some(proxy.clone()),
     );
     let mut runtime = MultiWindowRuntime::new(primary, display, proxy, spawner);
     event_loop.run_app_on_demand(&mut runtime)?;
@@ -4179,7 +4385,7 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     raster_revision: u64,
     input: twinkle_input::winit::Adapter,
     clipboard: Option<arboard::Clipboard>,
-    controller: Option<ControllerInput>,
+    controller: Option<NativeControllerWorker>,
     controller_discovery: ControllerDiscoveryMode,
     local_controller_lease: Option<ControllerRoleLease>,
     session_controller: Option<Box<dyn HostedControllerSource>>,
@@ -4279,6 +4485,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         source: ControllerSource,
         transients: TransientWindowSpawner,
         primary: bool,
+        proxy: Option<winit::event_loop::EventLoopProxy>,
     ) -> Self {
         let now = Instant::now();
         let native_host_generation = NEXT_NATIVE_HOST_GENERATION
@@ -4287,6 +4494,9 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         let next_adapter_poll = adapter.poll_interval().map(|interval| now + interval);
         let (controller_discovery, controller, local_controller_lease, session_controller) =
             select_controller_source(source);
+        let controller = controller.and_then(|controller| {
+            proxy.map(|proxy| NativeControllerWorker::spawn(controller, proxy))
+        });
         Self {
             host: None,
             application: Some(application),
@@ -4731,7 +4941,11 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         let Some(window) = self.window.clone() else {
             return None;
         };
-        if now >= self.next_caret_blink {
+        let caret_active = self
+            .host
+            .as_ref()
+            .is_some_and(|host| host.input_context().text_focused);
+        if caret_active && now >= self.next_caret_blink {
             self.next_caret_blink = now + Duration::from_millis(500);
             if self
                 .host
@@ -4784,22 +4998,30 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             }
             self.next_adapter_poll = self.adapter.poll_interval().map(|interval| now + interval);
         }
-        if self.controller_schedule.is_due(now) {
+        if self.controller_discovery == ControllerDiscoveryMode::Standalone
+            || self.controller_schedule.is_due(now)
+        {
             let focused = self
                 .host
                 .as_ref()
                 .is_some_and(|host| host.inspect().window_focused);
             let mut handled_physical_orders = HashSet::new();
-            let (actions, controller_connected) = if local_controller_poll_lease(
+            let actions = if local_controller_poll_lease(
                 self.controller_discovery,
                 self.local_controller_lease,
             )
             .is_some()
             {
-                let Some(controller) = &mut self.controller else {
-                    return None;
-                };
-                let (application_events, envelopes) = controller.poll_application(now, focused);
+                let (application_events, envelopes): (Vec<_>, Vec<_>) = self
+                    .controller
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(NativeControllerWorker::drain)
+                    .fold((Vec::new(), Vec::new()), |mut pending, batch| {
+                        pending.0.extend(batch.application_events);
+                        pending.1.extend(batch.envelopes);
+                        pending
+                    });
                 for event in application_events {
                     let order = event.backend_order;
                     let family = event.family;
@@ -4830,26 +5052,19 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                             .into()
                     })
                     .collect();
-                (actions, controller.connected())
+                actions
             } else {
-                let connected = self
-                    .session_controller
-                    .as_ref()
-                    .is_some_and(|source| source.connected());
                 let broker_actions = self
                     .session_controller
                     .as_mut()
                     .map_or_else(Vec::new, |source| source.poll_actions());
-                (
-                    broker_actions
-                        .into_iter()
-                        .filter(|_| focused)
-                        .map(|(action, family, binding, authority)| {
-                            (action, family, Some((binding, authority)), None)
-                        })
-                        .collect(),
-                    connected,
-                )
+                broker_actions
+                    .into_iter()
+                    .filter(|_| focused)
+                    .map(|(action, family, binding, authority)| {
+                        (action, family, Some((binding, authority)), None)
+                    })
+                    .collect()
             };
             for (action, family, admission, physical_order) in actions {
                 if physical_order.is_some_and(|order| handled_physical_orders.contains(&order)) {
@@ -4924,8 +5139,14 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                     }
                 }
             }
-            self.controller_schedule
-                .mark_polled(now, controller_connected);
+            if self.controller_discovery == ControllerDiscoveryMode::Session {
+                let controller_connected = self
+                    .session_controller
+                    .as_ref()
+                    .is_some_and(|source| source.connected());
+                self.controller_schedule
+                    .mark_polled(now, controller_connected);
+            }
         }
         if self.scheduler.request_present() {
             window.request_redraw();
@@ -4933,11 +5154,11 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         let deadline = wait_duration(
             now,
             [
-                Some(self.next_caret_blink),
+                caret_active.then_some(self.next_caret_blink),
                 self.host.as_ref().and_then(UiHost::next_deadline),
                 self.next_adapter_poll,
                 self.adapter.next_deadline(now),
-                Some(self.controller_schedule.deadline()),
+                hosted_controller_deadline(self.controller_discovery, self.controller_schedule),
             ],
         )
         .map(|wait| now + wait);
@@ -5246,6 +5467,11 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         if window.id() != window_id {
             return;
         }
+        if let WindowEvent::Focused(focused) = &event
+            && let Some(controller) = &self.controller
+        {
+            controller.set_focused(*focused);
+        }
         let adapted = self.host.as_mut().map(|host| {
             self.adapter.event(
                 host,
@@ -5514,15 +5740,87 @@ mod tests {
 
     use super::{
         AdmittedNormalizedInput, Application, Completion, CompletionFailure, CompletionFailureKind,
-        ContinuousQueueOutcome, ControllerDiscoveryMode, ControllerPollSchedule, ControllerRole,
-        ControllerRoleLease, EffectEvidence, FrameOverlay, GlobalAction, HostBatch, HostEvent,
-        HostFailure, HostFailureStage, MAX_ADMITTED_CONTROLLER_PRESSES, MessageEvidence,
-        NormalizedAdmissionBinding, NormalizedInputEnvelope, NormalizedRecipientBinding,
-        NormalizedSourceBinding, PresentScheduler, Shortcut, ShortcutOutcome, UiHost, ViewContext,
-        grant_native_ingress_if_focused, local_controller_poll_lease, native_input_class,
-        native_input_source_binding, native_pointer_source_binding, queue_continuous_input,
-        revoke_native_ingress, transform_is_current, wait_duration,
+        ContinuousQueueOutcome, ControllerAxisFilter, ControllerDiscoveryMode,
+        ControllerPollSchedule, ControllerRole, ControllerRoleLease, EffectEvidence, FrameOverlay,
+        GlobalAction, HostBatch, HostEvent, HostFailure, HostFailureStage,
+        MAX_ADMITTED_CONTROLLER_PRESSES, MessageEvidence, NormalizedAdmissionBinding,
+        NormalizedInputEnvelope, NormalizedRecipientBinding, NormalizedSourceBinding,
+        PresentScheduler, Shortcut, ShortcutOutcome, UiHost, ViewContext, coalesce_controller_axes,
+        grant_native_ingress_if_focused, hosted_controller_deadline, local_controller_poll_lease,
+        native_input_class, native_input_source_binding, native_pointer_source_binding,
+        queue_continuous_input, revoke_native_ingress, transform_is_current, wait_duration,
     };
+
+    #[test]
+    fn native_controller_batches_preserve_edges_and_coalesce_axes() {
+        let device = crate::ControllerId(4);
+        let event = |order, input| crate::ApplicationControllerEvent {
+            device,
+            family: crate::ControllerFamily::Xbox,
+            backend_order: order,
+            produced_unix_ms: order,
+            input,
+        };
+        let mut events = vec![
+            event(
+                1,
+                crate::ApplicationControllerInput::Axis {
+                    axis: crate::ControllerAxis::LeftX,
+                    value: 0.1,
+                },
+            ),
+            event(
+                2,
+                crate::ApplicationControllerInput::Button {
+                    button: crate::ControllerButton::South,
+                    edge: KeyEdge::Pressed,
+                    repeat: false,
+                },
+            ),
+            event(
+                3,
+                crate::ApplicationControllerInput::Axis {
+                    axis: crate::ControllerAxis::LeftX,
+                    value: 0.8,
+                },
+            ),
+            event(
+                4,
+                crate::ApplicationControllerInput::Button {
+                    button: crate::ControllerButton::South,
+                    edge: KeyEdge::Released,
+                    repeat: false,
+                },
+            ),
+        ];
+
+        coalesce_controller_axes(&mut events);
+        ControllerAxisFilter::default().retain_meaningful(&mut events);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].backend_order, 2);
+        assert_eq!(events[1].backend_order, 3);
+        assert_eq!(events[2].backend_order, 4);
+
+        let mut filter = ControllerAxisFilter::default();
+        let mut noise = vec![
+            event(
+                5,
+                crate::ApplicationControllerInput::Axis {
+                    axis: crate::ControllerAxis::LeftY,
+                    value: 0.25,
+                },
+            ),
+            event(
+                6,
+                crate::ApplicationControllerInput::Axis {
+                    axis: crate::ControllerAxis::LeftY,
+                    value: 0.250_1,
+                },
+            ),
+        ];
+        filter.retain_meaningful(&mut noise);
+        assert_eq!(noise.len(), 1);
+    }
 
     #[test]
     fn controller_lease_allocator_exhaustion_is_terminal_across_threads() {
@@ -6976,9 +7274,17 @@ mod tests {
     }
 
     #[test]
-    fn controller_poll_schedule_has_one_shared_bounded_cadence() {
+    fn only_hosted_controller_sources_install_a_poll_deadline() {
         let now = Instant::now();
         let mut schedule = ControllerPollSchedule::new(now);
+        assert_eq!(
+            hosted_controller_deadline(ControllerDiscoveryMode::Standalone, schedule),
+            None
+        );
+        assert_eq!(
+            hosted_controller_deadline(ControllerDiscoveryMode::Session, schedule),
+            Some(now)
+        );
         assert!(schedule.is_due(now));
         schedule.mark_polled(now, true);
         assert_eq!(
