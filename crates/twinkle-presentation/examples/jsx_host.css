@@ -1,0 +1,5 @@
+:root { --surface: #20252c; --ink: #f4f5f6; --action: #3b4e68; }
+window { background: var(--surface); }
+.app { padding: 24px; gap: 12px; color: var(--ink); }
+.action { background: var(--action); color: var(--ink); padding: 8px 12px; border-radius: 6px; }
+button.action:hover { background: #506b8f; }

@@ -121,6 +121,10 @@ background work, testing, and packaging. The [accessibility statement](accessibi
 semantic-tree support from native assistive-technology bridges, and
 [troubleshooting](troubleshooting.md) covers logging and common platform failures.
 
+To build reusable components or a Rust design system, follow the
+[reusable component guide](../crates/twinkle/docs/reusable-components.md) and run the
+`component_system` example.
+
 ## Current feature surface
 
 The default `twinkle-ui` dependency includes native controller discovery. Hosted-controller or
@@ -129,6 +133,10 @@ controller-free applications can omit gilrs with
 remains available. Native windowing, clipboard support, image support, and software presentation
 currently remain core capabilities. It does not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and
 `twinkle-workbench` crates and is enabled there with their `jsx` feature.
+
+For a Rust host that deliberately executes TSX, use the
+[JSX and CSS host guide](../crates/twinkle-presentation/docs/jsx-host.md). The supported style
+language is documented in the [CSS subset reference](../crates/twinkle-presentation/docs/css.md).
 
 If this dependency surface does not suit your deployment target, open an issue describing the
 target and the capability split you need before building around private modules.

@@ -60,3 +60,8 @@ Twinkle does not currently install desktop entries, icons, or platform bundles.
 Before shipping, exercise keyboard-only input, scaling, both Wayland and X11 when supported, and
 the accessibility behavior described in [Accessibility](accessibility.md). See
 [Troubleshooting](troubleshooting.md) for logging and native startup failures.
+
+For reusable design-system components, see the
+[Rust component guide](../crates/twinkle/docs/reusable-components.md). For hosts that execute TSX,
+see the [JSX and CSS guide](../crates/twinkle-presentation/docs/jsx-host.md) and
+[CSS reference](../crates/twinkle-presentation/docs/css.md).

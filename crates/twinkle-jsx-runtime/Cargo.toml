@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/twinkle-jsx-runtime"
 description = "JavaScript and JSX runtime integration for Twinkle applications"
+readme = "README.md"
 
 [dependencies]
 twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol" }

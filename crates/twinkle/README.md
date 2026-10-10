@@ -58,6 +58,11 @@ The root also exports host, retained-surface, and backend APIs. They are integra
 required steps in the application learning path. Prefer the prelude until an embedding or renderer
 use case specifically requires them.
 
+If you are building reusable Rust components or a design system, start with the
+[reusable component guide](docs/reusable-components.md) and run
+[`examples/component_system.rs`](examples/component_system.rs). For ordinary application tasks,
+continue with the repository's [task recipes](../../docs/task-guides.md).
+
 An executable implements `Application` and calls `run(app)`. The runtime owns winit initialization,
 the native window, event and redraw loops, software presentation, and the per-window `UiStateStore`; the
 application owns only domain state, typed messages, `update`, and `view`. See

@@ -6,6 +6,10 @@
 //! This is an advanced opt-in dependency for trusted hosts that intentionally execute JSX. Native
 //! Rust applications do not need it. See `types/twinkle.d.ts` in the package for the declaration
 //! vocabulary and keep application-specific services behind explicit host bindings.
+//!
+//! The [crate README](https://github.com/shortontech/twinkle/blob/main/crates/twinkle-jsx-runtime/README.md)
+//! links to the [end-to-end Rust host guide](https://github.com/shortontech/twinkle/blob/main/crates/twinkle-presentation/docs/jsx-host.md)
+//! and the [API ownership reference](https://github.com/shortontech/twinkle/blob/main/crates/twinkle-jsx-runtime/docs/api-ownership.md).
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;

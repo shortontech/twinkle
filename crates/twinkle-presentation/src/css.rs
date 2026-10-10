@@ -1,4 +1,9 @@
 //! Bounded CSS subset with inherited custom properties and typed native styles.
+//!
+//! This is not browser CSS. See the crate's [CSS subset reference](https://github.com/shortontech/twinkle/blob/main/crates/twinkle-presentation/docs/css.md)
+//! for supported selectors, properties, values, limits, and host integration.
+
+#![warn(missing_docs)]
 
 use std::{
     cell::RefCell,
@@ -20,54 +25,94 @@ use twinkle_theme::{Appearance, ThemePalette};
 /// Maximum CSS source accepted by the generic parser; hosts may impose lower limits.
 pub const MAX_CSS_SOURCE_BYTES: usize = 256 * 1024;
 
+/// Generic native box display strategy.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Display {
+    /// Ordinary vertical/block flow for generic native boxes.
     #[default]
     Block,
+    /// Flex layout, with direction selected by [`FlexDirection`].
     Flex,
+    /// Grid layout using the supported grid track subset.
     Grid,
 }
 
+/// Main-axis direction for flex layout.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum FlexDirection {
+    /// Lay children along the horizontal axis.
     #[default]
     Row,
+    /// Lay children along the vertical axis.
     Column,
 }
 
+/// Typed values resolved from matching CSS rules for one native component.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ControlStyle {
+    /// Generic box layout mode.
     pub display: Option<Display>,
+    /// Flex child direction.
     pub flex_direction: Option<FlexDirection>,
+    /// Grid column tracks.
     pub grid_columns: Option<Vec<Track>>,
+    /// Preferred width.
     pub width: Option<Length>,
+    /// Preferred height.
     pub height: Option<Length>,
+    /// Minimum width in logical pixels.
     pub min_width: Option<f32>,
+    /// Maximum width in logical pixels.
     pub max_width: Option<f32>,
+    /// Minimum height in logical pixels.
     pub min_height: Option<f32>,
+    /// Maximum height in logical pixels.
     pub max_height: Option<f32>,
+    /// Cross-axis child alignment.
     pub align_items: Option<Align>,
+    /// Main-axis child distribution.
     pub justify_content: Option<Justify>,
+    /// Flex shrink factor.
     pub shrink: Option<f32>,
+    /// Flex basis.
     pub basis: Option<Length>,
+    /// Content inset in logical pixels.
     pub padding: Option<Insets>,
+    /// Outside spacing in logical pixels.
     pub margin: Option<Insets>,
+    /// Border width in logical pixels.
     pub border_width: Option<f32>,
+    /// Border color in Twinkle's `0xAARRGGBB` representation.
     pub border_color: Option<u32>,
+    /// Native shadow parameters.
     pub box_shadow: Option<BoxShadow>,
+    /// Native backdrop blur radius in logical pixels.
     pub backdrop_blur: Option<f32>,
+    /// Sibling pointer-proximity magnification parameters.
     pub proximity_magnification: Option<ProximityMagnification>,
+    /// Interaction transition duration in milliseconds.
     pub transition_duration_ms: Option<f32>,
+    /// Corner radius in logical pixels.
     pub radius: Option<f32>,
+    /// Text size in logical pixels.
     pub font_size: Option<f32>,
+    /// Text line height in logical pixels.
     pub line_height: Option<f32>,
+    /// Inline text alignment.
     pub text_align: Option<TextAlign>,
+    /// Background color.
     pub background: Option<u32>,
+    /// Foreground text color.
     pub color: Option<u32>,
+    /// Tint for supported icon content.
     pub icon_color: Option<u32>,
+    /// Flex grow factor.
     pub grow: Option<f32>,
+    /// Spacing between children in logical pixels.
     pub gap: Option<f32>,
+    /// Distance from the bottom edge for a granted native window surface.
     pub bottom: Option<f32>,
+    /// Distance from the top edge for a granted native window surface.
     pub top: Option<f32>,
     pub(crate) inherited_text: [bool; 3],
     // Computed once for this immutable resolved style, shared by cached returns
@@ -86,10 +131,14 @@ struct Selector {
     state: Option<InteractionState>,
 }
 
+/// Interaction state used to resolve hover/active/focus styles.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InteractionState {
+    /// Pointer is hovering the interactive control.
     Hover,
+    /// Control is actively pressed.
     Active,
+    /// Control has focus.
     Focus,
 }
 
@@ -1101,6 +1150,7 @@ struct InteractionCache {
     bytes: usize,
 }
 
+/// A compiled stylesheet and its bounded native style-resolution caches.
 #[derive(Clone, Debug, Default)]
 pub struct StyleSheet {
     rules: Vec<Rule>,
@@ -1116,14 +1166,17 @@ pub struct StyleSheet {
 }
 
 impl StyleSheet {
+    /// Compile CSS using the default appearance palette.
     pub fn compile(source: &str) -> Result<Self, String> {
         Self::compile_with_palette(source, ThemePalette::from_appearance(Appearance::default()))
     }
 
+    /// Compile CSS using an explicit palette for light/dark media evaluation.
     pub fn compile_with_palette(source: &str, palette: ThemePalette) -> Result<Self, String> {
         Self::compile_with_context(source, palette, HashMap::new())
     }
 
+    /// Compile CSS with host-owned root custom properties.
     pub fn compile_with_host_properties(
         source: &str,
         properties: HashMap<String, String>,
@@ -1201,10 +1254,12 @@ impl StyleSheet {
         Ok(sheet)
     }
 
+    /// Return the currently selected reading direction.
     pub fn reading_direction(&self) -> ReadingDirection {
         self.reading_direction
     }
 
+    /// Select reading direction and clear resolved-style caches if it changed.
     pub fn set_reading_direction(&mut self, direction: ReadingDirection) -> bool {
         let changed = self.reading_direction != direction;
         self.reading_direction = direction;
@@ -1215,6 +1270,7 @@ impl StyleSheet {
         changed
     }
 
+    /// Replace the palette and revalidate declarations under its color scheme.
     pub fn set_palette(&mut self, palette: ThemePalette) -> Result<bool, String> {
         if self.palette == Some(palette) {
             return Ok(false);
@@ -1225,8 +1281,8 @@ impl StyleSheet {
         Ok(self.uses_palette)
     }
 
-    /// Replaces host-owned root custom properties without assigning them a
-    /// toolkit namespace or meaning.
+    /// Replace host-owned root custom properties without assigning them a
+    /// toolkit namespace or meaning, after validating all CSS uses.
     pub fn set_host_properties(
         &mut self,
         properties: HashMap<String, String>,
@@ -1321,6 +1377,7 @@ impl StyleSheet {
         Ok(())
     }
 
+    /// Resolve ordinary style declarations for a native component identity.
     pub fn resolve(&self, kind: &str, id: Option<&str>, class_name: Option<&str>) -> ControlStyle {
         self.resolve_with_custom_properties(kind, id, class_name, &HashMap::new())
     }
@@ -1494,6 +1551,7 @@ impl StyleSheet {
         paint
     }
 
+    /// Resolve the interaction background for one control state.
     pub fn resolve_interaction_background(
         &self,
         kind: &str,
@@ -1524,6 +1582,7 @@ impl StyleSheet {
             .background
     }
 
+    /// Estimate bytes retained by rules and interaction caches.
     pub fn estimated_retained_bytes(&self) -> u64 {
         let mut bytes = self.rules.capacity() * std::mem::size_of::<Rule>();
         bytes += self.interactions.borrow().bytes;

@@ -77,6 +77,9 @@ Apache-2.0 except separately licensed dependencies. Twinkle is adopted by Nickel
 
 - [Getting started](docs/getting-started.md)
 - [Common application tasks](docs/task-guides.md)
+- [Building reusable Rust components](crates/twinkle/docs/reusable-components.md)
+- [Embedding JSX and CSS in a Rust host](crates/twinkle-presentation/docs/jsx-host.md)
+- [Supported CSS subset](crates/twinkle-presentation/docs/css.md)
 - [Workspace crate map](docs/crate-map.md)
 - [Accessibility capabilities](docs/accessibility.md)
 - [Troubleshooting](docs/troubleshooting.md)
