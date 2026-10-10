@@ -18,4 +18,4 @@ The workspace uses upstream winit's cross-platform data-transfer API; see [windo
 
 Relevant history was imported from Nickel with Git fast-export/import across the old and new crate paths, bootstrap/declaration history, portable core source origins, licenses and the former winit fork. Nickel-only current source was removed after import.
 
-Coverage and final migration acceptance are still being established; independent compilation is not proof of platform interaction acceptance.
+Repository extraction is complete. Nickel's downstream adoption and platform interaction acceptance remain ongoing work.

@@ -2,10 +2,10 @@
 
 `twinkle` is a native Rust UX layer with React-style declarative authoring, typed messages,
 intrinsic responsive layout, stable interaction state, and an included software presenter. It is
-being separated from Nickel into an independent UI engine. The renamed crates currently remain in
-Nickel's workspace. The native engine has no Nickel crate dependencies: hosted controller
-input is selected explicitly, and Nickel owns session discovery and transport in `nickel-ui-host`.
-Repository extraction and independent fixture/asset packaging remain in progress.
+an independent UI engine extracted from Nickel. The native engine has no Nickel crate
+dependencies: hosted controller input is selected explicitly, and Nickel owns session discovery
+and transport in `nickel-ui-host`. Twinkle's crates, fixtures, assets, tests, and release history
+are maintained in this standalone repository.
 
 ~~~rust
 use twinkle::prelude::*;
