@@ -230,6 +230,20 @@ function __nickelComponentProxy(selection) {
         return __nickelVirtualNativeNode({kind:'__packageComponent', ...selection, props});
     });
 }
+const __twinkleCompositionClient = Object.freeze({
+    get data() { return twinkle.data; },
+    request(effect) { twinkle.request(effect); },
+    component(contract) {
+        if (typeof contract !== 'string') throw TypeError('invalid component contract');
+        return __nickelComponentProxy({contract});
+    },
+    contributions(collection) {
+        if (typeof collection !== 'string') throw TypeError('invalid contribution collection');
+        return Object.freeze((__nickelContributionCatalog[collection] || []).map(entry => Object.freeze({
+            ...entry, component: __nickelComponentProxy({contribution:entry.key})
+        })));
+    }
+});
 function __nickelHydrateComponentProps(value) {
     if (Array.isArray(value)) return value.map(__nickelHydrateComponentProps);
     if (value && typeof value === 'object') {
@@ -257,7 +271,15 @@ function __nickelHydrateComponentProps(value) {
             output.push_str(&format!(
                 "__nickelDefineModule({}, function(module, exports, require) {{\n{}\n}});\n",
                 js_string(&path),
-                format!("{}\n{transformed}", self.module_prelude)
+                format!(
+                    "{}\n{}\n{transformed}",
+                    if self.component_bridge {
+                        "const twinkle = __twinkleCompositionClient;"
+                    } else {
+                        ""
+                    },
+                    self.module_prelude
+                )
             ));
         }
         for (contract, (path, name)) in &self.public_exports {

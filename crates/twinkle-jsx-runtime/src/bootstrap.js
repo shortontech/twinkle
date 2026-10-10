@@ -523,6 +523,10 @@ const twinkle = Object.freeze({
         const component = __nickelPublicComponents.get(contract);
         if (!component) throw Error(`unknown public component ${contract}`);
         return component;
+    },
+    contributions(collection) {
+        if (typeof collection !== 'string') throw TypeError('invalid contribution collection');
+        return Object.freeze([]);
     }
 });
 

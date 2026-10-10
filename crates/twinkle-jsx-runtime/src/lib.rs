@@ -10,6 +10,7 @@ use std::time::Instant;
 
 mod bindings;
 pub use bindings::{DataPublisher, HostBindings};
+pub mod composition;
 mod engine;
 pub mod modules;
 
