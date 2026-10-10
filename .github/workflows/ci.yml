@@ -23,6 +23,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
+      - name: Enforce public API documentation ratchet
+        run: ./scripts/check-doc-coverage.sh
       - name: Verify release packages and external consumer
         run: ./scripts/verify-release.sh
       - name: Check workspace formatting

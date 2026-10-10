@@ -21,12 +21,14 @@ cargo fmt --check --all
 cargo check --workspace --all-targets --all-features --locked
 cargo test --workspace --all-features --locked
 cargo doc -p twinkle-ui --no-deps
+./scripts/check-doc-coverage.sh
 ```
 
 Keep changes focused, add tests for observable behavior, and update public documentation when an
 API or supported workflow changes. Public APIs should explain invariants, failure modes, and include
 a small example when usage is not obvious. Commit messages should describe the user-visible reason
-for the change.
+for the change. The documentation coverage check forces the missing-doc lint through scoped legacy
+allowances and prevents the known debt from growing; lower its bound whenever that debt is reduced.
 
 ## Specifications
 
