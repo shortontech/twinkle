@@ -1,28 +1,41 @@
+//! Backend-neutral geometry, sizing constraints, and flex/grid vocabulary.
+
+/// A logical two-dimensional extent.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Size {
+    /// Horizontal extent in logical pixels.
     pub width: f32,
+    /// Vertical extent in logical pixels.
     pub height: f32,
 }
 
 impl Size {
+    /// Creates a size from logical width and height.
     pub const fn new(width: f32, height: f32) -> Self {
         Self { width, height }
     }
 }
 
+/// A point in logical viewport coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Point {
+    /// Horizontal coordinate from the viewport's leading edge.
     pub x: f32,
+    /// Vertical coordinate from the viewport's top edge.
     pub y: f32,
 }
 
+/// An axis-aligned logical rectangle.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
+    /// Top-left coordinate.
     pub origin: Point,
+    /// Nonnegative logical extent.
     pub size: Size,
 }
 
 impl Rect {
+    /// Creates a rectangle from its top-left coordinate and extent.
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
         Self {
             origin: Point { x, y },
@@ -30,6 +43,9 @@ impl Rect {
         }
     }
 
+    /// Returns the content rectangle after applying edge insets.
+    ///
+    /// Width and height clamp to zero when the insets exceed the original extent.
     pub fn inset(self, insets: Insets) -> Self {
         Self::new(
             self.origin.x + insets.left,
@@ -40,15 +56,21 @@ impl Rect {
     }
 }
 
+/// Logical spacing on the four edges of a box.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Insets {
+    /// Top inset.
     pub top: f32,
+    /// Right inset.
     pub right: f32,
+    /// Bottom inset.
     pub bottom: f32,
+    /// Left inset.
     pub left: f32,
 }
 
 impl Insets {
+    /// Uses the same inset on every edge.
     pub const fn all(value: f32) -> Self {
         Self {
             top: value,
@@ -58,6 +80,7 @@ impl Insets {
         }
     }
 
+    /// Uses one value for left/right and another for top/bottom.
     pub const fn symmetric(horizontal: f32, vertical: f32) -> Self {
         Self {
             top: vertical,
@@ -67,18 +90,22 @@ impl Insets {
         }
     }
 
+    /// Applies an inset to the left and right edges only.
     pub const fn horizontal(value: f32) -> Self {
         Self::symmetric(value, 0.0)
     }
 
+    /// Applies an inset to the top and bottom edges only.
     pub const fn vertical(value: f32) -> Self {
         Self::symmetric(0.0, value)
     }
 
+    /// Returns the combined left and right inset.
     pub const fn width(self) -> f32 {
         self.left + self.right
     }
 
+    /// Returns the combined top and bottom inset.
     pub const fn height(self) -> f32 {
         self.top + self.bottom
     }
@@ -90,17 +117,25 @@ impl From<f32> for Insets {
     }
 }
 
+/// Minimum and maximum size accepted by a layout child.
+///
+/// Infinite maximums represent an indefinite parent axis. Resolution normalizes invalid or
+/// contradictory values into finite, nonnegative output whenever a concrete size is constrained.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Constraints {
+    /// Minimum permitted size.
     pub min: Size,
+    /// Maximum permitted size.
     pub max: Size,
 }
 
 impl Constraints {
+    /// Creates constraints from explicit minimum and maximum sizes.
     pub const fn new(min: Size, max: Size) -> Self {
         Self { min, max }
     }
 
+    /// Clamps a candidate size to these constraints.
     pub fn constrain(self, size: Size) -> Size {
         let max_width = self.max.width.max(self.min.width);
         let max_height = self.max.height.max(self.min.height);
@@ -110,6 +145,7 @@ impl Constraints {
         }
     }
 
+    /// Creates constraints that require exactly `size`.
     pub const fn tight(size: Size) -> Self {
         Self {
             min: size,
@@ -117,6 +153,7 @@ impl Constraints {
         }
     }
 
+    /// Creates zero-minimum constraints bounded by `max`.
     pub const fn loose(max: Size) -> Self {
         Self {
             min: Size::new(0.0, 0.0),
@@ -124,20 +161,29 @@ impl Constraints {
         }
     }
 
+    /// Creates indefinite constraints on both axes.
     pub const fn unbounded() -> Self {
         Self::loose(Size::new(f32::INFINITY, f32::INFINITY))
     }
 }
 
+/// A declarative size along one layout axis.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Length {
+    /// Uses the component's intrinsic size.
     #[default]
     Auto,
+    /// Uses a fixed number of logical pixels.
     Px(f32),
+    /// Uses a fraction of a definite parent extent, expressed from `0.0` to `1.0`.
     Percent(f32),
+    /// Fills definite available space and falls back to intrinsic size when indefinite.
     Fill,
+    /// Takes a weighted share of grid or flex free space.
     Fraction(f32),
+    /// Uses the minimum intrinsic content contribution.
     MinContent,
+    /// Uses the maximum intrinsic content contribution.
     MaxContent,
 }
 
@@ -148,14 +194,17 @@ impl From<f32> for Length {
 }
 
 impl Length {
+    /// Creates a percentage length expressed as a fraction of the parent.
     pub const fn percent(value: f32) -> Self {
         Self::Percent(value)
     }
 
+    /// Creates a fractional free-space length.
     pub const fn fr(value: f32) -> Self {
         Self::Fraction(value)
     }
 
+    /// Resolves this length against a parent extent and intrinsic fallback.
     pub fn resolve(self, parent: f32, intrinsic: f32) -> f32 {
         match self {
             Self::Auto | Self::MinContent | Self::MaxContent => intrinsic,
@@ -176,63 +225,93 @@ impl Length {
     }
 }
 
+/// Cross-axis alignment of a child within its allocated layout slot.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Align {
+    /// Aligns to the cross-axis start.
     #[default]
     Start,
+    /// Centers on the cross axis.
     Center,
+    /// Aligns to the cross-axis end.
     End,
+    /// Expands to the available cross-axis extent.
     Stretch,
+    /// Aligns compatible text children by baseline.
     Baseline,
 }
 
+/// Distribution of children along a container's main axis.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Justify {
+    /// Packs children at the main-axis start.
     #[default]
     Start,
+    /// Packs children at the center.
     Center,
+    /// Packs children at the main-axis end.
     End,
+    /// Distributes free space only between children.
     SpaceBetween,
+    /// Distributes equal space around every child.
     SpaceAround,
+    /// Distributes equal space between children and container edges.
     SpaceEvenly,
 }
 
+/// Painting and scrolling policy when content exceeds its allocated box.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Overflow {
+    /// Paints overflow without clipping or scrolling.
     #[default]
     Visible,
+    /// Clips content to the allocated box.
     Clip,
+    /// Clips content and always provides scroll behavior on the axis.
     Scroll,
+    /// Provides scroll behavior only when content overflows.
     Auto,
 }
 
+/// A declarative grid track definition.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Track {
+    /// A fixed logical-pixel track.
     Px(f32),
+    /// A track sized from its contents.
     Auto,
+    /// A weighted share of remaining grid space.
     Fraction(f32),
+    /// A track clamped between two track sizing functions.
     MinMax(Box<Track>, Box<Track>),
+    /// A fixed number of repeated tracks.
     Repeat(usize, Box<Track>),
+    /// As many repeated tracks as fit the definite grid extent.
     AutoFit(Box<Track>),
 }
 
 impl Track {
+    /// Creates a fixed logical-pixel track.
     pub fn px(value: f32) -> Self {
         Self::Px(value)
     }
 
+    /// Creates a fractional track.
     pub fn fr(value: f32) -> Self {
         Self::Fraction(value)
     }
 
+    /// Creates a track clamped between minimum and maximum definitions.
     pub fn minmax(min: impl Into<Track>, max: impl Into<Track>) -> Self {
         Self::MinMax(Box::new(min.into()), Box::new(max.into()))
     }
 
+    /// Repeats a track definition `count` times.
     pub fn repeat(count: usize, track: impl Into<Track>) -> Self {
         Self::Repeat(count, Box::new(track.into()))
     }
 
+    /// Repeats a track definition to fill the available grid extent.
     pub fn repeat_auto_fit(track: impl Into<Track>) -> Self {
         Self::AutoFit(Box::new(track.into()))
     }
@@ -244,22 +323,32 @@ impl From<f32> for Track {
     }
 }
 
+/// Primary direction of a flex layout operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Axis {
+    /// Places children from left to right in logical coordinates.
     Horizontal,
+    /// Places children from top to bottom.
     Vertical,
 }
 
+/// One dimension's intrinsic and flexible sizing inputs for [`layout_flex`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlexItem {
+    /// Preferred extent before distributing positive or negative free space.
     pub preferred: f32,
+    /// Smallest permitted extent.
     pub min: f32,
+    /// Largest permitted extent.
     pub max: f32,
+    /// Relative weight when distributing positive free space.
     pub grow: f32,
+    /// Relative weight when removing overflowing space.
     pub shrink: f32,
 }
 
 impl FlexItem {
+    /// Creates a non-growing, non-shrinking item of exactly `size`.
     pub const fn fixed(size: f32) -> Self {
         Self {
             preferred: size,
@@ -270,6 +359,7 @@ impl FlexItem {
         }
     }
 
+    /// Creates a growing item with the default shrink factor of one.
     pub const fn flexible(preferred: f32, min: f32, max: f32, grow: f32) -> Self {
         Self {
             preferred,
@@ -280,6 +370,7 @@ impl FlexItem {
         }
     }
 
+    /// Creates an item with explicit grow and shrink factors.
     pub const fn flex(preferred: f32, min: f32, max: f32, grow: f32, shrink: f32) -> Self {
         Self {
             preferred,
@@ -291,6 +382,10 @@ impl FlexItem {
     }
 }
 
+/// Resolves one-dimensional flex items into rectangles inside `bounds`.
+///
+/// The result preserves item order, applies `gap` between adjacent items, and never emits negative
+/// or non-finite geometry. Cross-axis placement fills the supplied bounds.
 pub fn layout_flex(bounds: Rect, axis: Axis, gap: f32, items: &[FlexItem]) -> Vec<Rect> {
     if items.is_empty() {
         return Vec::new();

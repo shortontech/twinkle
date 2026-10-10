@@ -21,7 +21,6 @@ pub mod gpu;
 pub mod input;
 #[allow(missing_docs)]
 mod internal_surface;
-#[allow(missing_docs)]
 pub mod layout;
 #[allow(missing_docs)]
 pub mod on_screen_keyboard;
