@@ -1,0 +1,12 @@
+[package]
+name = "twinkle-external-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Keep this fixture independent so it exercises dependency resolution as a
+# third-party project rather than inheriting the repository workspace.
+[workspace]
+
+[dependencies]
+twinkle = { path = "../../.." }
