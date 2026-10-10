@@ -13,6 +13,17 @@ use std::{
 static NEXT_LOCAL_CONTROLLER_LEASE: AtomicU64 = AtomicU64::new(1);
 static NEXT_NATIVE_HOST_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// Zero is the terminal sentinel, so the last valid incarnation can be allocated
+/// once without ever wrapping back to a previously admitted nonzero identity.
+#[allow(deprecated)] // fetch_update supports the workspace minimum Rust version.
+fn allocate_generation(counter: &AtomicU64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            (current != 0).then(|| current.checked_add(1).unwrap_or(0))
+        })
+        .ok()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ControllerDiscoveryMode {
     Standalone,
@@ -35,12 +46,12 @@ struct ControllerRoleLease {
 }
 
 impl ControllerRoleLease {
-    fn local() -> Self {
-        Self {
+    fn local() -> Option<Self> {
+        Some(Self {
             role: ControllerRole::Local,
             owner_generation: 0,
-            generation: NEXT_LOCAL_CONTROLLER_LEASE.fetch_add(1, Ordering::Relaxed),
-        }
+            generation: allocate_generation(&NEXT_LOCAL_CONTROLLER_LEASE)?,
+        })
     }
 
     #[cfg(test)]
@@ -62,12 +73,15 @@ type SelectedControllerSource = (
 
 fn select_controller_source(source: ControllerSource) -> SelectedControllerSource {
     match source {
-        ControllerSource::Standalone => (
-            ControllerDiscoveryMode::Standalone,
-            Some(ControllerInput::new()),
-            Some(ControllerRoleLease::local()),
-            None,
-        ),
+        ControllerSource::Standalone => match ControllerRoleLease::local() {
+            Some(lease) => (
+                ControllerDiscoveryMode::Standalone,
+                Some(ControllerInput::new()),
+                Some(lease),
+                None,
+            ),
+            None => (ControllerDiscoveryMode::Disabled, None, None, None),
+        },
         ControllerSource::Hosted(source) => {
             (ControllerDiscoveryMode::Session, None, None, Some(source))
         }
@@ -5090,6 +5104,26 @@ mod tests {
     };
 
     #[test]
+    fn controller_lease_allocator_exhaustion_is_terminal_across_threads() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX - 7));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let counter = std::sync::Arc::clone(&counter);
+                std::thread::spawn(move || super::allocate_generation(&counter))
+            })
+            .collect();
+        let mut admitted: Vec<_> = threads
+            .into_iter()
+            .filter_map(|thread| thread.join().unwrap())
+            .collect();
+        admitted.sort_unstable();
+        assert_eq!(admitted, (u64::MAX - 7..=u64::MAX).collect::<Vec<_>>());
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(super::allocate_generation(&counter), None);
+        assert_eq!(super::allocate_generation(&counter), None);
+    }
+
+    #[test]
     fn unavailable_hosted_controller_source_never_enables_native_polling() {
         struct PendingSource;
         impl crate::HostedControllerSource for PendingSource {
@@ -5330,8 +5364,8 @@ mod tests {
 
     #[test]
     fn controller_poll_ownership_is_explicit_and_role_scoped() {
-        let local = ControllerRoleLease::local();
-        let next_local = ControllerRoleLease::local();
+        let local = ControllerRoleLease::local().unwrap();
+        let next_local = ControllerRoleLease::local().unwrap();
         let session = ControllerRoleLease::session(3, 7);
 
         assert_eq!(local.role, ControllerRole::Local);
