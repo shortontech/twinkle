@@ -5,6 +5,12 @@ intrinsic responsive layout, stable interaction state, and an included software 
 an independent UI engine. Hosted controller input is selected explicitly, while applications
 provide any required session discovery and transport through host adapters.
 
+New to Twinkle? Start with the repository's
+[external-consumer guide](../../docs/getting-started.md) for prerequisites, dependency setup, and a
+complete application. This document is the conceptual component and layout guide. Generate the API
+reference locally with `cargo doc -p twinkle --open`; after publication it will also be available
+on [docs.rs](https://docs.rs/twinkle).
+
 ~~~rust
 use twinkle::prelude::*;
 
@@ -35,13 +41,17 @@ fn view(title: &str, volume: f32) -> impl View<Message> {
 The builder API remains public and supported as an alternative. Declarative and builder calls
 produce the same typed component tree and use the same measurement, state, diagnostics, event, and
 rendering paths. Its complete API reference is the rustdoc for the component types, `Element`, and
-`ComponentBuilderExt`; `examples/builder.rs` is a focused optional example. The default learning
-path and application runtime do not require it.
+`ComponentBuilderExt`; [`examples/builder.rs`](examples/builder.rs) is a focused optional example.
+The default learning path and application runtime do not require it.
 
 An executable implements `Application` and calls `run(app)`. The runtime owns winit initialization,
 the native window, event and redraw loops, software presentation, and the per-window `UiStateStore`; the
 application owns only domain state, typed messages, `update`, and `view`. See
-`examples/standalone.rs` for the complete counter application.
+[`examples/standalone.rs`](examples/standalone.rs) for the complete counter application.
+
+The crate currently has no Cargo features. Native windowing, controller input, clipboard and image
+support, and software presentation are included in a normal dependency. Oxc and V8 are not in this
+crate's dependency closure; JSX is an opt-in feature of the separate repository tooling.
 
 ## Controller navigation
 

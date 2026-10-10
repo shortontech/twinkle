@@ -2600,9 +2600,8 @@ impl<Message> AnyView<Message> {
         Self(component.into_element())
     }
 
-    /// Apply source-owned static-text revisions in place, without moving the
+    /// Apply a source-owned static-text revision in place without moving the
     /// declaration through another by-value component conversion.
-    /// See [`Element::static_text_content_revision`] for the source contract.
     pub fn set_static_text_content_revision(&mut self, revision: u64) {
         self.0.set_static_text_content_revision(revision, false);
     }
