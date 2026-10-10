@@ -1,6 +1,12 @@
+//! Unicode-safe retained text editing model with IME and bounded undo history.
+
 use std::{fmt, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Editable UTF-8 text, selection, preedit transaction, and undo/redo history.
+///
+/// All cursor and selection offsets are byte indices clamped to grapheme boundaries. Its `Debug`
+/// representation reports only sizes and offsets so password or clipboard text is not exposed.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct TextEditor {
     text: String,
@@ -39,6 +45,7 @@ struct EditorSnapshot {
 const HISTORY_LIMIT: usize = 100;
 
 impl TextEditor {
+    /// Creates an editor with the caret at the end of `text`.
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         let cursor = text.len();
@@ -53,10 +60,12 @@ impl TextEditor {
         }
     }
 
+    /// Returns committed document text without the active IME preedit.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Returns the caret byte offset in committed text.
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -67,6 +76,7 @@ impl TextEditor {
         fingerprint(self.text.as_bytes())
     }
 
+    /// Opaque generation used to reject selection commands from stale UI.
     pub fn selection_generation(&self) -> u64 {
         fingerprint(
             &[
@@ -77,15 +87,18 @@ impl TextEditor {
         )
     }
 
+    /// Returns the ordered selected byte range, or `None` for a collapsed caret.
     pub fn selection(&self) -> Option<Range<usize>> {
         (self.cursor != self.anchor)
             .then(|| self.cursor.min(self.anchor)..self.cursor.max(self.anchor))
     }
 
+    /// Borrows selected committed text.
     pub fn selected_text(&self) -> Option<&str> {
         self.selection().map(|range| &self.text[range])
     }
 
+    /// Removes and returns selected text as one undoable edit.
     pub fn cut_selection(&mut self) -> Option<String> {
         let selected = self.selected_text()?.to_owned();
         self.record_edit();
@@ -93,6 +106,7 @@ impl TextEditor {
         Some(selected)
     }
 
+    /// Replaces the document, moves the caret to its end, and clears history and preedit.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.cursor = self.text.len();
@@ -102,6 +116,7 @@ impl TextEditor {
         self.redo.clear();
     }
 
+    /// Clears committed text as one undoable edit.
     pub fn clear(&mut self) {
         if self.text.is_empty() {
             return;
@@ -113,10 +128,12 @@ impl TextEditor {
         self.cancel_preedit();
     }
 
+    /// Returns the current uncommitted IME composition.
     pub fn preedit(&self) -> &str {
         &self.preedit
     }
 
+    /// Replaces the active IME composition and its optional selection/caret range.
     pub fn set_preedit(&mut self, text: impl Into<String>, cursor: Option<Range<usize>>) {
         self.preedit = text.into();
         self.preedit_cursor = cursor.map(|range| {
@@ -124,16 +141,19 @@ impl TextEditor {
         });
     }
 
+    /// Cancels preedit state and inserts the committed IME result.
     pub fn commit_preedit(&mut self, text: &str) {
         self.cancel_preedit();
         self.insert(text);
     }
 
+    /// Discards the current uncommitted IME composition.
     pub fn cancel_preedit(&mut self) {
         self.preedit.clear();
         self.preedit_cursor = None;
     }
 
+    /// Builds presentation text with `caret` inserted at the visual composition caret.
     pub fn display_text_with_caret(&self, caret: &str) -> String {
         let replacement = if self.preedit.is_empty() {
             self.cursor..self.cursor
@@ -158,6 +178,7 @@ impl TextEditor {
         displayed
     }
 
+    /// Builds the displayed text prefix preceding the visual composition caret.
     pub fn display_caret_prefix(&self) -> String {
         if self.preedit.is_empty() {
             return self.text[..self.cursor].to_owned();
@@ -174,10 +195,12 @@ impl TextEditor {
         )
     }
 
+    /// Inserts text at the caret or replaces the current selection.
     pub fn insert(&mut self, text: &str) {
         self.replace_selection(text);
     }
 
+    /// Replaces the selection, or inserts at a collapsed caret, as one undoable edit.
     pub fn replace_selection(&mut self, replacement: &str) {
         let range = self.selection().unwrap_or(self.cursor..self.cursor);
         if &self.text[range.clone()] == replacement {
@@ -190,6 +213,7 @@ impl TextEditor {
         self.anchor = self.cursor;
     }
 
+    /// Deletes the selection or preceding grapheme cluster.
     pub fn backspace(&mut self) {
         if self.selection().is_some() {
             self.record_edit();
@@ -206,6 +230,7 @@ impl TextEditor {
         self.anchor = previous;
     }
 
+    /// Deletes the selection or preceding Unicode word segment.
     pub fn backspace_word(&mut self) {
         if self.selection().is_some() {
             self.record_edit();
@@ -222,6 +247,7 @@ impl TextEditor {
         self.anchor = previous;
     }
 
+    /// Deletes the selection or following grapheme cluster.
     pub fn delete(&mut self) {
         if self.selection().is_some() {
             self.record_edit();
@@ -237,6 +263,7 @@ impl TextEditor {
         self.anchor = self.cursor;
     }
 
+    /// Moves to the previous grapheme boundary, optionally extending selection.
     pub fn move_left(&mut self, extend_selection: bool) {
         if !extend_selection && let Some(selection) = self.selection() {
             self.cursor = selection.start;
@@ -246,6 +273,7 @@ impl TextEditor {
         self.move_cursor(previous_boundary(&self.text, self.cursor), extend_selection);
     }
 
+    /// Moves to the next grapheme boundary, optionally extending selection.
     pub fn move_right(&mut self, extend_selection: bool) {
         if !extend_selection && let Some(selection) = self.selection() {
             self.cursor = selection.end;
@@ -255,6 +283,7 @@ impl TextEditor {
         self.move_cursor(next_boundary(&self.text, self.cursor), extend_selection);
     }
 
+    /// Moves to the previous word boundary, optionally extending selection.
     pub fn move_word_left(&mut self, extend_selection: bool) {
         if !extend_selection && let Some(selection) = self.selection() {
             self.move_cursor(selection.start, false);
@@ -266,6 +295,7 @@ impl TextEditor {
         );
     }
 
+    /// Moves to the next word boundary, optionally extending selection.
     pub fn move_word_right(&mut self, extend_selection: bool) {
         if !extend_selection && let Some(selection) = self.selection() {
             self.move_cursor(selection.end, false);
@@ -277,27 +307,33 @@ impl TextEditor {
         );
     }
 
+    /// Moves to the document start, optionally extending selection.
     pub fn move_home(&mut self, extend_selection: bool) {
         self.move_cursor(0, extend_selection);
     }
 
+    /// Moves to the document end, optionally extending selection.
     pub fn move_end(&mut self, extend_selection: bool) {
         self.move_cursor(self.text.len(), extend_selection);
     }
 
+    /// Selects the complete committed document.
     pub fn select_all(&mut self) {
         self.anchor = 0;
         self.cursor = self.text.len();
     }
 
+    /// Reports whether an earlier edit snapshot can be restored.
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
 
+    /// Reports whether an undone edit can be reapplied.
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
 
+    /// Restores the previous edit snapshot when available.
     pub fn undo(&mut self) {
         let Some(snapshot) = self.undo.pop() else {
             return;
@@ -307,6 +343,7 @@ impl TextEditor {
         self.redo.push(current);
     }
 
+    /// Reapplies the next undone edit snapshot when available.
     pub fn redo(&mut self) {
         let Some(snapshot) = self.redo.pop() else {
             return;
@@ -316,6 +353,7 @@ impl TextEditor {
         self.undo.push(current);
     }
 
+    /// Deletes a nonempty selection as one undoable edit.
     pub fn delete_selected(&mut self) {
         if self.selection().is_some() {
             self.record_edit();
@@ -323,11 +361,13 @@ impl TextEditor {
         }
     }
 
+    /// Collapses selection at the nearest grapheme boundary to `cursor`.
     pub fn place_cursor(&mut self, cursor: usize) {
         self.cursor = clamp_grapheme_boundary(&self.text, cursor);
         self.anchor = self.cursor;
     }
 
+    /// Moves the caret endpoint to the nearest grapheme boundary while retaining the anchor.
     pub fn extend_selection_to(&mut self, cursor: usize) {
         self.cursor = clamp_grapheme_boundary(&self.text, cursor);
     }

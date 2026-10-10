@@ -7,7 +7,7 @@ cd "$repository_root"
 # Force the lint through the temporary module-level legacy allowances. This is a ratchet, not a
 # claim that the remaining warnings are acceptable documentation. Lower the bound whenever public
 # items receive useful rustdoc; never raise it to admit a regression.
-maximum_missing_docs=2270
+maximum_missing_docs=2234
 report="$(mktemp)"
 trap 'rm -f "$report"' EXIT
 

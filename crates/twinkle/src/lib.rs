@@ -34,7 +34,6 @@ mod runtime;
 pub mod state;
 #[allow(missing_docs)]
 pub mod text_context_menu;
-#[allow(missing_docs)]
 pub mod text_editor;
 #[allow(missing_docs)]
 pub mod theme;
