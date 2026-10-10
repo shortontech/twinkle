@@ -31,3 +31,18 @@ Native composition subtree diffing, patch normalization, namespaces and retained
 `JsxRuntime::register_component_mount` and its bootstrap entry are generic, using admitted public exports and per-mount hooks without a Nickel bootstrap. The former registered-page switch belongs to Nickel's `SettingsRuntimeExt`. A standalone conformance test exercises two mounts sharing loaded code, independent state, native callback dispatch, retained state on reselection, and rejected unknown/empty selections. This supplies the mount primitive for the remaining generic multi-owner manager extraction.
 
 The generic multi-owner manager is now implemented in `composition.rs` over `AdmittedLinkPlan`, `OwnerRuntime`, and explicit `CompositionHost` hooks. Its ordinary host uses unit metadata and no Nickel bindings. Mounts, callback/child grants, effect origins, native patch reconciliation, checkpoint rollback and retirement are generic. Module preparation owns the portable component/contribution client and declares contribution metadata without a desktop schema. Eight manager regressions and all 103 runtime tests pass; independent workspace compilation and formatting pass. Nickel's active legacy manager, catalog reload, and provider synchronization still require adapter integration and replacement before extraction sign-off.
+
+The generic composition manager also owns `reload_admitted`: it receives an
+isolated native-admitted candidate, prepared module graphs and compatibility
+signatures. It preflights complete root expansion, preserves compatible hook
+contexts, replaces incompatible provider contexts, retires old grants and emits
+native root replacement patches. It does not resolve Nickel catalogs or inspect
+capability/Settings schemas. Contributor synchronization validates bounded link
+plans without executing guest code and gives re-imported contexts fresh local
+authority incarnations.
+
+Development reload is not an atomic transaction over arbitrary package globals.
+An installation or native registration failure after successful preflight may
+have changed accepted contexts. Nickel's active spec 0279 tracks the recovery
+protocol needed before such errors can be reported as preserving the accepted
+graph. The production Nickel manager adapter remains an integration step.

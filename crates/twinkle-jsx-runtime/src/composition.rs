@@ -16,8 +16,8 @@ use twinkle_protocol::native_tree::{
 use serde_json::Value;
 
 use crate::{
-    JsxRuntime, NativePatchCounters, NativePatchEnvelope, NativePatchOperation, ScheduledPatch,
-    ScheduledRender,
+    JsxModuleGraph, JsxRuntime, NativePatchCounters, NativePatchEnvelope, NativePatchOperation,
+    ScheduledPatch, ScheduledRender,
 };
 
 static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
@@ -524,7 +524,17 @@ impl<H: CompositionHost> CompositionRuntime<H> {
                 return Err("replacement validation requires isolated execution domains".into());
             }
         }
-        for state in self.mounts.values() {
+        let nested = self
+            .nested_mounts
+            .values()
+            .map(|mount| mount.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        for (id, state) in &self.mounts {
+            if nested.contains(id) {
+                // Parent expansion supplies candidate-owned callback/child grants;
+                // accepted nested transport props cannot cross into the candidate.
+                continue;
+            }
             let package = candidate
                 .packages
                 .get(&state.reference.owner)
@@ -543,6 +553,184 @@ impl<H: CompositionHost> CompositionRuntime<H> {
             cleanup?;
         }
         Ok(())
+    }
+
+    /// Install a native-admitted replacement graph after isolated root preflight.
+    /// Compatible owners retain their hook context; incompatible owners receive
+    /// the candidate execution domain and all former event grants are retired.
+    ///
+    /// This preserves development reload semantics. Failures during installation
+    /// or host registration are not transactional over arbitrary package globals;
+    /// callers must not report such a failure as an unchanged accepted graph.
+    pub fn reload_admitted(
+        &mut self,
+        mut candidate: Self,
+        graphs: &BTreeMap<H::Owner, JsxModuleGraph>,
+        signatures: &BTreeMap<H::Owner, PackageReloadSignatures>,
+    ) -> Result<CompositionReload<H>, String>
+    where
+        H::State: PartialEq,
+    {
+        self.validate_replacement(&mut candidate)?;
+        let changed = self
+            .packages
+            .keys()
+            .chain(candidate.packages.keys())
+            .filter(|owner| {
+                self.packages
+                    .get(*owner)
+                    .zip(candidate.packages.get(*owner))
+                    .is_none_or(|(old, new)| {
+                        old.source_digest != new.source_digest
+                            || old.host_state != new.host_state
+                            || old.exports != new.exports
+                            || old.assets != new.assets
+                    })
+            })
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let compatible = changed
+            .iter()
+            .filter(|owner| {
+                signatures
+                    .get(*owner)
+                    .is_some_and(|set| set.previous == set.replacement)
+                    && self
+                        .packages
+                        .get(*owner)
+                        .zip(candidate.packages.get(*owner))
+                        .is_some_and(|(old, new)| {
+                            old.host_state == new.host_state
+                                && old.exports == new.exports
+                                && old.assets == new.assets
+                        })
+            })
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for owner in &compatible {
+            graphs
+                .get(owner)
+                .ok_or("compatible replacement module graph is unavailable")?
+                .compile()?;
+        }
+        let nested = self
+            .nested_mounts
+            .values()
+            .map(|mount| mount.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let roots = self
+            .mounts
+            .keys()
+            .filter(|id| !nested.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        let mut result = CompositionReload {
+            preserved_packages: Vec::new(),
+            restarted_packages: Vec::new(),
+            patches: Vec::new(),
+        };
+        if changed.is_empty() && candidate.resolution == self.resolution {
+            return Ok(result);
+        }
+        // Unmount incompatible nested boundaries while their old domain is live.
+        // Root handles stay stable and will be registered in replacement domains.
+        let retire_nested = nested
+            .iter()
+            .filter(|id| {
+                self.mounts.get(id).is_some_and(|state| {
+                    changed.contains(&state.reference.owner)
+                        && !compatible.contains(&state.reference.owner)
+                })
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        for id in retire_nested {
+            if self.mounts.contains_key(&id) {
+                self.unmount(&ComponentMount {
+                    runtime: self.id,
+                    id,
+                })?;
+            }
+        }
+        self.nested_mounts
+            .retain(|_, mount| self.mounts.contains_key(&mount.id));
+        for owner in &changed {
+            if compatible.contains(owner) {
+                self.packages
+                    .get_mut(owner)
+                    .unwrap()
+                    .runtime
+                    .borrow_mut()
+                    .hot_install_modules(&graphs[owner], &signatures[owner].replacement)?;
+                let replacement = candidate.packages.remove(owner).unwrap();
+                let current = self.packages.get_mut(owner).unwrap();
+                current.source_digest = replacement.source_digest;
+                current.host_state = replacement.host_state;
+                current.exports = replacement.exports;
+                current.assets = replacement.assets;
+                result.preserved_packages.push(owner.clone());
+            } else {
+                if let Some(old) = self.packages.get_mut(owner) {
+                    for id in &roots {
+                        if self.mounts[id].reference.owner == *owner {
+                            old.runtime.borrow_mut().drop_surface(&surface(*id))?;
+                        }
+                    }
+                }
+                self.packages.remove(owner);
+                if let Some(replacement) = candidate.packages.remove(owner) {
+                    self.packages.insert(owner.clone(), replacement);
+                    result.restarted_packages.push(owner.clone());
+                }
+            }
+        }
+        self.resolution = candidate.resolution;
+        self.callbacks.clear();
+        self.children.clear();
+        self.effects
+            .retain(|effect| !changed.contains(&effect.owner));
+        self.scheduled_renders.clear();
+        for id in roots {
+            let state = self.mounts[&id].clone();
+            let package = self
+                .packages
+                .get_mut(&state.reference.owner)
+                .ok_or("replacement removed a mounted owner")?;
+            if result.restarted_packages.contains(&state.reference.owner) {
+                self.extensions.register_mount(
+                    package,
+                    &surface(id),
+                    &state.reference.implementation,
+                )?;
+                self.mounts.get_mut(&id).unwrap().reference.incarnation = package.incarnation;
+            }
+            let mount = ComponentMount {
+                runtime: self.id,
+                id,
+            };
+            let rendered = self.render_expanded(&mount, &state.props, |_| Ok(()))?;
+            result.patches.push(ReloadedMountPatch {
+                mount,
+                patch: NativePatchEnvelope {
+                    version: 1,
+                    operations: vec![NativePatchOperation::ReplaceSubtree {
+                        target: "root".into(),
+                        node: rendered.node,
+                    }],
+                    counters: NativePatchCounters {
+                        nodes_visited: 1,
+                        nodes_mutated: 1,
+                        local_materializations: 1,
+                        expansion_nodes: 1,
+                        tree_bytes: 0,
+                    },
+                },
+                events: rendered.events,
+                generation: rendered.generation,
+            });
+        }
+        self.publish_contribution_catalog()?;
+        Ok(result)
     }
 
     pub fn participating_owners(&self) -> impl Iterator<Item = &H::Owner> {
@@ -3615,8 +3803,8 @@ mod tests {
     use crate::{JsxModuleGraph, ModuleSource};
     use serde_json::json;
 
-    fn context(source: &str) -> OwnerRuntime<OrdinaryCompositionHost> {
-        let graph = JsxModuleGraph::new(
+    fn graph(source: &str) -> JsxModuleGraph {
+        JsxModuleGraph::new(
             "main.js",
             [ModuleSource {
                 path: "main.js",
@@ -3626,7 +3814,11 @@ mod tests {
         .unwrap()
         .with_public_exports(&BTreeMap::from([("entry".into(), "main.js#View".into())]))
         .unwrap()
-        .with_component_bridge(json!({}), json!({}));
+        .with_component_bridge(json!({}), json!({}))
+    }
+
+    fn context(source: &str) -> OwnerRuntime<OrdinaryCompositionHost> {
+        let graph = graph(source);
         OwnerRuntime::admit(
             std::rc::Rc::new(std::cell::RefCell::new(
                 JsxRuntime::new_modules(&graph, None).unwrap(),
@@ -3672,6 +3864,101 @@ mod tests {
             BTreeMap::from([("parent".into(), parent), ("provider".into(), child)]),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn rejected_reload_preflight_keeps_accepted_events_and_provider_state_live() {
+        let mut accepted = composed();
+        let mount = accepted
+            .mount(&accepted.component("root").unwrap())
+            .unwrap();
+        let initial = accepted
+            .render_expanded(&mount, &json!({}), |_| Ok(()))
+            .unwrap();
+        let event = initial.events.values().next().unwrap().clone();
+        let mut candidate = composed();
+        let mut replacement =
+            context("export function View(){throw new Error('rejected provider')}");
+        replacement.source_digest = "changed".into();
+        candidate.packages.insert("provider".into(), replacement);
+        assert!(
+            accepted
+                .reload_admitted(candidate, &BTreeMap::new(), &BTreeMap::new())
+                .is_err()
+        );
+        assert!(accepted.dispatch(&event, &Value::Null).is_ok());
+        let updated = accepted
+            .render_expanded(&mount, &json!({}), |_| Ok(()))
+            .unwrap();
+        assert!(updated.node.to_string().contains("provider:1"));
+    }
+
+    #[test]
+    fn reload_changed_provider_updates_unchanged_root_and_retires_old_events() {
+        let mut accepted = composed();
+        let mount = accepted
+            .mount(&accepted.component("root").unwrap())
+            .unwrap();
+        let rendered = accepted
+            .render_expanded(&mount, &json!({}), |_| Ok(()))
+            .unwrap();
+        let stale = rendered.events.values().next().unwrap().clone();
+        let reference = accepted.component("widget").unwrap();
+        let mut candidate = composed();
+        let mut replacement =
+            context("export function View(){return h(Text,null,'replacement provider')}");
+        replacement.source_digest = "changed".into();
+        candidate.packages.insert("provider".into(), replacement);
+        let result = accepted
+            .reload_admitted(candidate, &BTreeMap::new(), &BTreeMap::new())
+            .unwrap();
+        assert_eq!(result.restarted_packages, vec!["provider"]);
+        assert_eq!(result.patches.len(), 1);
+        assert!(
+            format!("{:?}", result.patches[0].patch.operations).contains("replacement provider")
+        );
+        assert!(accepted.dispatch(&stale, &Value::Null).is_err());
+        assert!(accepted.mount(&reference).is_err());
+        assert!(
+            accepted
+                .render_expanded(&mount, &json!({}), |_| Ok(()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn compatible_reload_preserves_hooks_and_changes_implementation() {
+        let mut accepted = composed();
+        let mount = accepted
+            .mount(&accepted.component("widget").unwrap())
+            .unwrap();
+        let rendered = accepted
+            .render_expanded(&mount, &json!({"label":"child"}), |_| Ok(()))
+            .unwrap();
+        let event = rendered.events.values().next().unwrap().clone();
+        accepted.dispatch(&event, &Value::Null).unwrap();
+        let source = "export function View({label}){const [count,setCount]=useState(0);return h(Button,{onClick:()=>setCount(value=>value+1)},'updated:'+count)}";
+        let mut candidate = composed();
+        let mut replacement = context(source);
+        replacement.source_digest = "changed".into();
+        candidate.packages.insert("provider".into(), replacement);
+        let signatures = BTreeMap::from([("main.js#View".into(), "state".into())]);
+        let result = accepted
+            .reload_admitted(
+                candidate,
+                &BTreeMap::from([("provider".into(), graph(source))]),
+                &BTreeMap::from([(
+                    "provider".into(),
+                    PackageReloadSignatures {
+                        previous: signatures.clone(),
+                        replacement: signatures,
+                    },
+                )]),
+            )
+            .unwrap();
+        assert_eq!(result.preserved_packages, vec!["provider"]);
+        assert!(format!("{:?}", result.patches[0].patch.operations).contains("updated:1"));
+        assert!(accepted.dispatch(&event, &Value::Null).is_err());
     }
 
     #[test]
