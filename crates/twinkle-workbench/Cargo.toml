@@ -9,6 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/twinkle-workbench"
 description = "Independent component fixtures and native preview tools for Twinkle"
+publish = false
 
 [[bin]]
 name = "twinkle-jsx-preview"

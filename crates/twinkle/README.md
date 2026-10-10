@@ -6,7 +6,7 @@ an independent UI engine. Hosted controller input is selected explicitly, while 
 provide any required session discovery and transport through host adapters.
 
 New to Twinkle? Start with the repository's
-[external-consumer guide](../../docs/getting-started.md) for prerequisites, dependency setup, and a
+[external-consumer guide](https://github.com/shortontech/twinkle/blob/main/docs/getting-started.md) for prerequisites, dependency setup, and a
 complete application. This document is the conceptual component and layout guide. Generate the API
 reference locally with `cargo doc -p twinkle-ui --open`; after publication it will also be available
 on [docs.rs](https://docs.rs/twinkle-ui).
@@ -49,9 +49,12 @@ the native window, event and redraw loops, software presentation, and the per-wi
 application owns only domain state, typed messages, `update`, and `view`. See
 [`examples/standalone.rs`](examples/standalone.rs) for the complete counter application.
 
-The crate currently has no Cargo features. Native windowing, controller input, clipboard and image
-support, and software presentation are included in a normal dependency. Oxc and V8 are not in this
-crate's dependency closure; JSX is an opt-in feature of the separate repository tooling.
+The default build includes native controller discovery. Hosted-controller and controller-free
+applications can omit gilrs with
+`twinkle-ui = { version = "0.2", default-features = false }`; the backend-neutral controller
+vocabulary remains available. Native windowing, clipboard and image support, and software
+presentation are currently core capabilities. Oxc and V8 are not in this crate's dependency
+closure; JSX is an opt-in feature of the separate repository tooling.
 
 ## Controller navigation
 

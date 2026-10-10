@@ -1,3 +1,10 @@
+//! Headless semantic scenarios, fixtures, and raster assertions for Twinkle applications.
+//!
+//! Application tests usually construct a [`Scenario`] or register reusable [`Fixture`] values,
+//! dispatch input or semantic actions, and inspect deterministic snapshots without opening a native
+//! window. Pixel-oriented tests can use [`render_host`]. This crate is test infrastructure and
+//! should normally be a development dependency.
+
 use std::{
     any::type_name,
     collections::{BTreeSet, VecDeque},

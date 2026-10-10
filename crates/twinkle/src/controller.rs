@@ -1,15 +1,16 @@
-use std::{
-    collections::BTreeMap,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+#[cfg(any(feature = "native-controller", test))]
+use std::collections::BTreeMap;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "native-controller")]
 use gilrs::Gilrs;
+#[cfg(feature = "native-controller")]
+use twinkle_input::controller::{ControllerEvent, ControllerNormalizer};
+#[cfg(any(feature = "native-controller", test))]
+use twinkle_input::controller::{ControllerIdentity, ControllerSignal};
 use twinkle_input::{
     KeyEdge, NativeCode,
-    controller::{
-        AxisDirection, ControllerButton, ControllerEvent, ControllerId, ControllerIdentity,
-        ControllerNormalizer, ControllerSignal,
-    },
+    controller::{AxisDirection, ControllerButton, ControllerId},
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -170,6 +171,7 @@ impl ControllerFamily {
     }
 }
 
+#[cfg(feature = "native-controller")]
 const MAX_EVENTS_PER_POLL: usize = 256;
 
 #[cfg(target_os = "linux")]
@@ -189,6 +191,7 @@ pub struct ControllerObservation {
     pub backlog: bool,
 }
 
+#[cfg(feature = "native-controller")]
 pub struct ControllerInput {
     gilrs: Option<Gilrs>,
     normalizer: ControllerNormalizer,
@@ -204,6 +207,7 @@ pub struct ControllerInput {
     last_poll_activity: bool,
 }
 
+#[cfg(feature = "native-controller")]
 impl ControllerInput {
     fn retire_reader(&mut self) {
         self.gilrs = None;
@@ -563,11 +567,13 @@ impl ControllerInput {
 
 /// Assigns a never-reused identity to each connected lifetime of a backend slot.
 #[derive(Default)]
+#[cfg(any(feature = "native-controller", test))]
 struct NativeControllerGenerations {
     next: u64,
     current: BTreeMap<u64, ControllerId>,
 }
 
+#[cfg(any(feature = "native-controller", test))]
 impl NativeControllerGenerations {
     fn connect(&mut self, native: u64) -> Option<ControllerId> {
         if let Some(id) = self.current.get(&native) {
@@ -590,6 +596,7 @@ impl NativeControllerGenerations {
     }
 }
 
+#[cfg(any(feature = "native-controller", test))]
 fn signal_envelope(
     signal: ControllerSignal,
     family: ControllerFamily,
@@ -648,6 +655,7 @@ fn signal_envelope(
     })
 }
 
+#[cfg(feature = "native-controller")]
 fn uuid_fingerprint(uuid: [u8; 16]) -> String {
     use std::fmt::Write;
 
@@ -658,12 +666,96 @@ fn uuid_fingerprint(uuid: [u8; 16]) -> String {
     result
 }
 
+#[cfg(feature = "native-controller")]
 impl Default for ControllerInput {
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Native controller discovery is unavailable when the `native-controller` feature is disabled.
+/// Hosted controller delivery and the backend-neutral controller vocabulary remain available.
+#[cfg(not(feature = "native-controller"))]
+#[derive(Default)]
+pub struct ControllerInput;
+
+#[cfg(not(feature = "native-controller"))]
+impl ControllerInput {
+    /// Constructs an unavailable native controller source.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Native discovery is disabled in this build.
+    #[must_use]
+    pub const fn connected(&self) -> bool {
+        false
+    }
+
+    /// No native input can remain held in this build.
+    #[must_use]
+    pub const fn held_input(&self) -> bool {
+        false
+    }
+
+    /// Retiring a route is a no-op when there is no native reader.
+    pub fn retire_route_epoch(&mut self, _handoff: SystemTime) {}
+
+    /// Reports an unavailable, idle native source.
+    #[must_use]
+    pub const fn observe(&mut self, _now: Instant) -> ControllerObservation {
+        ControllerObservation {
+            available: false,
+            held: false,
+            activity: false,
+            backlog: false,
+        }
+    }
+
+    /// No native controller family is active.
+    #[must_use]
+    pub const fn active_family(&self) -> Option<ControllerFamily> {
+        None
+    }
+
+    /// Returns no actions because native discovery is disabled.
+    pub fn poll(&mut self, _now: Instant, _window_focused: bool) -> Vec<ControllerAction> {
+        Vec::new()
+    }
+
+    /// Returns no actions because native discovery is disabled.
+    pub fn poll_with_fence(
+        &mut self,
+        _now: Instant,
+        _window_focused: bool,
+        _fence: impl FnOnce() -> ControllerFence,
+    ) -> Vec<ControllerAction> {
+        Vec::new()
+    }
+
+    /// Returns no actions because native discovery is disabled.
+    pub fn poll_global(&mut self, _now: Instant) -> Vec<ControllerAction> {
+        Vec::new()
+    }
+
+    /// Waits for the requested bound and returns no native actions.
+    pub fn wait_global(&mut self, idle_timeout: std::time::Duration) -> Vec<ControllerAction> {
+        std::thread::sleep(idle_timeout);
+        Vec::new()
+    }
+
+    /// Waits for the requested bound and returns no native envelopes.
+    pub fn wait_global_envelopes(
+        &mut self,
+        idle_timeout: std::time::Duration,
+    ) -> Vec<ControllerEnvelope> {
+        std::thread::sleep(idle_timeout);
+        Vec::new()
+    }
+}
+
+#[cfg(any(feature = "native-controller", test))]
 fn button_action(button: &ControllerButton, family: ControllerFamily) -> Option<ControllerAction> {
     match button {
         ControllerButton::DPadUp => Some(ControllerAction::Up),
@@ -722,6 +814,7 @@ fn signal_action_for_family(
     }
 }
 
+#[cfg(any(feature = "native-controller", test))]
 fn signal_physical_action_for_family(
     signal: &ControllerSignal,
     family: ControllerFamily,
@@ -742,6 +835,7 @@ fn signal_physical_action_for_family(
     }
 }
 
+#[cfg(feature = "native-controller")]
 fn signal_id(signal: &ControllerSignal) -> Option<ControllerId> {
     match signal {
         ControllerSignal::Button { id, .. } | ControllerSignal::Direction { id, .. } => Some(*id),

@@ -1,29 +1,49 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 
+#[allow(missing_docs)]
 mod controller_host;
 pub use controller_host::{ControllerSource, HostedControllerDelivery, HostedControllerSource};
 
 extern crate self as twinkle_ui;
 
+#[allow(missing_docs)] // Existing API; documentation migration is tracked by the usability spec.
 pub mod approval;
+#[allow(missing_docs)]
 pub mod async_raster;
+#[allow(missing_docs)]
 pub mod controller;
+#[allow(missing_docs)]
 pub mod document_selection;
+#[allow(missing_docs)]
 pub mod gpu;
+#[allow(missing_docs)]
 pub mod input;
+#[allow(missing_docs)]
 mod internal_surface;
+#[allow(missing_docs)]
 pub mod layout;
+#[allow(missing_docs)]
 pub mod on_screen_keyboard;
+#[allow(missing_docs)]
 pub mod overlay;
+#[allow(missing_docs)]
 pub mod primitives;
 #[cfg(test)]
 mod release_admission;
+#[allow(missing_docs)]
 pub mod retained_surface;
+#[allow(missing_docs)]
 mod runtime;
+#[allow(missing_docs)]
 pub mod state;
+#[allow(missing_docs)]
 pub mod text_context_menu;
+#[allow(missing_docs)]
 pub mod text_editor;
+#[allow(missing_docs)]
 pub mod theme;
+#[allow(missing_docs)]
 mod ui;
 
 #[cfg(target_os = "linux")]
@@ -139,6 +159,7 @@ pub(crate) use ui::PaintCommand;
 
 /// Renderer-facing command stream. Application UI should use declarative
 /// components or [`CustomPaint`]; platform presenters consume this module.
+#[allow(missing_docs)]
 pub mod backend {
     pub use crate::ui::{PaintCommand, rounded_border_spans, rounded_coverage_spans};
 
@@ -403,12 +424,15 @@ pub mod backend {
     }
 }
 
+/// A declarative fragment represented by a column of sibling components.
 pub type Fragment<Message = String> = Column<Message>;
 
+/// A component that can serve as the root of an application view.
 pub trait View<Message>: Component<Message> {}
 
 impl<Message, T: Component<Message>> View<Message> for T {}
 
+/// Common application-authoring types, traits, components, and macros.
 pub mod prelude {
     pub use crate::{
         AccentColors, AccessibilityPreferences, AccountSummaryRow, ActionRegion, Align, AnyView,

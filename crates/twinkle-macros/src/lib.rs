@@ -1,3 +1,8 @@
+//! Procedural macros used by the `twinkle-ui` authoring API.
+//!
+//! Applications should depend on `twinkle-ui` and import [`ui!`], [`id!`], and [`component`]
+//! through `twinkle_ui::prelude`; direct use of this implementation crate is not supported.
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};

@@ -12,11 +12,15 @@ readme = "README.md"
 keywords = ["gui", "ui", "desktop", "declarative"]
 categories = ["gui"]
 
+[features]
+default = ["native-controller"]
+native-controller = ["dep:gilrs", "twinkle-input/gilrs"]
+
 [dependencies]
 cosmic-text.workspace = true
-gilrs.workspace = true
+gilrs = { workspace = true, optional = true }
 image.workspace = true
-twinkle-input = { version = "0.2.0", path = "../twinkle-input", features = ["gilrs", "winit"] }
+twinkle-input = { version = "0.2.0", path = "../twinkle-input", features = ["winit"] }
 twinkle-render-assets = { version = "0.2.0", path = "../twinkle-render-assets" }
 twinkle-macros = { version = "0.2.0", path = "../twinkle-macros" }
 softbuffer.workspace = true

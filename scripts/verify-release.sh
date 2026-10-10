@@ -20,7 +20,6 @@ dependent_packages=(
   twinkle-jsx-runtime
   twinkle-testkit
   twinkle-presentation
-  twinkle-workbench
 )
 
 for package in "${leaf_packages[@]}"; do
@@ -38,3 +37,30 @@ done
 
 cargo check \
   --manifest-path crates/twinkle/tests/fixtures/external-consumer/Cargo.toml
+
+# Exercise Cargo's Git-source packaging and dependency resolution, not only the checkout's path
+# dependency. CI runs from a committed revision, so this verifies the exact source users receive.
+revision="$(git rev-parse HEAD)"
+git_consumer="$(mktemp -d)"
+trap 'rm -rf "$git_consumer"' EXIT
+mkdir -p "$git_consumer/src"
+cat >"$git_consumer/Cargo.toml" <<EOF
+[package]
+name = "twinkle-git-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+twinkle-ui = { git = "file://$repository_root", rev = "$revision", default-features = false }
+EOF
+cat >"$git_consumer/src/main.rs" <<'EOF'
+use twinkle_ui::prelude::*;
+
+fn main() {
+    let _view = Column::<()>::new().child(Text::new("Git consumer"));
+}
+EOF
+cargo check --manifest-path "$git_consumer/Cargo.toml"

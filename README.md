@@ -56,9 +56,10 @@ cargo check --workspace --all-targets --all-features
 cargo test --workspace --all-features
 ```
 
-The main `twinkle-ui` package currently has no Cargo features: native windowing, software presentation,
-clipboard support, and controller support are included together. JSX is not part of its dependency
-closure. Repository tools that execute JSX enable the separate `jsx` feature on
+The main `twinkle-ui` package enables native controller discovery by default. Hosted-controller and
+controller-free applications can use `default-features = false` to omit gilrs; native windowing,
+software presentation, clipboard, and image support remain core capabilities. JSX is not part of
+its dependency closure. Repository tools that execute JSX enable the separate `jsx` feature on
 `twinkle-workbench` or `twinkle-presentation`; those builds include Oxc and V8.
 
 The standalone TSX preview uses native controls and controller input with an explicit bounded
@@ -73,6 +74,9 @@ Apache-2.0 except separately licensed dependencies. Twinkle is adopted by Nickel
 ## Project information
 
 - [Getting started](docs/getting-started.md)
+- [Common application tasks](docs/task-guides.md)
+- [Accessibility capabilities](docs/accessibility.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [Support, platforms, and compatibility](SUPPORT.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)

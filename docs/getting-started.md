@@ -116,11 +116,18 @@ the complete API reference with:
 cargo doc -p twinkle-ui --open
 ```
 
+Continue with the [common application tasks](task-guides.md) for forms, collections, assets,
+background work, testing, and packaging. The [accessibility statement](accessibility.md) separates
+semantic-tree support from native assistive-technology bridges, and
+[troubleshooting](troubleshooting.md) covers logging and common platform failures.
+
 ## Current feature surface
 
-The `twinkle-ui` package currently exposes no Cargo feature flags. A normal dependency includes native
-windowing, controller input, clipboard support, image support, and software presentation. It does
-not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and
+The default `twinkle-ui` dependency includes native controller discovery. Hosted-controller or
+controller-free applications can omit gilrs with
+`twinkle-ui = { version = "0.2", default-features = false }`; the controller event vocabulary
+remains available. Native windowing, clipboard support, image support, and software presentation
+currently remain core capabilities. It does not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and
 `twinkle-workbench` crates and is enabled there with their `jsx` feature.
 
 If this dependency surface does not suit your deployment target, open an issue describing the

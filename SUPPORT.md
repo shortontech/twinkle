@@ -25,6 +25,9 @@ requests, and usage questions. Include:
 - the smallest example that reproduces the behavior;
 - relevant logs and whether the session uses Wayland or X11 on Linux.
 
+The [troubleshooting guide](docs/troubleshooting.md) explains how to enable tracing and diagnose
+common native build, display, clipboard, and controller problems.
+
 Twinkle is maintained on a best-effort basis; no response-time or long-term-support guarantee is
 currently offered. Do not disclose suspected security vulnerabilities in a public issue—follow the
 [security policy](SECURITY.md).

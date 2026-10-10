@@ -2,6 +2,8 @@
 
 Standalone native component fixtures and preview tools.
 The library exposes `registry()` and `register()` for downstream fixture catalogs.
+This repository development tool is not published to crates.io; downstream projects should build
+their own fixture binary with `twinkle-testkit`.
 
 - `cargo run -p twinkle-workbench -- native`: component gallery with variant selection, reset and semantic/controller/keyboard activation.
 - `cargo run -p twinkle-workbench -- list`: list generic fixtures.
