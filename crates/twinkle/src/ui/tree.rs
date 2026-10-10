@@ -531,6 +531,11 @@ impl ResolvedLayout {
 }
 
 #[derive(Clone, Debug)]
+/// A fully resolved declarative frame used for headless inspection and presentation.
+///
+/// `UiFrame` owns layout, paint commands, hit regions, semantic nodes, and accessibility records
+/// for one viewport. Applications normally let [`UiHost`](crate::UiHost) manage frames; tests and
+/// custom embedders may construct them directly with the `layout` methods.
 pub struct UiFrame<Message = String> {
     retained_nodes: super::retained::RetainedNodeArena,
     retained_layout: HashMap<UiId, ResolvedNode>,

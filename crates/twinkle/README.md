@@ -44,6 +44,20 @@ rendering paths. Its complete API reference is the rustdoc for the component typ
 `ComponentBuilderExt`; [`examples/builder.rs`](examples/builder.rs) is a focused optional example.
 The default learning path and application runtime do not require it.
 
+## API map
+
+Most applications import `prelude` and use five groups of API:
+
+- `Application`, `ViewContext`, and `run` own the typed update/view lifecycle;
+- `Text`, `Button`, `TextField`, `Slider`, `Row`, `Column`, and `Grid` build ordinary interfaces;
+- `UiId` and `UiStateStore` retain focus, editing, selection, and scroll state across rebuilds;
+- `SemanticTheme` and the semantic component constructors keep interaction states consistent;
+- `UiFrame`, `ResolvedLayout`, and semantic snapshots support headless testing and custom hosts.
+
+The root also exports host, retained-surface, and backend APIs. They are integration boundaries, not
+required steps in the application learning path. Prefer the prelude until an embedding or renderer
+use case specifically requires them.
+
 An executable implements `Application` and calls `run(app)`. The runtime owns winit initialization,
 the native window, event and redraw loops, software presentation, and the per-window `UiStateStore`; the
 application owns only domain state, typed messages, `update`, and `view`. See

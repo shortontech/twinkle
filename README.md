@@ -75,6 +75,7 @@ Apache-2.0 except separately licensed dependencies. Twinkle is adopted by Nickel
 
 - [Getting started](docs/getting-started.md)
 - [Common application tasks](docs/task-guides.md)
+- [Workspace crate map](docs/crate-map.md)
 - [Accessibility capabilities](docs/accessibility.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Support, platforms, and compatibility](SUPPORT.md)

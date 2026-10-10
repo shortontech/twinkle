@@ -1476,6 +1476,7 @@ impl<Message> Component<Message> for StyledText<Message> {
     }
 }
 
+/// Static text with optional wrapping, styling, selection, and semantic metadata.
 pub struct Text<Message = String>(Element<Message>);
 
 impl<Message> Text<Message> {
@@ -1500,6 +1501,7 @@ impl<Message> Text<Message> {
         self
     }
 
+    /// Creates ordinary text and uses the same value as its accessible label.
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         Self(Element::text(value.clone(), 2.0).accessibility_label(value))
@@ -3058,6 +3060,9 @@ impl<Message> Component<Message> for ShoulderHints<Message> {
     }
 }
 
+/// A typed push button that emits one application message when activated.
+///
+/// Pointer, keyboard, controller, and accessibility activation share the same message authority.
 pub struct Button<Message = String>(Container<Message>);
 
 /// The semantic visual role of a button.
@@ -3071,6 +3076,7 @@ pub enum ButtonPresentation {
 }
 
 impl<Message> Button<Message> {
+    /// Creates a button with a text label and activation message.
     pub fn new(message: Message, label: impl Into<String>) -> Self {
         let label = label.into();
         let mut button = Self::with_label(message, ButtonLabel::new(&label));

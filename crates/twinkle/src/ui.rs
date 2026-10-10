@@ -2587,7 +2587,13 @@ fn text_for_bounds(value: &str, scale: f32, bold: bool, ellipsis: bool, width: f
     "…".to_owned()
 }
 
+/// A typed declarative component that can be consumed into Twinkle's element tree.
+///
+/// Application code normally constructs components through `ui!` or the builder types and does not
+/// implement this trait directly. Consuming `self` prevents a declaration from being accidentally
+/// reused across frames with stale messages or identity.
 pub trait Component<Message = String> {
+    /// Consumes this component and returns its type-erased declarative element.
     fn into_element(self) -> Element<Message>;
 }
 
@@ -2596,6 +2602,7 @@ pub trait Component<Message = String> {
 pub struct AnyView<Message = String>(Element<Message>);
 
 impl<Message> AnyView<Message> {
+    /// Erases a concrete component type while preserving its message type.
     pub fn new(component: impl Component<Message>) -> Self {
         Self(component.into_element())
     }
@@ -2797,6 +2804,10 @@ impl<Message> Component<Message> for Element<Message> {
 
 macro_rules! flex_component {
     ($name:ident, $axis:expr) => {
+        #[doc = concat!("A declarative `", stringify!($name), "` flex container.")]
+        ///
+        /// Children retain declaration order unless [`reverse`](Self::reverse) is selected.
+        /// Use stable child IDs when inserting or reordering stateful controls.
         pub struct $name<Message = String>(Element<Message>);
 
         impl<Message> Default for $name<Message> {
@@ -2806,20 +2817,24 @@ macro_rules! flex_component {
         }
 
         impl<Message> $name<Message> {
+            /// Creates an empty flex container.
             pub fn new() -> Self {
                 Self(Element::flex($axis))
             }
 
+            /// Appends one child in declaration order.
             pub fn child(mut self, child: impl Component<Message>) -> Self {
                 self.0 = self.0.child(child);
                 self
             }
 
+            /// Assigns a stable identity used by focus, state, and retained reconciliation.
             pub fn id(mut self, id: impl Into<UiId>) -> Self {
                 self.0 = self.0.id(id);
                 self
             }
 
+            /// Appends several children in iteration order.
             pub fn children(
                 mut self,
                 children: impl IntoIterator<Item = impl Component<Message>>,
@@ -2835,6 +2850,7 @@ macro_rules! flex_component {
                 self
             }
 
+            /// Sets logical space between adjacent children.
             pub fn gap(mut self, gap: f32) -> Self {
                 self.0 = self.0.gap(gap);
                 self

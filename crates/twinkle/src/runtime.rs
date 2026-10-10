@@ -411,7 +411,9 @@ pub struct OutboundFileDrag {
 /// applications do not need a parallel resize callback or cached window size.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewContext {
+    /// Logical application viewport supplied for this view rebuild.
     pub viewport: Rect,
+    /// Most recently observed input modality.
     pub modality: InputModality,
     /// Host-owned keyboard/accessibility focus retained across declarative rebuilds.
     pub focused: Option<UiId>,
