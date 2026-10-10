@@ -1,5 +1,5 @@
 //! Executor-neutral native tree patch and scheduling protocol.
-//! This crate contains serialized values only; it grants no host authority.
+//! Serialized values and native tree algorithms grant no host authority.
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -91,3 +91,5 @@ pub use surface::{
     OutputScope, SurfaceAnchor, SurfaceBounds, SurfaceBoundsProvider, SurfaceDefinition,
     SurfaceKind,
 };
+
+pub mod native_tree;
