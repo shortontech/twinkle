@@ -180,7 +180,7 @@ pub struct SpacingScale {
     pub section: f32,
 }
 
-/// Shared geometry contract for compact Nickel-owned desktop surfaces.
+/// Shared geometry contract for compact Twinkle-owned desktop surfaces.
 ///
 /// This is deliberately separate from the semantic theme scale: applications
 /// can retain comfortable or preview-oriented layouts while launcher,

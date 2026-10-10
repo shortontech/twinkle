@@ -1,4 +1,4 @@
-//! CPU-side text and image assets for Nickel render backends.
+//! CPU-side text and image assets for Twinkle render backends.
 //!
 //! This crate deliberately has no windowing or GPU dependency. Software
 //! presenters can upload [`RgbaAsset::pixels`] with a pitch of
@@ -42,7 +42,7 @@ fn process_font_system_owner() -> &'static ProcessFontSystemOwner {
     })
 }
 
-/// A handle to Nickel's single process-wide cosmic-text font system.
+/// A handle to Twinkle's single process-wide cosmic-text font system.
 ///
 /// Handles are freely constructible and carry no additional dependency-owned
 /// state. The underlying font database and cosmic-text caches are serialized so
@@ -769,7 +769,7 @@ mod tests {
     fn terminal_family_resolution_falls_back_and_accepts_installed_fixed_width_faces() {
         assert_eq!(resolve_monospace_family("monospace").as_ref(), "monospace");
         assert_eq!(
-            resolve_monospace_family("__nickel_missing_font_family__").as_ref(),
+            resolve_monospace_family("__twinkle_missing_font_family__").as_ref(),
             "monospace"
         );
         let installed = {
@@ -838,8 +838,8 @@ mod tests {
     #[test]
     fn rasterized_text_contains_visible_pixels_and_is_cached() {
         let mut cache = TextAssetCache::new();
-        let first = cache.get(TextRequest::label("Nickel", 18.0, [255, 255, 255, 255]));
-        let second = cache.get(TextRequest::label("Nickel", 18.0, [255, 255, 255, 255]));
+        let first = cache.get(TextRequest::label("Twinkle", 18.0, [255, 255, 255, 255]));
+        let second = cache.get(TextRequest::label("Twinkle", 18.0, [255, 255, 255, 255]));
 
         assert!(first.width() > 0);
         assert!(first.height() > 0);
@@ -1033,7 +1033,7 @@ mod tests {
         invalidation_triggers: usize,
     ) {
         println!(
-            "{{\"schema\":\"nickel-cache-admission-v1\",\"cache\":\"{cache}\",\"workload\":\"{workload}\",\"fixture\":\"deterministic_headless\",\"profile\":\"release\",\"samples\":31,\"cached_median_us\":{:.3},\"cached_p95_us\":{:.3},\"bypass_median_us\":{:.3},\"bypass_p95_us\":{:.3},\"retained_bytes\":{retained_bytes},\"complexity\":{{\"key_fields\":{key_fields},\"invalidation_triggers\":{invalidation_triggers},\"storage_collections\":2}},\"output_equivalence\":\"exact_rgba\"}}",
+            "{{\"schema\":\"twinkle-cache-admission-v1\",\"cache\":\"{cache}\",\"workload\":\"{workload}\",\"fixture\":\"deterministic_headless\",\"profile\":\"release\",\"samples\":31,\"cached_median_us\":{:.3},\"cached_p95_us\":{:.3},\"bypass_median_us\":{:.3},\"bypass_p95_us\":{:.3},\"retained_bytes\":{retained_bytes},\"complexity\":{{\"key_fields\":{key_fields},\"invalidation_triggers\":{invalidation_triggers},\"storage_collections\":2}},\"output_equivalence\":\"exact_rgba\"}}",
             cached.median_us, cached.p95_us, bypass.median_us, bypass.p95_us
         );
     }
@@ -1056,7 +1056,7 @@ mod tests {
         const WARM_P95_BENEFIT_US: f64 = 100.0;
         let mut cache = TextAssetCache::new();
         cache.get(admission_text_request(
-            "Nickel shared CPU text raster admission workload",
+            "Twinkle shared CPU text raster admission workload",
         ));
 
         for workload in ["cold", "warm", "churn", "low_reuse"] {
@@ -1067,9 +1067,9 @@ mod tests {
                     cache.clear();
                 }
                 let text = match workload {
-                    "churn" => format!("Nickel palette generation {}", sample % 4),
-                    "low_reuse" => format!("Nickel unique search result {sample}"),
-                    _ => "Nickel shared CPU text raster admission workload".to_owned(),
+                    "churn" => format!("Twinkle palette generation {}", sample % 4),
+                    "low_reuse" => format!("Twinkle unique search result {sample}"),
+                    _ => "Twinkle shared CPU text raster admission workload".to_owned(),
                 };
                 let started = Instant::now();
                 let cached =

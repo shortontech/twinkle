@@ -201,7 +201,7 @@ impl RetainedSurfaceSnapshot {
         .height(self.output.measured.height)
     }
 
-    /// Bridge the admitted specialized surface into Nickel's ordinary native
+    /// Bridge the admitted specialized surface into Twinkle's ordinary native
     /// frame authority. Paint stays a bounded custom-paint child; supported
     /// action/semantic regions become normal keyed UI nodes, so focus,
     /// controller activation, hit testing, and accessibility continue through

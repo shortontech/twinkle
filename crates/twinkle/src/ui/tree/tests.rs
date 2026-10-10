@@ -1645,7 +1645,7 @@ fn slider_and_text_field_semantic_values_use_production_mappers() {
     let frame = UiFrame::layout(
         Column::new()
             .child(Slider::on_change(map_volume, 0.5).id("volume"))
-            .child(TextField::on_change("nickel", map_query).id("query")),
+            .child(TextField::on_change("twinkle", map_query).id("query")),
         Rect::new(0.0, 0.0, 320.0, 80.0),
     );
     let volume = UiId::from("root/volume");
@@ -1709,7 +1709,7 @@ fn slider_and_text_field_semantic_values_use_production_mappers() {
     assert_eq!(text.actions, vec![ActionKind::SetValue]);
     assert_eq!(
         text.value,
-        Some(SemanticValueSnapshot::Text("nickel".into()))
+        Some(SemanticValueSnapshot::Text("twinkle".into()))
     );
     assert_eq!(
         frame
@@ -1781,7 +1781,7 @@ fn single_line_text_field_centers_placeholder_and_masked_text() {
         for height in [line_height, line_height + 18.0, line_height + 44.0] {
             for value in [
                 "".to_owned(),
-                "nickel".to_owned(),
+                "twinkle".to_owned(),
                 "very-long-password".repeat(24),
             ] {
                 let field = Rect::new(0.0, 0.0, 340.0, height);
@@ -3923,7 +3923,7 @@ fn text_measure_caches_have_measured_equivalent_benefit() {
         samples[(samples.len() * 95 / 100).min(samples.len() - 1)]
     }
 
-    let text = "Nickel declarative text measurement wraps consistently across repeated frames";
+    let text = "Twinkle declarative text measurement wraps consistently across repeated frames";
     let spans = vec![StyledTextSpan {
         range: 0..6,
         bold: true,
@@ -6032,7 +6032,7 @@ fn text_field_focus_edit_selection_and_ime_survive_reconstruction_without_click_
         )
     };
     let mut state = UiStateStore::default();
-    let first = build(&mut state, "nickel");
+    let first = build(&mut state, "twinkle");
     first.handle_event(
         &mut state,
         UiEvent::PointerPressed(Point { x: 10.0, y: 10.0 }),
@@ -6048,7 +6048,7 @@ fn text_field_focus_edit_selection_and_ime_survive_reconstruction_without_click_
     );
     let id = UiId::from("root/query");
     assert_eq!(state.focused(), Some(&id));
-    state.editor(id.clone(), "nickel").select_all();
+    state.editor(id.clone(), "twinkle").select_all();
     let changed = first
         .handle_event(&mut state, UiEvent::TextInput("silver".into()))
         .messages;

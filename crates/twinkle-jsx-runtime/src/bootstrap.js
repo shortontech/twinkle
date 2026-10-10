@@ -1,8 +1,8 @@
-const __nickelPublicComponents = new Map();
+const __twinklePublicComponents = new Map();
 // The bounded ambient API intentionally available to package modules. Keep
-// this list synchronized with nickel-plugin.d.ts; __nickel internals are not
+// this list synchronized with the public host declarations; __twinkle internals are not
 // public merely because package code shares this lexical runtime context.
-let __nickelPublicRuntimeGlobals = Object.freeze([
+let __twinklePublicRuntimeGlobals = Object.freeze([
     'Window','Fragment','FixedWindow','Panel','Box','Layer','Div','Badge','Row','Column',
     'ScrollView','VirtualColumn','Text','Image','ImageButton','Progress','Slider','Switch','Checkbox',
     'ColorSwatch','Select','Option','TextField','Button','Spacer','Slot','Dialog','Menu',
@@ -14,35 +14,35 @@ let __nickelPublicRuntimeGlobals = Object.freeze([
     'useReducer','useRef','useId','createContext','useContext','useMemo','useCallback',
     'useEffect','h'
 ]);
-const __nickelComponentMetadata = new WeakMap();
-let __nickelHotSignatures = null;
-let __nickelHotPrevious = null;
-let __nickelPackageOwner = null;
-function __nickelSetDiagnosticOwner(owner) { __nickelPackageOwner = owner; }
-function __nickelPublishComponent(contract, component, module = null, exported = null) {
+const __twinkleComponentMetadata = new WeakMap();
+let __twinkleHotSignatures = null;
+let __twinkleHotPrevious = null;
+let __twinklePackageOwner = null;
+function __twinkleSetDiagnosticOwner(owner) { __twinklePackageOwner = owner; }
+function __twinklePublishComponent(contract, component, module = null, exported = null) {
     if (typeof component !== 'function') throw TypeError(`public component ${contract} is not a function`);
-    const previous = __nickelHotPrevious?.get(contract);
+    const previous = __twinkleHotPrevious?.get(contract);
     const key = `${module}#${exported ?? contract}`;
-    if (previous && __nickelHotSignatures?.[key] !== undefined) {
-        const metadata = __nickelComponentMetadata.get(previous);
+    if (previous && __twinkleHotSignatures?.[key] !== undefined) {
+        const metadata = __twinkleComponentMetadata.get(previous);
         const previousKey = `${metadata?.module}#${metadata?.export}`;
-        if (previousKey === key && __nickelHotSignatures[key] !== null
+        if (previousKey === key && __twinkleHotSignatures[key] !== null
             && __componentIds.has(previous))
             __componentIds.set(component, __componentIds.get(previous));
     }
-    __nickelPublicComponents.set(contract, component);
-    __nickelComponentMetadata.set(component, Object.freeze({module,export:exported ?? contract}));
+    __twinklePublicComponents.set(contract, component);
+    __twinkleComponentMetadata.set(component, Object.freeze({module,export:exported ?? contract}));
 }
 
-function __nickelInstallHotModules(installer, signatures) {
-    const previous = new Map(__nickelPublicComponents);
-    __nickelHotPrevious = previous; __nickelHotSignatures = signatures;
+function __twinkleInstallHotModules(installer, signatures) {
+    const previous = new Map(__twinklePublicComponents);
+    __twinkleHotPrevious = previous; __twinkleHotSignatures = signatures;
     try { installer(); }
     catch (error) {
-        __nickelPublicComponents.clear();
-        for (const [key,value] of previous) __nickelPublicComponents.set(key,value);
+        __twinklePublicComponents.clear();
+        for (const [key,value] of previous) __twinklePublicComponents.set(key,value);
         throw error;
-    } finally { __nickelHotPrevious = null; __nickelHotSignatures = null; }
+    } finally { __twinkleHotPrevious = null; __twinkleHotSignatures = null; }
 }
 
 const Window = 'window';
@@ -58,7 +58,7 @@ function FixedWindow(props) {
 function Panel(props) {
     const {children, height, ...surfaceProps} = props || {};
     const panelHeight = Number.isInteger(height) && height >= 1 && height <= 8192 ? height : 64;
-    const surface = __nickelData.surface;
+    const surface = __twinkleData.surface;
     const background = surfaceProps.background ?? 0xc9262b36;
     const content = surface && surface.width && surface.height
         ? h(Box, {
@@ -82,7 +82,7 @@ const ScrollView = 'scroll-view';
 // Key the component scope as well as its native wrapper. A native-only key
 // does not isolate hook slots in renderItem's component descendants: changing
 // the admitted slice would otherwise transfer nested window state to a sibling.
-function __NickelVirtualRow({children}) {
+function __TwinkleVirtualRow({children}) {
     return h('column', null, ...children);
 }
 function VirtualColumn(props) {
@@ -122,7 +122,7 @@ function VirtualColumn(props) {
     };
     const rows = [];
     for (let index = current.start; index < current.end; index++)
-        rows.push(h(__NickelVirtualRow, {key:source.keys[index]}, props.renderItem(props.items[index], index)));
+        rows.push(h(__TwinkleVirtualRow, {key:source.keys[index]}, props.renderItem(props.items[index], index)));
     return h('div', {id:props.id, className:props.className, onChange:onWindow,
         collection:{...(current.reference ? {source:current.reference} : source.geometry), gap:props.gap ?? 0, overscan:props.overscan ?? 96,
             start:current.start, end:current.end}}, rows);
@@ -179,19 +179,19 @@ let __retainedComponentChildren = new Map();
 let __currentComponent = null;
 let __componentExecutionStack = [];
 let __hookIndex = 0;
-class __NickelHandlers extends Map {
+class __TwinkleHandlers extends Map {
     // Retiring a row releases its closure without recycling an issued action.
     // Transaction copies scale with live entries, not the highest issued ID.
     constructor(previous) { super(previous); this.nextAction=previous?.nextAction??0; }
     get length() { return this.size; }
-    slice() { return new __NickelHandlers(this); }
+    slice() { return new __TwinkleHandlers(this); }
     allocate() {
         if(this.nextAction>=Number.MAX_SAFE_INTEGER)throw Error('component handler identity exhausted');
         return this.nextAction++;
     }
 }
-let __handlers = new __NickelHandlers();
-let __previousHandlers = new __NickelHandlers();
+let __handlers = new __TwinkleHandlers();
+let __previousHandlers = new __TwinkleHandlers();
 let __handlerSlots = new Map();
 const __handlerBindings = new WeakSet();
 const __virtualNativeNodes = new WeakSet();
@@ -229,12 +229,12 @@ let __surfaceStore = {generation:0, snapshot:Object.freeze({
 
 function ErrorBoundary() { throw Error('ErrorBoundary can only be rendered as a component'); }
 __errorBoundaryComponents.add(ErrorBoundary);
-function __nickelErrorMessage(error) {
+function __twinkleErrorMessage(error) {
     try { return String(error?.message ?? error).slice(0, 512); }
     catch (_) { return 'unprintable component failure'; }
 }
-function __nickelRecordBoundaryFailure(boundary, phase, error, surface = __activeSurface, state = null) {
-    const message = __nickelErrorMessage(error);
+function __twinkleRecordBoundaryFailure(boundary, phase, error, surface = __activeSurface, state = null) {
+    const message = __twinkleErrorMessage(error);
     const previous = __boundaryDiagnostics[__boundaryDiagnostics.length - 1];
     if (previous && previous.surface === surface && previous.boundary === boundary
         && previous.phase === phase && previous.message === message) {
@@ -244,16 +244,16 @@ function __nickelRecordBoundaryFailure(boundary, phase, error, surface = __activ
     const stack = [];
     for (const [path, record] of state?.records ?? __componentRecords) {
         if (boundary !== path && !boundary.startsWith(`${path}/`)) continue;
-        const metadata = __nickelComponentMetadata.get(record.kind);
+        const metadata = __twinkleComponentMetadata.get(record.kind);
         stack.push({path,module:metadata?.module ?? null,export:metadata?.export ?? record.kind?.name ?? null});
     }
-    if (error?.__nickelComponent && !stack.some(entry => entry.path === error.__nickelComponent.path))
-        stack.push(error.__nickelComponent);
+    if (error?.__twinkleComponent && !stack.some(entry => entry.path === error.__twinkleComponent.path))
+        stack.push(error.__twinkleComponent);
     __runtimeCounters.failures++;
-    __boundaryDiagnostics.push({package:__nickelPackageOwner,surface,mount:(state?.surfaceStore ?? __surfaceStore).snapshot.mountId,
+    __boundaryDiagnostics.push({package:__twinklePackageOwner,surface,mount:(state?.surfaceStore ?? __surfaceStore).snapshot.mountId,
         boundary,phase,message,hookIndex:__hookIndex,stack,occurrences:1});
 }
-function __nickelNearestBoundary(owner, records = __componentRecords) {
+function __twinkleNearestBoundary(owner, records = __componentRecords) {
     if (typeof owner !== 'string') return null;
     let candidate = null;
     for (const [path, record] of records) {
@@ -262,17 +262,17 @@ function __nickelNearestBoundary(owner, records = __componentRecords) {
     }
     return candidate;
 }
-function __nickelCaptureFailure(owner, error, phase, surface = __activeSurface) {
+function __twinkleCaptureFailure(owner, error, phase, surface = __activeSurface) {
     const state = surface === __activeSurface
         ? {records:__componentRecords, dirty:__dirtyComponents, surfaceStore:__surfaceStore}
         : __surfaceStates.get(surface);
     if (!state) return false;
-    const boundary = __nickelNearestBoundary(owner, state.records);
+    const boundary = __twinkleNearestBoundary(owner, state.records);
     if (boundary === null) return false;
     const record = state.records.get(boundary);
     state.records.set(boundary, {...record, boundaryError:error});
     state.dirty.add(boundary);
-    __nickelRecordBoundaryFailure(boundary, phase, error, surface, state);
+    __twinkleRecordBoundaryFailure(boundary, phase, error, surface, state);
     return true;
 }
 // Native validation happens after JavaScript has produced a candidate patch.
@@ -280,7 +280,7 @@ function __nickelCaptureFailure(owner, error, phase, surface = __activeSurface) 
 // whose admitted native boundaries were involved.  Capturing after rollback is
 // important: the fallback becomes a fresh transaction based on the last
 // committed tree and cannot inherit provisional handlers, hooks, or effects.
-function __nickelCaptureNativeFailure(owners, message) {
+function __twinkleCaptureNativeFailure(owners, message) {
     if (__pendingRender !== null || __pendingEvent !== null || __compositionCheckpoint !== null)
         throw Error('cannot capture native failure during a pending transaction');
     if (!Array.isArray(owners) || owners.length > 256)
@@ -288,64 +288,64 @@ function __nickelCaptureNativeFailure(owners, message) {
     const error = Error(String(message).slice(0, 512));
     const captured = new Set();
     for (const owner of owners) {
-        const boundary = __nickelNearestBoundary(owner);
+        const boundary = __twinkleNearestBoundary(owner);
         if (boundary === null || captured.has(boundary)) continue;
         const record = __componentRecords.get(boundary);
         // A fallback rejected by native validation must not spin forever.
         if (record?.boundaryError !== undefined) continue;
         __componentRecords.set(boundary, {...record, boundaryError:error});
         __dirtyComponents.add(boundary);
-        __nickelRecordBoundaryFailure(boundary, 'native-validation', error);
+        __twinkleRecordBoundaryFailure(boundary, 'native-validation', error);
         if(/invalid|unsupported|must|needs/i.test(error.message))
-            __nickelDeveloperDiagnostic('invalid-props',error.message,
+            __twinkleDeveloperDiagnostic('invalid-props',error.message,
                 'Check the native component prop contract and bounded values.',boundary);
         captured.add(boundary);
     }
     return JSON.stringify({captured:Array.from(captured)});
 }
-function __nickelBoundaryDiagnostics() { return JSON.stringify(__boundaryDiagnostics); }
-function __nickelBoundedDiagnosticPush(target, value) {
+function __twinkleBoundaryDiagnostics() { return JSON.stringify(__boundaryDiagnostics); }
+function __twinkleBoundedDiagnosticPush(target, value) {
     if (target.length === __MAX_RUNTIME_CHANGES) target.shift();
     target.push(value);
 }
-function __nickelDirtyComponentCount() {
+function __twinkleDirtyComponentCount() {
     let count=__dirtyComponents.size;
     for (const state of __surfaceStates.values()) if (state.dirty!==__dirtyComponents) count+=state.dirty.size;
     return count;
 }
-function __nickelRecordStoreChange(store,generation,before) {
-    const newlyDirty=Math.max(0,__nickelDirtyComponentCount()-before);
+function __twinkleRecordStoreChange(store,generation,before) {
+    const newlyDirty=Math.max(0,__twinkleDirtyComponentCount()-before);
     __runtimeCounters.storeChanges++;
-    __nickelBoundedDiagnosticPush(__runtimeStoreChanges,{store,generation,newlyDirty});
+    __twinkleBoundedDiagnosticPush(__runtimeStoreChanges,{store,generation,newlyDirty});
 }
-function __nickelRecordNativeMutations(operations,nodesVisited) {
+function __twinkleRecordNativeMutations(operations,nodesVisited) {
     __runtimeCounters.nativeMutations+=operations.length;
     const kinds={}; for(const operation of operations) kinds[operation.op]=(kinds[operation.op]??0)+1;
-    __nickelBoundedDiagnosticPush(__runtimeNativeMutations,{count:operations.length,nodesVisited,kinds});
+    __twinkleBoundedDiagnosticPush(__runtimeNativeMutations,{count:operations.length,nodesVisited,kinds});
 }
-function __nickelComponentStack(path) {
+function __twinkleComponentStack(path) {
     if(__componentExecutionStack.some(entry=>entry.path===path))return __componentExecutionStack.slice(-16)
         .map(({path,module,export:exported})=>({path,module,export:exported}));
     const stack=[];
     for(const [candidate,record] of __componentRecords) {
         if(candidate!==path&&!path.startsWith(`${candidate}/`))continue;
-        const metadata=__nickelComponentMetadata.get(record.kind);
+        const metadata=__twinkleComponentMetadata.get(record.kind);
         stack.push({path:candidate,module:metadata?.module??null,export:metadata?.export??record.kind?.name??null});
     }
     return stack.slice(-16);
 }
-function __nickelDeveloperDiagnostic(kind,message,suggestion,path=__currentComponent,detail={}) {
+function __twinkleDeveloperDiagnostic(kind,message,suggestion,path=__currentComponent,detail={}) {
     const bounded=String(message).slice(0,512), owner=typeof path==='string'?path:null;
     const previous=__developerDiagnostics[__developerDiagnostics.length-1];
     if(previous&&previous.kind===kind&&previous.surface===__activeSurface&&previous.path===owner&&previous.message===bounded) {
         previous.occurrences=Math.min(65535,previous.occurrences+1);return;
     }
     if(__developerDiagnostics.length===__MAX_RUNTIME_CHANGES)__developerDiagnostics.shift();
-    __developerDiagnostics.push({kind,severity:'warning',package:__nickelPackageOwner,surface:__activeSurface,
-        mount:__surfaceStore.snapshot.mountId,path:owner,message:bounded,suggestion,stack:owner?__nickelComponentStack(owner):[],
+    __developerDiagnostics.push({kind,severity:'warning',package:__twinklePackageOwner,surface:__activeSurface,
+        mount:__surfaceStore.snapshot.mountId,path:owner,message:bounded,suggestion,stack:owner?__twinkleComponentStack(owner):[],
         occurrences:1,...detail});
 }
-function __nickelProfile() {
+function __twinkleProfile() {
     let profile=__mountProfiles.get(__activeSurface);
     if(!profile) {
         if(__mountProfiles.size===64) {
@@ -364,15 +364,15 @@ function __nickelProfile() {
     }
     profile.mount=__surfaceStore.snapshot.mountId;return profile;
 }
-function __nickelReportTypedPatchApply(micros,accepted) {
-    const profile=__nickelProfile();
+function __twinkleReportTypedPatchApply(micros,accepted) {
+    const profile=__twinkleProfile();
     if(!Number.isSafeInteger(micros)||micros<0)return;
     profile.typedPatchApplyAttempts++;
     if(!accepted)profile.typedPatchApplyRejections++;
     profile.typedPatchApplyMicros+=micros;
 }
-function __nickelReportHostProfile(transportKind,nativeValidationMicros,transportBytes) {
-    const profile=__nickelProfile();
+function __twinkleReportHostProfile(transportKind,nativeValidationMicros,transportBytes) {
+    const profile=__twinkleProfile();
     if(Number.isSafeInteger(nativeValidationMicros)&&nativeValidationMicros>=0)
         profile.nativeValidationMicros+=nativeValidationMicros;
     if(Number.isSafeInteger(transportBytes)&&transportBytes>=0) {
@@ -380,24 +380,24 @@ function __nickelReportHostProfile(transportKind,nativeValidationMicros,transpor
         else if(transportKind==='typed-patch')profile.patchEnvelopeTransportBytes+=transportBytes;
     }
 }
-function __nickelSelectedValue(entry,selector,snapshot,generation,store) {
+function __twinkleSelectedValue(entry,selector,snapshot,generation,store) {
     const selected=selector?selector(snapshot):snapshot;
     if(selector&&entry.generation===generation&&entry.value!==undefined&&!Object.is(selected,entry.value))
-        __nickelDeveloperDiagnostic('unstable-selector',`${store} selector changed for an unchanged generation`,
+        __twinkleDeveloperDiagnostic('unstable-selector',`${store} selector changed for an unchanged generation`,
             'Return a stable snapshot member or memoize the derived selector result.');
     return selected;
 }
-function __nickelSelectedStoreEntry(hooks,slot,kind,selector,store) {
+function __twinkleSelectedStoreEntry(hooks,slot,kind,selector,store) {
     let entry=hooks[slot];
     if(entry?.kind===kind&&entry.selector!==selector)
-        __nickelDeveloperDiagnostic('unstable-selector',`${store} selector function identity changed`,
+        __twinkleDeveloperDiagnostic('unstable-selector',`${store} selector function identity changed`,
             'Declare the selector outside the component or retain it with useCallback.');
     if(!entry||(entry.kind===kind&&entry.selector!==selector))
         hooks[slot]=entry={kind,selector,value:undefined,generation:0};
     if(entry.kind!==kind)throw Error('hook order changed');
     return entry;
 }
-function __nickelRetainedCounts() {
+function __twinkleRetainedCounts() {
     // Counts only, never component data or closures. The selected surface's
     // saved entry can be stale/aliased; count its current state exactly once.
     const counts={surfaces:0,hookComponents:0,hookSlots:0,componentRecords:0,
@@ -413,8 +413,8 @@ function __nickelRetainedCounts() {
         add(state.hooks,state.records,state.handlers,state.previousHandlers,state.handlerSlots);
     return counts;
 }
-function __nickelRuntimeDiagnostics() { return JSON.stringify({counters:__runtimeCounters,reasons:__runtimeReasons,
-    retained:__nickelRetainedCounts(),
+function __twinkleRuntimeDiagnostics() { return JSON.stringify({counters:__runtimeCounters,reasons:__runtimeReasons,
+    retained:__twinkleRetainedCounts(),
     storeChanges:__runtimeStoreChanges,nativeMutations:__runtimeNativeMutations,
     developerDiagnostics:__developerDiagnostics,profiles:Array.from(__mountProfiles.values())}); }
 let __localeStore = {generation:0,snapshot:Object.freeze({generation:0,tag:'und',direction:'ltr',known:false})};
@@ -423,23 +423,23 @@ let __themeStore = {generation:0, snapshot:Object.freeze({
     reducedMotion:null, reducedTransparency:null, palette:null
 })};
 let __capabilityStore = {generation:0, known:Object.freeze([]), snapshot:Object.freeze({})};
-let __nickelData = Object.freeze({query: '', results: []});
-const __nickelExternalSubscriptions = new WeakMap();
-const __nickelExternalSnapshots = new WeakMap();
-function __nickelStoreContract(name, read) {
-    const subscribe=()=>{throw Error('Nickel store subscriptions are installed only by useSyncExternalStore');};
+let __twinkleData = Object.freeze({query: '', results: []});
+const __twinkleExternalSubscriptions = new WeakMap();
+const __twinkleExternalSnapshots = new WeakMap();
+function __twinkleStoreContract(name, read) {
+    const subscribe=()=>{throw Error('Twinkle store subscriptions are installed only by useSyncExternalStore');};
     const getSnapshot=()=>read().snapshot;
     const descriptor=Object.freeze({name,read});
-    __nickelExternalSubscriptions.set(subscribe,descriptor);__nickelExternalSnapshots.set(getSnapshot,descriptor);
+    __twinkleExternalSubscriptions.set(subscribe,descriptor);__twinkleExternalSnapshots.set(getSnapshot,descriptor);
     return Object.freeze({subscribe,getSnapshot});
 }
 const TwinkleStores=Object.freeze({
-    locale:__nickelStoreContract('locale',()=>__localeStore),
-    theme:__nickelStoreContract('theme',()=>__themeStore),
-    capabilities:__nickelStoreContract('capabilities',()=>__capabilityStore)
+    locale:__twinkleStoreContract('locale',()=>__localeStore),
+    theme:__twinkleStoreContract('theme',()=>__themeStore),
+    capabilities:__twinkleStoreContract('capabilities',()=>__capabilityStore)
 });
-function __nickelNotifyExternalStore(name) {
-    __nickelForEachSurfaceHooks((hooks,dirty)=>{for(const [owner,slots] of hooks)for(const entry of slots){
+function __twinkleNotifyExternalStore(name) {
+    __twinkleForEachSurfaceHooks((hooks,dirty)=>{for(const [owner,slots] of hooks)for(const entry of slots){
         if(entry?.kind!=='sync-external-store'||entry.store.name!==name)continue;
         try{const state=entry.store.read(),snapshot=entry.getSnapshot();entry.storeError=undefined;
             if(state.generation!==entry.generation||!Object.is(snapshot,entry.value))dirty.add(owner);
@@ -451,7 +451,7 @@ const __surfaceStates = new Map();
 const __surfaceApps = new Map();
 const __surfaceAppIdentities = new Map();
 
-function __nickelRegisterSurfaceApp(id, component, identity = null) {
+function __twinkleRegisterSurfaceApp(id, component, identity = null) {
     if (typeof id !== 'string' || !id.length || typeof component !== 'function')
         throw Error('invalid surface entry');
     if (__surfaceApps.has(id)) throw Error('surface entry is already registered');
@@ -461,7 +461,7 @@ function __nickelRegisterSurfaceApp(id, component, identity = null) {
 
 // Native composition mounts select already-loaded components as data. Keep
 // lookup inside App so provider replacement and page retirement remain live.
-function __nickelReplaceSurfaceApp(id, component, identity) {
+function __twinkleReplaceSurfaceApp(id, component, identity) {
     if (typeof id !== 'string' || !__surfaceApps.has(id) || typeof component !== 'function')
         throw Error('hot replacement target is unavailable');
     if (!identity || typeof identity !== 'object' || Array.isArray(identity))
@@ -474,14 +474,14 @@ function __nickelReplaceSurfaceApp(id, component, identity) {
         __componentIds.set(component, __componentIds.get(previous.component));
     if (!compatible) {
         const state = id === __activeSurface ? {hooks:__componentHooks} : __surfaceStates.get(id);
-        if (state?.hooks) __nickelCleanupHooks(state.hooks);
+        if (state?.hooks) __twinkleCleanupHooks(state.hooks);
         if (id === __activeSurface) {
             __componentHooks = new Map(); __componentRecords = new Map();
-            __handlers = new __NickelHandlers(); __previousHandlers = new __NickelHandlers(); __handlerSlots = new Map();
+            __handlers = new __TwinkleHandlers(); __previousHandlers = new __TwinkleHandlers(); __handlerSlots = new Map();
             __effects = []; __dirtyComponents = new Set();
         } else if (state) {
-            state.hooks = new Map(); state.records = new Map(); state.handlers = new __NickelHandlers();
-            state.previousHandlers = new __NickelHandlers(); state.handlerSlots = new Map(); state.effects = []; state.dirty = new Set();
+            state.hooks = new Map(); state.records = new Map(); state.handlers = new __TwinkleHandlers();
+            state.previousHandlers = new __TwinkleHandlers(); state.handlerSlots = new Map(); state.effects = []; state.dirty = new Set();
         }
     }
     __surfaceApps.set(id, component);
@@ -491,18 +491,18 @@ function __nickelReplaceSurfaceApp(id, component, identity) {
 
 // Registrations retain executable values in this package's module graph. Only
 // declarative metadata crosses the host boundary; package identity comes from Rust.
-function __nickelResource(name, fallback) {
-    __nickelMarkResourceRead(name);
-    const value = __nickelProjectionField(__nickelData, name);
+function __twinkleResource(name, fallback) {
+    __twinkleMarkResourceRead(name);
+    const value = __twinkleProjectionField(__twinkleData, name);
     return JSON.parse(JSON.stringify(value === undefined ? fallback : value));
 }
-function __nickelMarkResourceRead(name) {
+function __twinkleMarkResourceRead(name) {
     if (__currentComponent === null) return;
     let reads = __componentResourceReads.get(__currentComponent);
     if (!reads) __componentResourceReads.set(__currentComponent, reads = new Set());
     reads.add(name);
 }
-function __nickelDirtyResourceConsumers(name) {
+function __twinkleDirtyResourceConsumers(name) {
     const dirty = (records, pending) => {
         for (const [path, record] of records)
             if (record.resources?.includes(name)) pending.add(path);
@@ -511,16 +511,16 @@ function __nickelDirtyResourceConsumers(name) {
     for (const state of __surfaceStates.values())
         if (state.records !== __componentRecords) dirty(state.records, state.dirty);
 }
-function __nickelIdentity(id) {
+function __twinkleIdentity(id) {
     if (typeof id !== 'string' || !id.length || id.length > 512) throw TypeError('invalid capability identity');
     return id;
 }
 // Ordinary application data/effects; an effect is a request for the trusted host.
 const twinkle = Object.freeze({
-    get data() { return __nickelData; },
+    get data() { return __twinkleData; },
     request(effect) { __effects.push(effect); },
     component(contract) {
-        const component = __nickelPublicComponents.get(contract);
+        const component = __twinklePublicComponents.get(contract);
         if (!component) throw Error(`unknown public component ${contract}`);
         return component;
     },
@@ -536,10 +536,10 @@ function __twinkleRegisterComponentMount(id, selection) {
         || typeof selection !== 'string' || !selection.length || selection.length > 128)
         throw Error('invalid component mount selection');
     twinkle.component(selection);
-    __nickelRegisterSurfaceApp(id, function App() {
-        const value = __nickelData.__componentProps;
-        const hydrated = typeof __nickelHydrateComponentProps === 'function'
-            ? __nickelHydrateComponentProps(value) : value;
+    __twinkleRegisterSurfaceApp(id, function App() {
+        const value = __twinkleData.__componentProps;
+        const hydrated = typeof __twinkleHydrateComponentProps === 'function'
+            ? __twinkleHydrateComponentProps(value) : value;
         const {children, ...props} = hydrated;
         return h(twinkle.component(selection), props, ...(children ?? []));
     });
@@ -550,16 +550,16 @@ function __twinkleRegisterComponentMount(id, selection) {
 // continue to clone the host value without exposing that retained inventory.
 const __mountDataProjections = new WeakMap();
 let __mountDataBase = null;
-function __nickelCloneProjection(value) {
+function __twinkleCloneProjection(value) {
     if (value === null || typeof value !== 'object') return value;
-    if (Array.isArray(value)) return value.map(__nickelCloneProjection);
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, __nickelCloneProjection(item)]));
+    if (Array.isArray(value)) return value.map(__twinkleCloneProjection);
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, __twinkleCloneProjection(item)]));
 }
-function __nickelProjectionField(data, name) {
+function __twinkleProjectionField(data, name) {
     const projection = __mountDataProjections.get(data);
     return projection ? (projection.exposed.has(name) ? projection.exposed.get(name) : projection.source[name]) : data[name];
 }
-function __nickelSetMountData({base, surface, hasSurface, props}) {
+function __twinkleSetMountData({base, surface, hasSurface, props}) {
     if (base !== null) {
         __mountDataBase = base;
         __runtimeCounters.mountBaseUploads++;
@@ -573,23 +573,23 @@ function __nickelSetMountData({base, surface, hasSurface, props}) {
     const data = {};
     for (const key of Object.keys(source).sort()) {
         Object.defineProperty(data, key, {enumerable:true, get() {
-            if (!exposed.has(key)) exposed.set(key, __nickelCloneProjection(source[key]));
+            if (!exposed.has(key)) exposed.set(key, __twinkleCloneProjection(source[key]));
             return exposed.get(key);
         }});
     }
     __mountDataProjections.set(data, {source, exposed});
-    __nickelPublishData(data);
+    __twinklePublishData(data);
 }
-function __nickelSetData(data) {
+function __twinkleSetData(data) {
     __mountDataBase = null;
-    __nickelPublishData(data);
+    __twinklePublishData(data);
 }
-function __nickelPublishData(data) {
+function __twinklePublishData(data) {
     const changed = new Map();
     const fieldChanged = name => {
         if (!changed.has(name)) {
-            const previous = __nickelProjectionField(__nickelData, name);
-            const next = __nickelProjectionField(data, name);
+            const previous = __twinkleProjectionField(__twinkleData, name);
+            const next = __twinkleProjectionField(data, name);
             changed.set(name, !Object.is(previous, next) && JSON.stringify(previous) !== JSON.stringify(next));
         }
         return changed.get(name);
@@ -601,17 +601,17 @@ function __nickelPublishData(data) {
     dirtyConsumers(__componentRecords, __dirtyComponents);
     for (const state of __surfaceStates.values())
         if (state.records !== __componentRecords) dirtyConsumers(state.records, state.dirty);
-    __nickelData = Object.freeze(data);
+    __twinkleData = Object.freeze(data);
 }
 
-function __nickelForEachSurfaceHooks(visit) {
+function __twinkleForEachSurfaceHooks(visit) {
     visit(__componentHooks, __dirtyComponents);
     for (const state of __surfaceStates.values())
         if (state.hooks !== __componentHooks) visit(state.hooks, state.dirty);
 }
 
-function __nickelSetLocaleStore(value){
-    const before=__nickelDirtyComponentCount();
+function __twinkleSetLocaleStore(value){
+    const before=__twinkleDirtyComponentCount();
     if(!value||typeof value!=='object'||Array.isArray(value))throw Error('invalid locale snapshot');
     const known=value.known===true;
     let tag=known?value.tag:'und';
@@ -620,14 +620,14 @@ function __nickelSetLocaleStore(value){
     const direction=known?(value.direction??'ltr'):'ltr';if(direction!=='ltr'&&direction!=='rtl')throw Error('invalid locale direction');
     const previous=__localeStore.snapshot;if(previous.tag===tag&&previous.direction===direction&&previous.known===known)return false;
     if(__pendingRender!==null||__pendingEvent!==null)throw Error('cannot publish changed locale store during a render or event');
-    const generation=__localeStore.generation+1,snapshot=Object.freeze({generation,tag,direction,known});__localeStore={generation,snapshot};__nickelNotifyExternalStore('locale');
-    __nickelForEachSurfaceHooks((hooks,dirty)=>{for(const [owner,slots] of hooks)for(const entry of slots)if(entry?.kind==='locale-store'&&!Object.is(snapshot,entry.value))dirty.add(owner);});__nickelRecordStoreChange('locale',generation,before);return true;
+    const generation=__localeStore.generation+1,snapshot=Object.freeze({generation,tag,direction,known});__localeStore={generation,snapshot};__twinkleNotifyExternalStore('locale');
+    __twinkleForEachSurfaceHooks((hooks,dirty)=>{for(const [owner,slots] of hooks)for(const entry of slots)if(entry?.kind==='locale-store'&&!Object.is(snapshot,entry.value))dirty.add(owner);});__twinkleRecordStoreChange('locale',generation,before);return true;
 }
 function useLocale(){if(__currentComponent===null)throw Error('useLocale requires a component');const slot=__hookIndex++,hooks=__componentHooks.get(__currentComponent);let entry=hooks[slot];
     if(!entry)hooks[slot]=entry={kind:'locale-store',value:undefined,generation:0};if(entry.kind!=='locale-store')throw Error('hook order changed');entry.value=__localeStore.snapshot;entry.generation=__localeStore.generation;return entry.value;}
 function useSyncExternalStore(subscribe,getSnapshot) {
     if(__currentComponent===null)throw Error('useSyncExternalStore requires a component');
-    const store=__nickelExternalSubscriptions.get(subscribe),snapshotStore=__nickelExternalSnapshots.get(getSnapshot);
+    const store=__twinkleExternalSubscriptions.get(subscribe),snapshotStore=__twinkleExternalSnapshots.get(getSnapshot);
     if(!store||store!==snapshotStore)throw TypeError('useSyncExternalStore requires a matching branded host store contract');
     const slot=__hookIndex++,hooks=__componentHooks.get(__currentComponent);let entry=hooks[slot];
     if(!entry||(entry.kind==='sync-external-store'&&(entry.store!==store||entry.getSnapshot!==getSnapshot)))
@@ -636,7 +636,7 @@ function useSyncExternalStore(subscribe,getSnapshot) {
     const before=store.read(),value=getSnapshot(),after=store.read();
     if(before.generation!==after.generation||!Object.is(value,after.snapshot))throw Error('external store changed during render');
     if(entry.generation===before.generation&&entry.value!==undefined&&!Object.is(value,entry.value))
-        __nickelDeveloperDiagnostic('unstable-selector',`${store.name} external snapshot changed for an unchanged generation`,
+        __twinkleDeveloperDiagnostic('unstable-selector',`${store.name} external snapshot changed for an unchanged generation`,
             'Return the store snapshot directly; do not allocate a new snapshot from getSnapshot.');
     entry.storeError=undefined;entry.value=value;entry.generation=after.generation;return value;
 }
@@ -647,15 +647,15 @@ function memo(component,compare) {
     const wrapped=props=>component(props);__memoComponents.set(wrapped,{component,compare:compare??null});return wrapped;
 }
 
-const __nickelThemePaletteFields = ['background','panel','surface','surfaceHover','text','muted',
+const __twinkleThemePaletteFields = ['background','panel','surface','surfaceHover','text','muted',
     'accent','accentSoft','complement'];
-function __nickelThemeColor(value, field) {
+function __twinkleThemeColor(value, field) {
     if (value === undefined || value === null) return null;
     if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff)
         throw Error(`invalid theme ${field}`);
     return value;
 }
-function __nickelThemeSnapshot(value, generation) {
+function __twinkleThemeSnapshot(value, generation) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         throw Error('invalid effective theme snapshot');
     const mode = value.mode ?? 'unknown';
@@ -672,37 +672,37 @@ function __nickelThemeSnapshot(value, generation) {
         if (typeof value.palette !== 'object' || Array.isArray(value.palette))
             throw Error('invalid theme palette');
         const colors = {};
-        for (const field of __nickelThemePaletteFields) {
-            const color = __nickelThemeColor(value.palette[field], `palette ${field}`);
+        for (const field of __twinkleThemePaletteFields) {
+            const color = __twinkleThemeColor(value.palette[field], `palette ${field}`);
             if (color === null) throw Error(`missing theme palette ${field}`);
             colors[field] = color;
         }
         palette = Object.freeze(colors);
     }
-    return Object.freeze({generation, mode, accent:__nickelThemeColor(value.accent, 'accent'),
+    return Object.freeze({generation, mode, accent:__twinkleThemeColor(value.accent, 'accent'),
         accentHue:boundedInteger('accentHue', 359), accentIntensity:boundedInteger('accentIntensity', 100),
         reducedMotion:nullableBoolean('reducedMotion'),
         reducedTransparency:nullableBoolean('reducedTransparency'), palette});
 }
-function __nickelThemeEqual(left, right) {
+function __twinkleThemeEqual(left, right) {
     const fields = ['mode','accent','accentHue','accentIntensity','reducedMotion','reducedTransparency'];
     if (!fields.every(field => Object.is(left[field], right[field]))) return false;
     if (left.palette === null || right.palette === null) return left.palette === right.palette;
-    return __nickelThemePaletteFields.every(field => left.palette[field] === right.palette[field]);
+    return __twinkleThemePaletteFields.every(field => left.palette[field] === right.palette[field]);
 }
-function __nickelSetThemeStore(value) {
-    const before=__nickelDirtyComponentCount();
+function __twinkleSetThemeStore(value) {
+    const before=__twinkleDirtyComponentCount();
     const generation = __themeStore.generation + 1;
-    let snapshot = __nickelThemeSnapshot(value, generation);
-    if (__nickelThemeEqual(__themeStore.snapshot, snapshot)) return false;
+    let snapshot = __twinkleThemeSnapshot(value, generation);
+    if (__twinkleThemeEqual(__themeStore.snapshot, snapshot)) return false;
     if (__pendingRender !== null || __pendingEvent !== null)
         throw Error('cannot publish changed theme store during a render or event');
     if (__themeStore.snapshot.palette !== null && snapshot.palette !== null
-        && __nickelThemePaletteFields.every(field => __themeStore.snapshot.palette[field] === snapshot.palette[field]))
+        && __twinkleThemePaletteFields.every(field => __themeStore.snapshot.palette[field] === snapshot.palette[field]))
         snapshot = Object.freeze({...snapshot, palette:__themeStore.snapshot.palette});
     __themeStore = {generation, snapshot};
-    __nickelNotifyExternalStore('theme');
-    __nickelForEachSurfaceHooks((hooks, dirty) => {
+    __twinkleNotifyExternalStore('theme');
+    __twinkleForEachSurfaceHooks((hooks, dirty) => {
         for (const [owner, slots] of hooks) for (const entry of slots) {
             if (entry?.kind !== 'theme-store') continue;
             try {
@@ -715,7 +715,7 @@ function __nickelSetThemeStore(value) {
             }
         }
     });
-    __nickelRecordStoreChange('theme',generation,before); return true;
+    __twinkleRecordStoreChange('theme',generation,before); return true;
 }
 function useTheme(selector) {
     if (__currentComponent === null) throw Error('useTheme requires a component');
@@ -723,17 +723,17 @@ function useTheme(selector) {
     const slot = __hookIndex++;
     const hooks = __componentHooks.get(__currentComponent);
     const normalized = selector ?? null;
-    const entry=__nickelSelectedStoreEntry(hooks,slot,'theme-store',normalized,'theme');
+    const entry=__twinkleSelectedStoreEntry(hooks,slot,'theme-store',normalized,'theme');
     entry.storeError = undefined;
-    entry.value = __nickelSelectedValue(entry,normalized,__themeStore.snapshot,__themeStore.generation,'theme');
+    entry.value = __twinkleSelectedValue(entry,normalized,__themeStore.snapshot,__themeStore.generation,'theme');
     entry.generation = __themeStore.generation;
     return entry.value;
 }
-const __nickelSelectReducedMotion = theme => theme.reducedMotion;
-function useReducedMotion() { return useTheme(__nickelSelectReducedMotion); }
+const __twinkleSelectReducedMotion = theme => theme.reducedMotion;
+function useReducedMotion() { return useTheme(__twinkleSelectReducedMotion); }
 
-function __nickelSetCapabilityStore(value) {
-    const before=__nickelDirtyComponentCount();
+function __twinkleSetCapabilityStore(value) {
+    const before=__twinkleDirtyComponentCount();
     if (!value || typeof value !== 'object' || Array.isArray(value)
         || !Array.isArray(value.known) || !value.entries || typeof value.entries !== 'object'
         || Array.isArray(value.entries) || value.known.length > 128)
@@ -771,12 +771,12 @@ function __nickelSetCapabilityStore(value) {
     }
     const generation = previous.generation + 1;
     __capabilityStore = {generation, known, snapshot:Object.freeze(entries)};
-    __nickelNotifyExternalStore('capabilities');
-    __nickelForEachSurfaceHooks((hooks, dirty) => {
+    __twinkleNotifyExternalStore('capabilities');
+    __twinkleForEachSurfaceHooks((hooks, dirty) => {
         for (const [owner, slots] of hooks) for (const entry of slots)
             if (entry?.kind === 'capability-store' && !Object.is(entries[entry.capability], entry.value)) dirty.add(owner);
     });
-    __nickelRecordStoreChange('capabilities',generation,before); return true;
+    __twinkleRecordStoreChange('capabilities',generation,before); return true;
 }
 function useHostCapability(capability) {
     if (__currentComponent === null) throw Error('useHostCapability requires a component');
@@ -793,7 +793,7 @@ function useHostCapability(capability) {
     return entry.value;
 }
 
-function __nickelSurfaceSelection(name, snapshot) {
+function __twinkleSurfaceSelection(name, snapshot) {
     if (name === 'surface') return snapshot;
     if (name === 'output') return snapshot.output;
     if (name === 'scale') return snapshot.scaleFactor;
@@ -801,8 +801,8 @@ function __nickelSurfaceSelection(name, snapshot) {
     throw Error('unknown surface store selection');
 }
 
-function __nickelSetSurfaceStore(mountId, value) {
-    const before=__nickelDirtyComponentCount();
+function __twinkleSetSurfaceStore(mountId, value) {
+    const before=__twinkleDirtyComponentCount();
     if (__pendingRender !== null || __pendingEvent !== null)
         throw Error('cannot publish surface store during a render or event');
     if (typeof mountId !== 'string' || !mountId.length || mountId.length > 128)
@@ -845,14 +845,14 @@ function __nickelSetSurfaceStore(mountId, value) {
     for (const [owner, hooks] of __componentHooks) {
         for (const entry of hooks) {
             if (entry?.kind !== 'surface-store') continue;
-            const selected = entry.selector ? entry.selector(snapshot) : __nickelSurfaceSelection(entry.selection, snapshot);
+            const selected = entry.selector ? entry.selector(snapshot) : __twinkleSurfaceSelection(entry.selection, snapshot);
             if (!Object.is(selected, entry.value)) __dirtyComponents.add(owner);
         }
     }
-    __nickelRecordStoreChange('surface',generation,before); return true;
+    __twinkleRecordStoreChange('surface',generation,before); return true;
 }
 
-function __nickelUseSurfaceSelection(selection, selector) {
+function __twinkleUseSurfaceSelection(selection, selector) {
     if (__currentComponent === null) throw Error('surface hooks require a component');
     const slot = __hookIndex++;
     const hooks = __componentHooks.get(__currentComponent);
@@ -860,18 +860,18 @@ function __nickelUseSurfaceSelection(selection, selector) {
     if (!entry) hooks[slot] = entry = {kind:'surface-store', selection, selector:null, value:undefined, generation:0};
     if (entry.kind !== 'surface-store' || entry.selection !== selection) throw Error('hook order changed');
     entry.selector=selector??null;
-    entry.value = entry.selector ? entry.selector(__surfaceStore.snapshot) : __nickelSurfaceSelection(selection, __surfaceStore.snapshot);
+    entry.value = entry.selector ? entry.selector(__surfaceStore.snapshot) : __twinkleSurfaceSelection(selection, __surfaceStore.snapshot);
     entry.generation = __surfaceStore.generation;
     return entry.value;
 }
 
-function useSurface(selector) { if(selector!==undefined&&typeof selector!=='function')throw TypeError('useSurface selector must be a function'); return __nickelUseSurfaceSelection('surface',selector); }
+function useSurface(selector) { if(selector!==undefined&&typeof selector!=='function')throw TypeError('useSurface selector must be a function'); return __twinkleUseSurfaceSelection('surface',selector); }
 let __twinkleOutputResolver = () => null;
-function useOutput() { return __twinkleOutputResolver(__nickelUseSurfaceSelection('output')); }
-function useScaleFactor() { return __nickelUseSurfaceSelection('scale'); }
-function useSurfaceFocus() { return __nickelUseSurfaceSelection('focus'); }
+function useOutput() { return __twinkleOutputResolver(__twinkleUseSurfaceSelection('output')); }
+function useScaleFactor() { return __twinkleUseSurfaceSelection('scale'); }
+function useSurfaceFocus() { return __twinkleUseSurfaceSelection('focus'); }
 
-function __nickelSelectSurface(id) {
+function __twinkleSelectSurface(id) {
     if (typeof id !== 'string' || !id.length) throw Error('invalid surface identity');
     if (__pendingRender !== null || __pendingEvent !== null)
         throw Error('cannot switch surfaces during a render or event');
@@ -883,7 +883,7 @@ function __nickelSelectSurface(id) {
         previousHandlers: __previousHandlers,
         handlerSlots: __handlerSlots,
         effects: __effects,
-        data: __nickelData,
+        data: __twinkleData,
         dirty: __dirtyComponents,
         surfaceStore: __surfaceStore,
         acceptedNativeTree: __acceptedNativeTree
@@ -891,8 +891,8 @@ function __nickelSelectSurface(id) {
     const state = __surfaceStates.get(id);
     __componentHooks = state?.hooks ?? new Map();
     __componentRecords = state?.records ?? new Map();
-    __handlers = state?.handlers ?? new __NickelHandlers();
-    __previousHandlers = state?.previousHandlers ?? new __NickelHandlers();
+    __handlers = state?.handlers ?? new __TwinkleHandlers();
+    __previousHandlers = state?.previousHandlers ?? new __TwinkleHandlers();
     __handlerSlots = state?.handlerSlots ?? new Map();
     __effects = state?.effects ?? [];
     __dirtyComponents = state?.dirty ?? new Set();
@@ -901,7 +901,7 @@ function __nickelSelectSurface(id) {
         output:null, availableSize:null, scaleFactor:null, focused:null, visible:null
     })};
     __acceptedNativeTree = state?.acceptedNativeTree ?? null;
-    __nickelData = state?.data ?? Object.freeze({query: '', results: []});
+    __twinkleData = state?.data ?? Object.freeze({query: '', results: []});
     __visitedComponents = new Set();
     __componentChildren = new Map();
     __currentComponent = null;
@@ -910,11 +910,11 @@ function __nickelSelectSurface(id) {
     __activeSurface = id;
 }
 
-function __nickelDropSurface(id) {
+function __twinkleDropSurface(id) {
     if (__pendingRender !== null || __pendingEvent !== null)
         throw Error('cannot retire a surface during a render or event');
     const retired = id === __activeSurface ? __componentHooks : __surfaceStates.get(id)?.hooks;
-    if (retired) __nickelCleanupHooks(retired);
+    if (retired) __twinkleCleanupHooks(retired);
     __surfaceStates.delete(id);
     __mountProfiles.delete(id);
     __surfaceApps.delete(id);
@@ -922,8 +922,8 @@ function __nickelDropSurface(id) {
     if (id !== __activeSurface) return;
     __componentHooks = new Map();
     __componentRecords = new Map();
-    __handlers = new __NickelHandlers();
-    __previousHandlers = new __NickelHandlers();
+    __handlers = new __TwinkleHandlers();
+    __previousHandlers = new __TwinkleHandlers();
     __handlerSlots = new Map();
     __effects = [];
     __dirtyComponents = new Set();
@@ -932,7 +932,7 @@ function __nickelDropSurface(id) {
         generation:0, mountId:null, id:null, kind:null, logicalSize:null,
         output:null, availableSize:null, scaleFactor:null, focused:null, visible:null
     })};
-    __nickelData = Object.freeze({query: '', results: []});
+    __twinkleData = Object.freeze({query: '', results: []});
     __visitedComponents = new Set();
     __componentChildren = new Map();
     __currentComponent = null;
@@ -941,7 +941,7 @@ function __nickelDropSurface(id) {
     __activeSurface = '';
 }
 
-function __nickelTakeEffects() {
+function __twinkleTakeEffects() {
     if (__compositionCheckpoint !== null) {
         if (__compositionCheckpoint.activeSurface === __activeSurface) __compositionCheckpoint.active.effects = [];
         const saved = __compositionCheckpoint.surfaces.get(__activeSurface);
@@ -1002,7 +1002,7 @@ function useReducer(reducer, initialArg, init) {
             let value;
             try { value = current.reducer(current.value, action); }
             catch (error) {
-                if (__nickelCaptureFailure(owner, error, 'reducer', surface)) return;
+                if (__twinkleCaptureFailure(owner, error, 'reducer', surface)) return;
                 throw error;
             }
             if (!Object.is(value, current.value)) {
@@ -1036,7 +1036,7 @@ function useId() {
     if (!hooks[slot]) {
         const surface = encodeURIComponent(__activeSurface);
         const component = encodeURIComponent(owner);
-        hooks[slot] = {kind: 'id', value: `:nickel:${surface}:${component}:${slot}:`};
+        hooks[slot] = {kind: 'id', value: `:twinkle:${surface}:${component}:${slot}:`};
     }
     if (hooks[slot].kind !== 'id') throw Error('hook order changed');
     return hooks[slot].value;
@@ -1057,13 +1057,13 @@ function createContext(defaultValue) {
     return context;
 }
 
-function __nickelIsContext(value) {
+function __twinkleIsContext(value) {
     return value !== null && typeof value === 'object' && __contexts.has(value);
 }
 
 function useContext(context) {
     if (__currentComponent === null) throw Error('useContext requires a component');
-    if (!__nickelIsContext(context)) throw TypeError('useContext requires a Nickel context');
+    if (!__twinkleIsContext(context)) throw TypeError('useContext requires a Twinkle context');
     const slot = __hookIndex++;
     const hooks = __componentHooks.get(__currentComponent);
     let entry = hooks[slot];
@@ -1076,12 +1076,12 @@ function useContext(context) {
     return entry.value;
 }
 
-function __nickelDepsEqual(left, right) {
+function __twinkleDepsEqual(left, right) {
     return left !== undefined && right !== undefined && left.length === right.length
         && left.every((value, index) => Object.is(value, right[index]));
 }
 
-function __nickelDeps(deps, hook) {
+function __twinkleDeps(deps, hook) {
     if (deps !== undefined && !Array.isArray(deps)) throw TypeError(`${hook} dependencies must be an array`);
     return deps === undefined ? undefined : deps.slice();
 }
@@ -1091,10 +1091,10 @@ function useMemo(factory, deps) {
     if (typeof factory !== 'function') throw TypeError('useMemo requires a factory');
     const slot = __hookIndex++;
     const hooks = __componentHooks.get(__currentComponent);
-    const nextDeps = __nickelDeps(deps, 'useMemo');
+    const nextDeps = __twinkleDeps(deps, 'useMemo');
     const previous = hooks[slot];
     if (previous && previous.kind !== 'memo') throw Error('hook order changed');
-    if (previous && __nickelDepsEqual(previous.deps, nextDeps)) return previous.value;
+    if (previous && __twinkleDepsEqual(previous.deps, nextDeps)) return previous.value;
     const value = factory();
     hooks[slot] = {kind: 'memo', value, deps: nextDeps};
     return value;
@@ -1110,36 +1110,36 @@ function useEffect(setup, deps) {
     if (typeof setup !== 'function') throw TypeError('useEffect requires a setup function');
     const slot = __hookIndex++;
     const hooks = __componentHooks.get(__currentComponent);
-    const nextDeps = __nickelDeps(deps, 'useEffect');
+    const nextDeps = __twinkleDeps(deps, 'useEffect');
     let entry = hooks[slot];
     if (!entry) hooks[slot] = entry = {kind: 'effect', owner:__currentComponent, deps: undefined, cleanup: undefined};
     if (entry.kind !== 'effect') throw Error('hook order changed');
-    if (!__nickelDepsEqual(entry.deps, nextDeps)) {
+    if (!__twinkleDepsEqual(entry.deps, nextDeps)) {
         __runtimeCounters.effectsScheduled++;
         __pendingRender.passiveEffects.push({entry, setup, deps: nextDeps});
     }
 }
 
-function __nickelRunCleanup(entry) {
+function __twinkleRunCleanup(entry) {
     if (typeof entry.cleanup !== 'function') return;
     const cleanup = entry.cleanup;
     entry.cleanup = undefined;
     __runtimeCounters.cleanups++;
     try { cleanup(); }
-    catch (error) { __nickelCaptureFailure(entry.owner, error, 'cleanup'); }
+    catch (error) { __twinkleCaptureFailure(entry.owner, error, 'cleanup'); }
 }
 
-function __nickelCleanupHooks(hooks) {
+function __twinkleCleanupHooks(hooks) {
     for (const slots of hooks.values())
         for (const entry of slots)
-            if (entry?.kind === 'effect') __nickelRunCleanup(entry);
+            if (entry?.kind === 'effect') __twinkleRunCleanup(entry);
 }
 
 // Function components are declarations until reconciliation. The WeakSet brand
 // is intentionally not serializable and never crosses the native boundary.
 const __componentDeclarations = new WeakSet();
 
-function __nickelComponentDeclaration(component, props, children) {
+function __twinkleComponentDeclaration(component, props, children) {
     const declaration = {};
     Object.defineProperties(declaration, {
         component:{value:component},
@@ -1153,16 +1153,16 @@ function __nickelComponentDeclaration(component, props, children) {
     return declaration;
 }
 
-function __nickelIsComponentDeclaration(value) {
+function __twinkleIsComponentDeclaration(value) {
     return value !== null && typeof value === 'object' && __componentDeclarations.has(value);
 }
 
-function __nickelMarkNonRetainedComponent(component) {
+function __twinkleMarkNonRetainedComponent(component) {
     __nonRetainedComponents.add(component);
     return component;
 }
 
-function __nickelSameDeclaration(previous, next) {
+function __twinkleSameDeclaration(previous, next) {
     if (!previous || previous.component !== next.component || previous.key !== next.key) return false;
     const left = previous.props ?? {};
     const right = next.props ?? {};
@@ -1176,28 +1176,28 @@ function __nickelSameDeclaration(previous, next) {
     return previous.children.every((child, index) => Object.is(child, next.children[index]));
 }
 
-function __nickelMemoProps(declaration) {
+function __twinkleMemoProps(declaration) {
     const props={...declaration.props};
     if(declaration.children.length===1)props.children=declaration.children[0];
     else if(declaration.children.length>1)props.children=declaration.children;
     return props;
 }
-function __nickelMemoSame(previous,next,configuration) {
+function __twinkleMemoSame(previous,next,configuration) {
     if(!previous||previous.component!==next.component||previous.key!==next.key)return false;
-    const left=__nickelMemoProps(previous),right=__nickelMemoProps(next);
+    const left=__twinkleMemoProps(previous),right=__twinkleMemoProps(next);
     if(configuration.compare)return configuration.compare(left,right)===true;
     const leftKeys=Object.keys(left),rightKeys=Object.keys(right);return leftKeys.length===rightKeys.length
         &&leftKeys.every(key=>Object.prototype.hasOwnProperty.call(right,key)&&Object.is(left[key],right[key]));
 }
 
-function __nickelDirtyAtOrBelow(path) {
+function __twinkleDirtyAtOrBelow(path) {
     if (!__incrementalRender) return true;
     for (const dirty of __dirtyComponents)
         if (dirty === path || dirty.startsWith(`${path}/`)) return true;
     return false;
 }
 
-function __nickelMarkRetainedVisited(path) {
+function __twinkleMarkRetainedVisited(path) {
     const pending = [path];
     while (pending.length) {
         const retained = pending.pop();
@@ -1207,7 +1207,7 @@ function __nickelMarkRetainedVisited(path) {
     }
 }
 
-function __nickelIndexRetainedComponentChildren(records) {
+function __twinkleIndexRetainedComponentChildren(records) {
     const children = new Map();
     for (const path of records.keys()) {
         const identity = path.lastIndexOf('/');
@@ -1222,7 +1222,7 @@ function __nickelIndexRetainedComponentChildren(records) {
     return children;
 }
 
-function __nickelResolveDeclaration(declaration) {
+function __twinkleResolveDeclaration(declaration) {
     const kind = declaration.component;
     let type = __componentIds.get(kind);
     if (type === undefined) {
@@ -1241,26 +1241,26 @@ function __nickelResolveDeclaration(declaration) {
     if (!__componentHooks.has(path)) __componentHooks.set(path, []);
     const retained = __componentRecords.get(path);
     const memoConfiguration=__memoComponents.get(kind);
-    const declarationSame=memoConfiguration?__nickelMemoSame(retained?.declaration,declaration,memoConfiguration)
-        :__nickelSameDeclaration(retained?.declaration,declaration);
+    const declarationSame=memoConfiguration?__twinkleMemoSame(retained?.declaration,declaration,memoConfiguration)
+        :__twinkleSameDeclaration(retained?.declaration,declaration);
     const execute = !__incrementalRender || !retained || __nonRetainedComponents.has(kind)
         || __dirtyComponents.has(path) || !declarationSame;
-    if (!execute && !__nickelDirtyAtOrBelow(path)) {
+    if (!execute && !__twinkleDirtyAtOrBelow(path)) {
         __runtimeCounters.reused++;
-        __nickelMarkRetainedVisited(path);
+        __twinkleMarkRetainedVisited(path);
         return retained.output;
     }
     const previous = __currentComponent;
     const previousIndex = __hookIndex;
     __currentComponent = path;
-    const componentMetadata=__nickelComponentMetadata.get(kind);
+    const componentMetadata=__twinkleComponentMetadata.get(kind);
     __componentExecutionStack.push({path,module:componentMetadata?.module??null,
         export:componentMetadata?.export??kind.name??null,kind});
     __runtimeCounters.executed++;
-    const profile=__nickelProfile();
+    const profile=__twinkleProfile();
     const recursiveExecutions=__componentExecutionStack.filter(entry=>entry.kind===kind).length;
     if(recursiveExecutions===33)
-        __nickelDeveloperDiagnostic('render-loop','the same component recursively rendered 33 times in one reconciliation',
+        __twinkleDeveloperDiagnostic('render-loop','the same component recursively rendered 33 times in one reconciliation',
             'Add a bounded termination condition or replace recursive composition with an iterative child list.',path,
             {recursiveExecutions});
     const reason = !retained ? 'mount' : __dirtyComponents.has(path) ? 'hook-or-store'
@@ -1271,7 +1271,7 @@ function __nickelResolveDeclaration(declaration) {
     if (execute) __componentResourceReads.set(path, new Set());
     const componentDepth=__componentExecutionStack.length;
     if(componentDepth>48)
-        __nickelDeveloperDiagnostic('excessive-component-depth',`component depth ${componentDepth} exceeds the development threshold`,
+        __twinkleDeveloperDiagnostic('excessive-component-depth',`component depth ${componentDepth} exceeds the development threshold`,
             'Flatten wrapper components or split the surface into smaller retained boundaries.',path,{depth:componentDepth});
     try {
         if (__errorBoundaryComponents.has(kind)) {
@@ -1280,7 +1280,7 @@ function __nickelResolveDeclaration(declaration) {
                 throw TypeError('ErrorBoundary resetKeys must be an array');
             let boundaryError = retained?.boundaryError;
             if (boundaryError !== undefined && resetKeys !== undefined
-                && !__nickelDepsEqual(retained?.resetKeys, resetKeys))
+                && !__twinkleDepsEqual(retained?.resetKeys, resetKeys))
                 boundaryError = undefined;
             const reset = () => {
                 const current = __componentRecords.get(path);
@@ -1291,7 +1291,7 @@ function __nickelResolveDeclaration(declaration) {
             const resolveFallback = error => {
                 const fallback = declaration.props?.fallback ?? null;
                 const raw = typeof fallback === 'function' ? fallback(error, reset) : fallback;
-                return {raw, output:__nickelApplyDeclarationKey(declaration, __nickelResolveVirtual(raw))};
+                return {raw, output:__twinkleApplyDeclarationKey(declaration, __twinkleResolveVirtual(raw))};
             };
             if (boundaryError !== undefined) {
                 const failed = resolveFallback(boundaryError);
@@ -1301,11 +1301,11 @@ function __nickelResolveDeclaration(declaration) {
             __componentRecords.set(path, {kind,declaration,raw:null,output:retained?.output ?? null,boundary:true,boundaryError:undefined,resetKeys:resetKeys?.slice()});
             try {
                 const raw = declaration.children.length === 1 ? declaration.children[0] : declaration.children;
-                const output = __nickelApplyDeclarationKey(declaration, __nickelResolveVirtual(raw));
+                const output = __twinkleApplyDeclarationKey(declaration, __twinkleResolveVirtual(raw));
                 __componentRecords.set(path, {kind,declaration,raw,output,boundary:true,boundaryError:undefined,resetKeys:resetKeys?.slice()});
                 return output;
             } catch (error) {
-                __nickelRecordBoundaryFailure(path, 'render', error);
+                __twinkleRecordBoundaryFailure(path, 'render', error);
                 const failed = resolveFallback(error);
                 __componentRecords.set(path, {kind,declaration,...failed,boundary:true,boundaryError:error,resetKeys:resetKeys?.slice()});
                 return failed.output;
@@ -1325,8 +1325,8 @@ function __nickelResolveDeclaration(declaration) {
             values.push({provider:path, value});
             try {
                 raw = declaration.children.length === 1 ? declaration.children[0] : declaration.children;
-                const result = __nickelResolveVirtual(raw);
-                const output = __nickelApplyDeclarationKey(declaration, result);
+                const result = __twinkleResolveVirtual(raw);
+                const output = __twinkleApplyDeclarationKey(declaration, result);
                 const resources = Array.from(__componentResourceReads.get(path) ?? retained?.resources ?? []);
                 __componentResourceReads.delete(path);
                 __componentRecords.set(path, {kind, declaration, raw, output,
@@ -1342,8 +1342,8 @@ function __nickelResolveDeclaration(declaration) {
                 const componentStarted=Date.now();profile.componentExecutions++;
                 try { raw = kind({...declaration.props, children:declaration.children}); }
                 catch (error) {
-                    const metadata = __nickelComponentMetadata.get(kind);
-                    try { Object.defineProperty(error, '__nickelComponent', {value:{path,module:metadata?.module ?? null,export:metadata?.export ?? kind.name ?? null}}); }
+                    const metadata = __twinkleComponentMetadata.get(kind);
+                    try { Object.defineProperty(error, '__twinkleComponent', {value:{path,module:metadata?.module ?? null,export:metadata?.export ?? kind.name ?? null}}); }
                     catch (_) { /* diagnostics must not replace the component failure */ }
                     throw error;
                 } finally {
@@ -1352,15 +1352,15 @@ function __nickelResolveDeclaration(declaration) {
                     profile.componentExecutionMillis+=Math.max(0,Date.now()-componentStarted);
                 }
             } else raw = retained.raw;
-            const result = __nickelResolveVirtual(raw);
+            const result = __twinkleResolveVirtual(raw);
             if (execute && __hookIndex !== __componentHooks.get(path).length) throw Error('hook order changed');
-            const output = __nickelApplyDeclarationKey(declaration, result);
+            const output = __twinkleApplyDeclarationKey(declaration, result);
             __componentRecords.set(path, {kind, declaration, raw, output, resources});
             return output;
         }
     } catch(error) {
         if(error instanceof TypeError||error instanceof RangeError)
-            __nickelDeveloperDiagnostic('invalid-props',__nickelErrorMessage(error),
+            __twinkleDeveloperDiagnostic('invalid-props',__twinkleErrorMessage(error),
                 'Check this component’s declared prop types and bounded native values.',path);
         throw error;
     } finally {
@@ -1370,33 +1370,33 @@ function __nickelResolveDeclaration(declaration) {
     }
 }
 
-function __nickelApplyDeclarationKey(declaration, node) {
+function __twinkleApplyDeclarationKey(declaration, node) {
     if (declaration.key === undefined || node === null || typeof node !== 'object' || Array.isArray(node))
         return node;
     const keyed = {...node, key:declaration.key};
     if (!__virtualNativeNodes.has(node)) return keyed;
-    const result=__nickelVirtualNativeNode(keyed);
+    const result=__twinkleVirtualNativeNode(keyed);
     if (__resolvedVirtualValues.has(node)) __resolvedVirtualValues.add(result);
     return result;
 }
 
-function __nickelResolveVirtual(value) {
-    if (__nickelIsComponentDeclaration(value)) return __nickelResolveDeclaration(value);
-    if (__nickelIsHandlerBinding(value)) return value;
+function __twinkleResolveVirtual(value) {
+    if (__twinkleIsComponentDeclaration(value)) return __twinkleResolveDeclaration(value);
+    if (__twinkleIsHandlerBinding(value)) return value;
     if (value && typeof value === 'object' && __resolvedVirtualValues.has(value)) return value;
     if (Array.isArray(value)) {
-        const resolved=value.map(__nickelResolveVirtual);__resolvedVirtualValues.add(resolved);return resolved;
+        const resolved=value.map(__twinkleResolveVirtual);__resolvedVirtualValues.add(resolved);return resolved;
     }
     if (value && typeof value === 'object') {
         const resolved = {};
-        for (const [key, item] of Object.entries(value)) resolved[key] = __nickelResolveVirtual(item);
-        const result=__virtualNativeNodes.has(value)?__nickelVirtualNativeNode(resolved):resolved;
+        for (const [key, item] of Object.entries(value)) resolved[key] = __twinkleResolveVirtual(item);
+        const result=__virtualNativeNodes.has(value)?__twinkleVirtualNativeNode(resolved):resolved;
         __resolvedVirtualValues.add(result);return result;
     }
     return value;
 }
 
-function __nickelVirtualNativeNode(node) {
+function __twinkleVirtualNativeNode(node) {
     Object.defineProperty(node, 'toJSON', {
         value:()=>{ throw Error('unmaterialized native node cannot be serialized'); }
     });
@@ -1404,7 +1404,7 @@ function __nickelVirtualNativeNode(node) {
     return node;
 }
 
-function __nickelHandlerBinding(handler) {
+function __twinkleHandlerBinding(handler) {
     const binding = Object.create(null);
     Object.defineProperties(binding, {
         handler:{value:handler},
@@ -1416,12 +1416,12 @@ function __nickelHandlerBinding(handler) {
     return binding;
 }
 
-function __nickelIsHandlerBinding(value) {
+function __twinkleIsHandlerBinding(value) {
     return value !== null && typeof value === 'object' && __handlerBindings.has(value);
 }
 
-function __nickelMaterializeVirtual(value, path = 'root') {
-    if (__nickelIsHandlerBinding(value)) {
+function __twinkleMaterializeVirtual(value, path = 'root') {
+    if (__twinkleIsHandlerBinding(value)) {
         const handler = value.handler, owner = value.owner;
         let action = __handlerSlots.get(path);
         if (action === undefined) {
@@ -1431,16 +1431,16 @@ function __nickelMaterializeVirtual(value, path = 'root') {
         __handlers.set(action, input => {
             try { return handler(input); }
             catch (error) {
-                if (!__nickelCaptureFailure(owner, error, 'event')) throw error;
+                if (!__twinkleCaptureFailure(owner, error, 'event')) throw error;
             }
         });
         return action;
     }
-    if (__nickelIsComponentDeclaration(value))
+    if (__twinkleIsComponentDeclaration(value))
         throw Error('unresolved component declaration reached native materialization');
     if (Array.isArray(value)) {
         const node = value.map((item, index) =>
-            __nickelMaterializeVirtual(item, `${path}/#${index}`));
+            __twinkleMaterializeVirtual(item, `${path}/#${index}`));
         __nativeMaterializations.set(value, {node,path});
         return node;
     }
@@ -1460,14 +1460,14 @@ function __nickelMaterializeVirtual(value, path = 'root') {
                 materialized[key] = item.map((child, index) => {
                     const identity = child?.key === undefined ? `#${index}`
                         : `@${encodeURIComponent(String(child.key))}`;
-                    return __nickelMaterializeVirtual(child, `${path}/${identity}`);
+                    return __twinkleMaterializeVirtual(child, `${path}/${identity}`);
                 });
             } else {
-                const itemPath = __nickelIsHandlerBinding(item)
+                const itemPath = __twinkleIsHandlerBinding(item)
                     ? `${path}:${key}` : `${path}/${key}`;
-                materialized[key] = __nickelMaterializeVirtual(item, itemPath);
+                materialized[key] = __twinkleMaterializeVirtual(item, itemPath);
             }
-            if (__nickelIsHandlerBinding(item)) slots[key] = `${path}:${key}`;
+            if (__twinkleIsHandlerBinding(item)) slots[key] = `${path}:${key}`;
         }
         if (native) {
             __runtimeCounters.nativeNodesMaterialized++;
@@ -1485,7 +1485,7 @@ function __nickelMaterializeVirtual(value, path = 'root') {
 // second complete native tree or making virtual nodes serializable.
 const __nativeMaterializations = new WeakMap();
 
-function __nickelAttachNativeRecords(boundaries = null) {
+function __twinkleAttachNativeRecords(boundaries = null) {
     for (const [path, record] of __componentRecords) {
         if (boundaries !== null && !boundaries.some(boundary =>
             path === boundary || path.startsWith(`${boundary}/`))) continue;
@@ -1495,7 +1495,7 @@ function __nickelAttachNativeRecords(boundaries = null) {
     }
 }
 
-const __nickelNativeProps = new Set([
+const __twinkleNativeProps = new Set([
     'id','title','className','open','anchor','placement','output','edge','reserveWorkArea','bottomOffset',
     'x','y','width','height','grow','background','padding','radius','color','label','disabledReason',
     'shortcut','separatorBefore','selected','hovered','dragging','outline','hoverBackground',
@@ -1506,7 +1506,7 @@ const __nickelNativeProps = new Set([
 ]);
 
 function h(kind, props, ...children) {
-    if (typeof kind === 'function') return __nickelComponentDeclaration(kind, props, children);
+    if (typeof kind === 'function') return __twinkleComponentDeclaration(kind, props, children);
     for (const child of children) {
         if (!Array.isArray(child) || __fragmentChildren.has(child)) continue;
         const seen = new Set();
@@ -1514,7 +1514,7 @@ function h(kind, props, ...children) {
             if (typeof item !== 'object') continue;
             if (item?.key === undefined) {
                 __listKeyErrors.push('items rendered from an array need a stable key');
-                __nickelDeveloperDiagnostic('positional-identity-churn','dynamic children are using positional identity',
+                __twinkleDeveloperDiagnostic('positional-identity-churn','dynamic children are using positional identity',
                     'Add a stable key to every component or native node produced by an array.');
                 continue;
             }
@@ -1524,55 +1524,55 @@ function h(kind, props, ...children) {
         }
     }
     const handler = typeof props?.onClick === 'function' ? props.onClick : props?.onChange;
-    const action = typeof handler === 'function' ? __nickelHandlerBinding(handler) : null;
+    const action = typeof handler === 'function' ? __twinkleHandlerBinding(handler) : null;
     const contextAction = typeof props?.onContextMenu === 'function'
-        ? __nickelHandlerBinding(props.onContextMenu) : null;
+        ? __twinkleHandlerBinding(props.onContextMenu) : null;
     const dragAction = typeof props?.onDrag === 'function'
-        ? __nickelHandlerBinding(props.onDrag) : null;
+        ? __twinkleHandlerBinding(props.onDrag) : null;
     const dropAction = typeof props?.onDrop === 'function'
-        ? __nickelHandlerBinding(props.onDrop) : null;
+        ? __twinkleHandlerBinding(props.onDrop) : null;
     const focusAction = typeof props?.onFocus === 'function'
-        ? __nickelHandlerBinding(props.onFocus) : null;
+        ? __twinkleHandlerBinding(props.onFocus) : null;
     const blurAction = typeof props?.onBlur === 'function'
-        ? __nickelHandlerBinding(props.onBlur) : null;
+        ? __twinkleHandlerBinding(props.onBlur) : null;
     const selectAction = typeof props?.onSelect === 'function'
-        ? __nickelHandlerBinding(props.onSelect) : null;
+        ? __twinkleHandlerBinding(props.onSelect) : null;
     const moveAction = typeof props?.onMove === 'function'
-        ? __nickelHandlerBinding(props.onMove) : null;
+        ? __twinkleHandlerBinding(props.onMove) : null;
     const fileAction = typeof props?.onFileAction === 'function'
-        ? __nickelHandlerBinding(props.onFileAction) : null;
+        ? __twinkleHandlerBinding(props.onFileAction) : null;
     const closeAction = typeof props?.onClose === 'function'
-        ? __nickelHandlerBinding(props.onClose) : null;
+        ? __twinkleHandlerBinding(props.onClose) : null;
     const escapeAction = typeof props?.onEscape === 'function'
-        ? __nickelHandlerBinding(props.onEscape) : null;
+        ? __twinkleHandlerBinding(props.onEscape) : null;
     const submitAction = typeof props?.onSubmit === 'function'
-        ? __nickelHandlerBinding(props.onSubmit) : null;
+        ? __twinkleHandlerBinding(props.onSubmit) : null;
     const node = {kind};
     if (props?.key !== undefined) node.key = props.key;
     for (const [name, value] of Object.entries(props || {}))
-        if (value !== undefined && __nickelNativeProps.has(name)) node[name] = value;
+        if (value !== undefined && __twinkleNativeProps.has(name)) node[name] = value;
     for (const [name, value] of Object.entries({action,contextAction,dragAction,dropAction,focusAction,blurAction,
         selectAction,moveAction,fileAction,closeAction,escapeAction,submitAction}))
         if (value !== null) node[name] = value;
     node.children = children.flat(Infinity).filter(child => child !== null && child !== false);
-    return __nickelVirtualNativeNode(node);
+    return __twinkleVirtualNativeNode(node);
 }
 
-function __nickelRollbackRender() {
+function __twinkleRollbackRender() {
     if (__pendingRender !== null) {
         const {handlers, previousHandlers, handlerSlots, hooks, records, values, effectsLength, dirty} = __pendingRender;
         __handlers = handlers;
         __previousHandlers = previousHandlers;
         __handlerSlots = handlerSlots;
-        __nickelRestoreHooks(hooks, values, effectsLength);
+        __twinkleRestoreHooks(hooks, values, effectsLength);
         __componentRecords = records;
         __dirtyComponents = dirty;
         __pendingRender = null;
     }
-    __nickelRollbackEvent();
+    __twinkleRollbackEvent();
 }
 
-function __nickelRestoreHooks(hooks, values, effectsLength) {
+function __twinkleRestoreHooks(hooks, values, effectsLength) {
     let componentIndex = 0;
     for (const slots of hooks.values()) {
         const oldValues = values[componentIndex++];
@@ -1585,19 +1585,19 @@ function __nickelRestoreHooks(hooks, values, effectsLength) {
     __effects.length = effectsLength;
 }
 
-function __nickelRollbackEvent() {
+function __twinkleRollbackEvent() {
     if (__pendingEvent === null) return;
     const {handlers, previousHandlers, hooks, records, values, effectsLength, effects, dirty} = __pendingEvent;
     __handlers = handlers;
     __previousHandlers = previousHandlers;
-    __nickelRestoreHooks(hooks, values, effectsLength);
+    __twinkleRestoreHooks(hooks, values, effectsLength);
     __componentRecords = records;
     __effects = effects;
     __dirtyComponents = dirty;
     __pendingEvent = null;
 }
 
-function __nickelCommitRender() {
+function __twinkleCommitRender() {
     const pending = __pendingRender;
     __pendingRender = null;
     if (pending === null) return;
@@ -1606,43 +1606,43 @@ function __nickelCommitRender() {
     // clone the whole mount even when a single leaf is dirty.
     __acceptedNativeTree = null;
     __dirtyComponents.clear();
-    const commitStarted=Date.now(),profile=__nickelProfile();
+    const commitStarted=Date.now(),profile=__twinkleProfile();
     for (const entry of pending.reducerEntries) {
         entry.reducer = entry.nextReducer;
         delete entry.nextReducer;
     }
-    for (const entry of pending.removedEffects) __nickelRunCleanup(entry);
+    for (const entry of pending.removedEffects) __twinkleRunCleanup(entry);
     for (const effect of pending.passiveEffects) {
-        __nickelRunCleanup(effect.entry);
+        __twinkleRunCleanup(effect.entry);
         effect.entry.deps = effect.deps;
         try {
             __runtimeCounters.effectsRun++;
             const cleanup = effect.setup();
             if (cleanup !== undefined && typeof cleanup !== 'function') continue;
             effect.entry.cleanup = cleanup;
-        } catch (error) { __nickelCaptureFailure(effect.entry.owner, error, 'effect'); }
+        } catch (error) { __twinkleCaptureFailure(effect.entry.owner, error, 'effect'); }
     }
     profile.lifecycleCommits++;profile.lifecycleCommitMillis+=Math.max(0,Date.now()-commitStarted);
     if(pending.passiveEffects.length&&__dirtyComponents.size)profile.consecutiveEffectTurns++;
     else profile.consecutiveEffectTurns=0;
     if(profile.consecutiveEffectTurns===25)
-        __nickelDeveloperDiagnostic('effect-loop','effects scheduled another render for 25 consecutive commits',
+        __twinkleDeveloperDiagnostic('effect-loop','effects scheduled another render for 25 consecutive commits',
             'Add stable dependencies and avoid unconditional state updates from an effect.',null,
             {turns:profile.consecutiveEffectTurns});
 }
 
-function __nickelAcceptEvent() {
+function __twinkleAcceptEvent() {
     __pendingEvent = null;
 }
 
-function __nickelActiveEntry() {
+function __twinkleActiveEntry() {
     return __surfaceApps.get(__activeSurface) || App;
 }
 
-function __nickelRender(component = __nickelActiveEntry(), patchOnly = false) {
+function __twinkleRender(component = __twinkleActiveEntry(), patchOnly = false) {
     if (__pendingRender !== null) throw Error('previous render was not finalized');
     __runtimeCounters.renders++;
-    const profile=__nickelProfile(),reconciliationStarted=Date.now();profile.renders++;
+    const profile=__twinkleProfile(),reconciliationStarted=Date.now();profile.renders++;
     const previousHandlers = __handlers;
     const olderHandlers = __previousHandlers;
     const previousHooks = new Map(Array.from(__componentHooks, ([path, hooks]) => [path, hooks.slice()]));
@@ -1655,25 +1655,25 @@ function __nickelRender(component = __nickelActiveEntry(), patchOnly = false) {
     __componentRecords = new Map(__componentRecords);
     __incrementalRender = __dirtyComponents.size > 0;
     __patchOnlyRender = patchOnly;
-    __handlers = patchOnly ? previousHandlers.slice() : new __NickelHandlers();
+    __handlers = patchOnly ? previousHandlers.slice() : new __TwinkleHandlers();
     __previousHandlers = previousHandlers;
     if (!patchOnly) __handlerSlots = new Map();
     __listKeyErrors = [];
     __visitedComponents = new Set();
     __componentChildren = new Map();
-    __retainedComponentChildren = __nickelIndexRetainedComponentChildren(previousRecords);
+    __retainedComponentChildren = __twinkleIndexRetainedComponentChildren(previousRecords);
     __currentComponent = null;
     __hookIndex = 0;
     try {
-        const virtual = __nickelResolveVirtual(h(component, {}));
+        const virtual = __twinkleResolveVirtual(h(component, {}));
         let result;
         if (patchOnly) {
             const patchStarted=Date.now();
-            try { result=__nickelDirtyNativePatch(__pendingRender.records); }
+            try { result=__twinkleDirtyNativePatch(__pendingRender.records); }
             finally { profile.patchGenerationMillis+=Math.max(0,Date.now()-patchStarted); }
         } else {
-            const node = __nickelMaterializeVirtual(virtual);
-            __nickelAttachNativeRecords();
+            const node = __twinkleMaterializeVirtual(virtual);
+            __twinkleAttachNativeRecords();
             __pendingRender.candidateNode = node;
             result=node;
         }
@@ -1689,7 +1689,7 @@ function __nickelRender(component = __nickelActiveEntry(), patchOnly = false) {
         }
         return patchOnly ? result : JSON.stringify(result);
     } catch (error) {
-        __nickelRollbackRender();
+        __twinkleRollbackRender();
         throw error;
     } finally {
         __patchOnlyRender = false;
@@ -1697,7 +1697,7 @@ function __nickelRender(component = __nickelActiveEntry(), patchOnly = false) {
     }
 }
 
-function __nickelDirtyNativePatch(previousRecords) {
+function __twinkleDirtyNativePatch(previousRecords) {
     const dirty = Array.from(__dirtyComponents).sort((left,right)=>left.length-right.length);
     const boundaries = [];
     for (const owner of dirty) {
@@ -1737,18 +1737,18 @@ function __nickelDirtyNativePatch(previousRecords) {
             // not escalate to materializing the complete fragment.
             __componentRecords.set(path, {...current,native:previous.native,
                 nativePath:previous.nativePath});
-            __nickelRefreshNativeAncestors(previousRecords,path,
+            __twinkleRefreshNativeAncestors(previousRecords,path,
                 previous.nativePath,previous.native);
             continue;
         }
-        const next=__nickelMaterializeVirtual(current.output,previous.nativePath);
-        __nickelRetireBoundaryHandlers(previous.native,next);
-        const patch=__nickelNativePatch(previous.native,next);
+        const next=__twinkleMaterializeVirtual(current.output,previous.nativePath);
+        __twinkleRetireBoundaryHandlers(previous.native,next);
+        const patch=__twinkleNativePatch(previous.native,next);
         operations.push(...patch.operations);nodesVisited+=patch.counters.nodesVisited;
-        __nickelRefreshNativeAncestors(previousRecords,path,previous.nativePath,next);
+        __twinkleRefreshNativeAncestors(previousRecords,path,previous.nativePath,next);
     }
-    __nickelAttachNativeRecords(boundaries);
-    const profile=__nickelProfile();profile.patches++;profile.patchOperations+=operations.length;
+    __twinkleAttachNativeRecords(boundaries);
+    const profile=__twinkleProfile();profile.patches++;profile.patchOperations+=operations.length;
     profile.patchNodesVisited+=nodesVisited;
     return {version:1,operations,counters:{nodesVisited,nodesMutated:operations.length,
         localMaterializations:0,expansionNodes:0,treeBytes:0}};
@@ -1757,7 +1757,7 @@ function __nickelDirtyNativePatch(previousRecords) {
 // A leaf patch also changes the accepted native snapshot held by every
 // component boundary above it. Refresh those snapshots with path-copying so a
 // later ancestor update still has an exact, rollback-safe comparison base.
-function __nickelRetireBoundaryHandlers(previous,next) {
+function __twinkleRetireBoundaryHandlers(previous,next) {
     const live=new Set();
     function visit(value,slot) {
         if(!value||typeof value!=='object')return;
@@ -1774,7 +1774,7 @@ function __nickelRetireBoundaryHandlers(previous,next) {
     });
 }
 
-function __nickelRefreshNativeAncestors(previousRecords, boundary, target, replacement) {
+function __twinkleRefreshNativeAncestors(previousRecords, boundary, target, replacement) {
     function replace(value) {
         if (!value || typeof value !== 'object') return [false,value];
         if (!Array.isArray(value) && value.__nativeId === target) return [true,replacement];
@@ -1800,19 +1800,19 @@ function __nickelRefreshNativeAncestors(previousRecords, boundary, target, repla
     }
 }
 
-function __nickelNativeEqual(left,right) {
+function __twinkleNativeEqual(left,right) {
     if (Object.is(left,right)) return true;
     if (!left || !right || typeof left!=='object' || typeof right!=='object') return false;
     if (Array.isArray(left)!==Array.isArray(right)) return false;
     const leftKeys=Object.keys(left),rightKeys=Object.keys(right);
     return leftKeys.length===rightKeys.length && leftKeys.every(key =>
-        Object.prototype.hasOwnProperty.call(right,key) && __nickelNativeEqual(left[key],right[key]));
+        Object.prototype.hasOwnProperty.call(right,key) && __twinkleNativeEqual(left[key],right[key]));
 }
 
 // Produce a bounded transport delta against the last host-accepted native
 // tree. A structural children change replaces the containing native node;
 // otherwise the walk descends and ships only changed native subtrees.
-function __nickelNativePatch(previous, next) {
+function __twinkleNativePatch(previous, next) {
     const operations = [];
     let visited = 0;
     function primitive(value) {
@@ -1826,7 +1826,7 @@ function __nickelNativePatch(previous, next) {
         keys.delete('kind');
         keys.delete('key');
         for (const key of keys) {
-            if (__nickelNativeEqual(left[key],right[key])) continue;
+            if (__twinkleNativeEqual(left[key],right[key])) continue;
             const slot = right.__handlerSlots?.[key] ?? left.__handlerSlots?.[key];
             if (slot && Number.isSafeInteger(left[key]) && left[key] >= 0
                     && Number.isSafeInteger(right[key]) && right[key] >= 0) {
@@ -1885,7 +1885,7 @@ function __nickelNativePatch(previous, next) {
         const oldById = new Map(before.map(child => [child.__nativeId, child]));
         for (const child of after) {
             const old = oldById.get(child.__nativeId);
-            if (old && !__nickelNativeEqual(old,child)) walk(old, child);
+            if (old && !__twinkleNativeEqual(old,child)) walk(old, child);
         }
         return true;
     }
@@ -1927,7 +1927,7 @@ function __nickelNativePatch(previous, next) {
             return;
         }
         if (before.every(primitive) && after.every(primitive)) {
-            if (!__nickelNativeEqual(before,after))
+            if (!__twinkleNativeEqual(before,after))
                 operations.push({op:'setPrimitive', target:right.__nativeId, property:'children', value:after});
             return;
         }
@@ -1941,7 +1941,7 @@ function __nickelNativePatch(previous, next) {
         }
         for (let index = 0; index < after.length; index++) {
             const a = before[index], b = after[index];
-            if (__nickelNativeEqual(a,b)) continue;
+            if (__twinkleNativeEqual(a,b)) continue;
             if (a?.__nativeId && b?.__nativeId && a.__nativeId === b.__nativeId) walk(a, b);
             else {
                 operations.length = operationStart;
@@ -1952,20 +1952,20 @@ function __nickelNativePatch(previous, next) {
     }
     if (previous === null) throw Error('native patch has no accepted base');
     walk(previous, next);
-    __nickelRecordNativeMutations(operations,visited);
+    __twinkleRecordNativeMutations(operations,visited);
     return {version:1, operations, counters:{nodesVisited:visited, nodesMutated:operations.length}};
 }
 
-function __nickelDispatch(action, value) {
-    return __nickelDispatchBatch([[action, value]]);
+function __twinkleDispatch(action, value) {
+    return __twinkleDispatchBatch([[action, value]]);
 }
 
-function __nickelDispatchRemovedFocus(action) {
-    return __nickelDispatchBatch([[action]], true);
+function __twinkleDispatchRemovedFocus(action) {
+    return __twinkleDispatchBatch([[action]], true);
 }
 
-function __nickelDispatchBatch(events, previous = false) {
-    if (!events.length) return __nickelRender();
+function __twinkleDispatchBatch(events, previous = false) {
+    if (!events.length) return __twinkleRender();
     const hooks = new Map(Array.from(__componentHooks, ([path, slots]) => [path, slots.slice()]));
     const values = Array.from(__componentHooks.values(), slots => slots.map(entry =>
         entry.kind === 'ref' ? entry.value.current : entry.value));
@@ -1978,16 +1978,16 @@ function __nickelDispatchBatch(events, previous = false) {
             const handler = (previous ? __previousHandlers : __handlers).get(action);
             if (handler) handler(value);
         }
-        return __nickelRender();
+        return __twinkleRender();
     } catch (error) {
-        __nickelRollbackEvent();
+        __twinkleRollbackEvent();
         throw error;
     }
 }
 
 // Structured scheduler entry point. It deliberately still produces a complete
 // tree when dirty; the native mutation protocol can replace that payload later.
-function __nickelDispatchBatchScheduled(events, previous = false) {
+function __twinkleDispatchBatchScheduled(events, previous = false) {
     const hooks = new Map(Array.from(__componentHooks, ([path, slots]) => [path, slots.slice()]));
     const values = Array.from(__componentHooks.values(), slots => slots.map(entry =>
         entry.kind === 'ref' ? entry.value.current : entry.value));
@@ -2002,14 +2002,14 @@ function __nickelDispatchBatchScheduled(events, previous = false) {
         }
         const dirty = Array.from(__dirtyComponents);
         if (!dirty.length) return JSON.stringify({rendered:false, dirty});
-        return JSON.stringify({rendered:true, dirty, node:JSON.parse(__nickelRender())});
+        return JSON.stringify({rendered:true, dirty, node:JSON.parse(__twinkleRender())});
     } catch (error) {
-        __nickelRollbackEvent();
+        __twinkleRollbackEvent();
         throw error;
     }
 }
 
-function __nickelDispatchBatchPatched(events, previous = false) {
+function __twinkleDispatchBatchPatched(events, previous = false) {
     const hooks = new Map(Array.from(__componentHooks, ([path, slots]) => [path, slots.slice()]));
     const values = Array.from(__componentHooks.values(), slots => slots.map(entry =>
         entry.kind === 'ref' ? entry.value.current : entry.value));
@@ -2024,26 +2024,26 @@ function __nickelDispatchBatchPatched(events, previous = false) {
         }
         const dirty = Array.from(__dirtyComponents);
         if (!dirty.length) return JSON.stringify({rendered:false, dirty});
-        const patch = __nickelRender(undefined,true);
+        const patch = __twinkleRender(undefined,true);
         return JSON.stringify({rendered:true, dirty, patch});
     } catch (error) {
-        __nickelRollbackEvent();
+        __twinkleRollbackEvent();
         throw error;
     }
 }
 
-function __nickelDispatchSlotsPatched(events, previous = false) {
-    return __nickelDispatchBatchPatched(events.map(([slot, value]) => {
+function __twinkleDispatchSlotsPatched(events, previous = false) {
+    return __twinkleDispatchBatchPatched(events.map(([slot, value]) => {
         const action = __handlerSlots.get(slot);
         if (action === undefined) throw Error(`retired component event slot: ${slot}`);
         return [action, value];
     }), previous);
 }
 
-function __nickelReconciliationRequest() {
+function __twinkleReconciliationRequest() {
     return JSON.stringify({requested:__dirtyComponents.size > 0, dirty:Array.from(__dirtyComponents)});
 }
-function __nickelConsumeReconciliation() { __dirtyComponents.clear(); }
+function __twinkleConsumeReconciliation() { __dirtyComponents.clear(); }
 
 // Native composition checkpoints cover bootstrap-owned presentation state.
 // They deliberately do not snapshot package globals or closure-captured values.
@@ -2057,17 +2057,17 @@ function __twinkleRegisterCheckpointParticipant(participant) {
     __hostCheckpointParticipants.push(Object.freeze({...participant}));
 }
 let __compositionCheckpoint = null;
-function __nickelPlatformMaintenanceReady() {
+function __twinklePlatformMaintenanceReady() {
     return __compositionCheckpoint === null && __pendingRender === null && __pendingEvent === null;
 }
-function __nickelSurfaceWorkPending(id) {
-    if (!__nickelPlatformMaintenanceReady()) throw Error('surface work query requires an idle runtime');
+function __twinkleSurfaceWorkPending(id) {
+    if (!__twinklePlatformMaintenanceReady()) throw Error('surface work query requires an idle runtime');
     const state = id === __activeSurface
         ? {dirty:__dirtyComponents, effects:__effects}
         : __surfaceStates.get(id);
     return !!state && (state.dirty.size > 0 || state.effects.length > 0);
 }
-function __nickelBeginCheckpoint() {
+function __twinkleBeginCheckpoint() {
     if (__compositionCheckpoint !== null || __pendingRender !== null || __pendingEvent !== null) throw Error('checkpoint already pending');
     const seen = new Map();
     const extensible = new Map();
@@ -2094,16 +2094,16 @@ function __nickelBeginCheckpoint() {
             handlers:handlers.slice(), previousHandlers:previousHandlers.slice(), handlerSlots:new Map(handlerSlots), effects:copy(effects), data,
             dirty:new Set(dirty), surfaceStore, acceptedNativeTree:copy(acceptedNativeTree)};
     }
-    const active = state(__componentHooks, __componentRecords, __handlers, __previousHandlers, __handlerSlots, __effects, __nickelData, __dirtyComponents, __surfaceStore, __acceptedNativeTree);
+    const active = state(__componentHooks, __componentRecords, __handlers, __previousHandlers, __handlerSlots, __effects, __twinkleData, __dirtyComponents, __surfaceStore, __acceptedNativeTree);
     const surfaces = new Map(Array.from(__surfaceStates, ([id, value]) => [id,
         state(value.hooks, value.records, value.handlers, value.previousHandlers, value.handlerSlots ?? new Map(), value.effects, value.data, value.dirty, value.surfaceStore, value.acceptedNativeTree)]));
     __compositionCheckpoint = {active, surfaces, graph:seen, extensible, apps:new Map(__surfaceApps), activeSurface:__activeSurface,
         extensions:__hostCheckpointParticipants.map(participant=>participant.capture(copy))};
 }
-function __nickelFinishCheckpoint(accepted) {
+function __twinkleFinishCheckpoint(accepted) {
     const checkpoint = __compositionCheckpoint;
     if (checkpoint === null) throw Error('checkpoint is unavailable');
-    if (__pendingRender !== null || __pendingEvent !== null) { if (accepted) throw Error('unfinished local checkpoint transaction'); __nickelRollbackRender(); }
+    if (__pendingRender !== null || __pendingEvent !== null) { if (accepted) throw Error('unfinished local checkpoint transaction'); __twinkleRollbackRender(); }
     __compositionCheckpoint = null;
     if (accepted) return;
     // Restore supported mutable hook objects in place: existing approved event
@@ -2137,7 +2137,7 @@ function __nickelFinishCheckpoint(accepted) {
     const active = restore(checkpoint.active);
     __componentHooks = active.hooks; __componentRecords = active.records; __handlers = active.handlers; __previousHandlers = active.previousHandlers;
     __handlerSlots = active.handlerSlots;
-    __effects = active.effects; __nickelData = active.data; __activeSurface = checkpoint.activeSurface;
+    __effects = active.effects; __twinkleData = active.data; __activeSurface = checkpoint.activeSurface;
     __dirtyComponents = active.dirty;
     __surfaceStore = active.surfaceStore;
     __acceptedNativeTree = active.acceptedNativeTree;

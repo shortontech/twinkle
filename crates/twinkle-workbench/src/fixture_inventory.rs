@@ -467,10 +467,10 @@ impl InventoryApp {
             .child(ProjectStatusRow::new(
                 palette,
                 Text::new("N"),
-                "Nickel",
+                "Twinkle",
                 "Active",
                 Some(3),
-                Some(Message::Activate("nickel")),
+                Some(Message::Activate("twinkle")),
                 true,
             ))
             .child(CompactIconTile::new(
@@ -482,9 +482,9 @@ impl InventoryApp {
             .child(ShortcutRow::new(
                 palette,
                 Text::new("N"),
-                "Nickel shortcut",
+                "Twinkle shortcut",
                 "Pinned",
-                Some(Message::Activate("nickel-shortcut")),
+                Some(Message::Activate("twinkle-shortcut")),
                 false,
             ));
         let detail = Column::new()
@@ -492,8 +492,8 @@ impl InventoryApp {
             .child(SectionHeader::new(palette, "Account"))
             .child(AccountSummaryRow::new(
                 palette,
-                FallbackAvatar::new(palette, "Steven Nickel"),
-                "Steven Nickel",
+                FallbackAvatar::new(palette, "Steven Twinkle"),
+                "Steven Twinkle",
                 "Local account",
                 Some(Message::Activate("account")),
                 false,

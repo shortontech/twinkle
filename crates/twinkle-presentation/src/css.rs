@@ -611,7 +611,7 @@ fn declaration(name: &str, value: &str) -> Result<Declaration, String> {
                 .ok_or("backdrop-filter currently supports blur(<length>)")?;
             Declaration::BackdropBlur(px(inner.trim(), 128.0)?)
         }
-        "-nickel-proximity-magnification" => {
+        "-twinkle-proximity-magnification" => {
             let mut parts = value.split_ascii_whitespace();
             let maximum_scale = bounded_number(
                 parts
@@ -971,7 +971,7 @@ fn palette_properties(palette: ThemePalette) -> HashMap<String, String> {
         ("action-soft", blend(palette.panel, palette.accent, 72)),
     ] {
         properties.insert(
-            format!("--nickel-{name}"),
+            format!("--twinkle-{name}"),
             format!("#{:06x}", color & 0x00ff_ffff),
         );
     }
@@ -987,7 +987,7 @@ fn palette_properties(palette: ThemePalette) -> HashMap<String, String> {
         ("font-size", "14px".into()),
         ("line-height", "20px".into()),
     ] {
-        properties.insert(format!("--nickel-{name}"), value);
+        properties.insert(format!("--twinkle-{name}"), value);
     }
     properties
 }
@@ -1247,7 +1247,7 @@ impl StyleSheet {
             }
         }
         let uses_palette =
-            source.contains("--nickel-") || rules.iter().any(|rule| rule.color_schemes != 3);
+            source.contains("--twinkle-") || rules.iter().any(|rule| rule.color_schemes != 3);
         let sheet = Self {
             rules,
             palette: Some(palette),
@@ -1858,7 +1858,7 @@ mod tests {
             ..Appearance::default()
         });
         let mut sheet = StyleSheet::compile_with_palette(
-            "window { background: var(--nickel-panel); border: 1px solid var(--nickel-muted); } text { color: var(--nickel-text); }",
+            "window { background: var(--twinkle-panel); border: 1px solid var(--twinkle-muted); } text { color: var(--twinkle-text); }",
             dark,
         )
         .unwrap();
@@ -1917,7 +1917,7 @@ mod tests {
     #[test]
     fn var_fallbacks_nest_and_semantic_defaults_remain_overridable() {
         let default =
-            StyleSheet::compile("text { color: var(--missing, var(--nickel-text)); }").unwrap();
+            StyleSheet::compile("text { color: var(--missing, var(--twinkle-text)); }").unwrap();
         assert_eq!(
             default.resolve("text", None, None).color,
             Some(
@@ -1927,8 +1927,8 @@ mod tests {
         );
 
         let overridden = StyleSheet::compile(
-            ":root { --nickel-text: #abcdef; }
-             text { color: var(--missing, var(--nickel-text)); }",
+            ":root { --twinkle-text: #abcdef; }
+             text { color: var(--missing, var(--twinkle-text)); }",
         )
         .unwrap();
         assert_eq!(
@@ -1966,8 +1966,8 @@ mod tests {
     #[test]
     fn semantic_metrics_and_variable_chain_limits_are_available() {
         let css = StyleSheet::compile(
-            "text { font-size: var(--nickel-font-size); line-height: var(--nickel-line-height); }
-             button { padding: var(--nickel-spacing-control); border-radius: var(--nickel-radius-control); }",
+            "text { font-size: var(--twinkle-font-size); line-height: var(--twinkle-line-height); }
+             button { padding: var(--twinkle-spacing-control); border-radius: var(--twinkle-radius-control); }",
         ).unwrap();
         assert_eq!(css.resolve("text", None, None).font_size, Some(14.0));
         assert_eq!(css.resolve("button", None, None).radius, Some(8.0));
@@ -2081,7 +2081,7 @@ mod tests {
     fn interaction_geometry_and_rounded_shadow_compile_to_typed_styles() {
         let css = StyleSheet::compile(
             ".dock { box-shadow: -2px 10px 24px 0px #00000059; backdrop-filter: blur(12px); \
-             -nickel-proximity-magnification: 1.38 2; transition-duration: 150ms; } \
+             -twinkle-proximity-magnification: 1.38 2; transition-duration: 150ms; } \
              button.icon:hover { width: 76px; height: 76px; }",
         )
         .unwrap();
@@ -2123,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn familiar_flex_grid_and_size_declarations_map_to_nickel_layout() {
+    fn familiar_flex_grid_and_size_declarations_map_to_twinkle_layout() {
         let css = StyleSheet::compile(
             ".row { display: flex; flex-direction: row; width: 100%; gap: 8px; align-items: center; justify-content: space-between; } \
              .item { flex: 1; min-width: 20px; max-width: 120px; } \

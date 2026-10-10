@@ -157,7 +157,7 @@ fn cold(items: &[u64], leaf_state: u64, leaf_reduced: u64) -> Value {
     )
     .unwrap();
     runtime
-        .render("__nickelRender()", |node| Ok(node.clone()))
+        .render("__twinkleRender()", |node| Ok(node.clone()))
         .unwrap()
 }
 
@@ -303,7 +303,7 @@ fn exercise(workload: Workload) -> (Duration, NativePatchEnvelope, usize) {
     let mut runtime =
         JsxRuntime::new(SOURCE, Some(&data(&initial_items, 0, 0).to_string())).unwrap();
     let mut accepted = runtime
-        .render("__nickelRender()", |node| Ok(node.clone()))
+        .render("__twinkleRender()", |node| Ok(node.clone()))
         .unwrap();
 
     let survivor = find_by_id(&accepted, "item-1").unwrap();
@@ -344,7 +344,7 @@ fn exercise(workload: Workload) -> (Duration, NativePatchEnvelope, usize) {
         }
     };
 
-    let expression = format!("__nickelDispatchBatchPatched([[{action},{payload}]])");
+    let expression = format!("__twinkleDispatchBatchPatched([[{action},{payload}]])");
     let start = Instant::now();
     let outcome = runtime.dispatch_patched(&expression).unwrap();
     let elapsed = start.elapsed();

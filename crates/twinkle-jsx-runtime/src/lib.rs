@@ -133,7 +133,7 @@ impl JsxTestHarness {
     pub fn render(&mut self) -> Result<&Value, String> {
         let value = self
             .runtime
-            .render("__nickelRender()", |node| Ok(node.clone()));
+            .render("__twinkleRender()", |node| Ok(node.clone()));
         match value {
             Ok(value) => {
                 self.accepted = Some(value);
@@ -184,8 +184,8 @@ impl JsxTestHarness {
     }
     pub fn inject_store(&mut self, name: &str, value: &Value) -> Result<(), String> {
         let setter = match name {
-            "theme" => "__nickelSetThemeStore",
-            "locale" => "__nickelSetLocaleStore",
+            "theme" => "__twinkleSetThemeStore",
+            "locale" => "__twinkleSetLocaleStore",
             _ => return Err("unknown test store".into()),
         };
         self.runtime.eval(&format!("{setter}({value})"))
@@ -222,7 +222,7 @@ impl JsxTestHarness {
     }
     pub fn dispatch_events(&mut self, events: &[(usize, Value)]) -> Result<&Value, String> {
         let expression = format!(
-            "__nickelDispatchBatch({})",
+            "__twinkleDispatchBatch({})",
             serde_json::to_string(events).map_err(|error| error.to_string())?
         );
         let result = self.runtime.render(&expression, |node| Ok(node.clone()));
@@ -252,7 +252,7 @@ impl JsxTestHarness {
             return Err("test harness has no accepted render".into());
         };
         let mut cold = JsxRuntime::new(&self.source, self.data.as_deref())?;
-        let rendered = cold.render("__nickelRender()", |node| Ok(node.clone()))?;
+        let rendered = cold.render("__twinkleRender()", |node| Ok(node.clone()))?;
         Ok(&rendered == accepted)
     }
     pub fn runtime_mut(&mut self) -> &mut JsxRuntime {
@@ -380,7 +380,7 @@ impl JsxRuntime {
         let compiled = graph.compile()?;
         let signatures = serde_json::to_string(signatures).map_err(|e| e.to_string())?;
         self.eval(&format!(
-            "__nickelInstallHotModules(function(){{ (function(){{{compiled}}})(); }}, {signatures})"
+            "__twinkleInstallHotModules(function(){{ (function(){{{compiled}}})(); }}, {signatures})"
         ))
     }
 
@@ -412,18 +412,18 @@ impl JsxRuntime {
     }
 
     pub fn set_diagnostic_owner(&mut self, owner: &str) -> Result<(), String> {
-        self.call_native_void("__nickelSetDiagnosticOwner", &[Value::from(owner)])
+        self.call_native_void("__twinkleSetDiagnosticOwner", &[Value::from(owner)])
     }
 
     pub fn set_contribution_catalog(&mut self, catalog: &Value) -> Result<(), String> {
         self.call_native_void(
-            "__nickelSetContributionCatalog",
+            "__twinkleSetContributionCatalog",
             std::slice::from_ref(catalog),
         )
     }
 
     pub fn consume_reconciliation(&mut self) -> Result<(), String> {
-        self.call_native_void("__nickelConsumeReconciliation", &[])
+        self.call_native_void("__twinkleConsumeReconciliation", &[])
     }
 
     /// Invoke already loaded host bookkeeping without compiling an expression
@@ -469,7 +469,7 @@ impl JsxRuntime {
         self.projection_identities.clear();
         self.publish_data_stores(&data)?;
         self.engine
-            .call_global_void("__nickelSetData", std::slice::from_ref(&data))?;
+            .call_global_void("__twinkleSetData", std::slice::from_ref(&data))?;
         // Surface geometry does not change package setting values.
         if let Some(object) = data.as_object_mut() {
             object.remove("surface");
@@ -520,7 +520,7 @@ impl JsxRuntime {
         let absent = Value::Null;
         let has_surface = Value::Bool(surface.is_some());
         self.engine.call_global_object_fields(
-            "__nickelSetMountData",
+            "__twinkleSetMountData",
             &[
                 ("base", if reuse_base { &absent } else { data.as_ref() }),
                 ("surface", surface.unwrap_or(&absent)),
@@ -627,7 +627,7 @@ impl JsxRuntime {
             return Err("runtime checkpoint was invalidated".into());
         }
         self.engine
-            .call_global_bool("__nickelSetLocaleStore", std::slice::from_ref(snapshot))
+            .call_global_bool("__twinkleSetLocaleStore", std::slice::from_ref(snapshot))
     }
 
     /// Publish host-owned effective presentation state. This is observation,
@@ -637,7 +637,7 @@ impl JsxRuntime {
             return Err("runtime checkpoint was invalidated".into());
         }
         self.engine
-            .call_global_bool("__nickelSetThemeStore", std::slice::from_ref(snapshot))
+            .call_global_bool("__twinkleSetThemeStore", std::slice::from_ref(snapshot))
     }
 
     /// Publishes host-defined capability observations. This grants no action authority.
@@ -659,15 +659,16 @@ impl JsxRuntime {
         {
             return Err("capability vocabulary is frozen for this runtime".into());
         }
-        let changed = self
-            .engine
-            .call_global_bool("__nickelSetCapabilityStore", std::slice::from_ref(snapshot))?;
+        let changed = self.engine.call_global_bool(
+            "__twinkleSetCapabilityStore",
+            std::slice::from_ref(snapshot),
+        )?;
         self.capability_vocabulary = Some(names);
         Ok(changed)
     }
 
     pub fn select_surface(&mut self, id: &str) -> Result<(), String> {
-        self.call_native_void("__nickelSelectSurface", &[Value::from(id)])
+        self.call_native_void("__twinkleSelectSurface", &[Value::from(id)])
     }
 
     /// Publish one host-owned, mount-scoped surface observation. JavaScript
@@ -678,7 +679,7 @@ impl JsxRuntime {
             return Err("runtime checkpoint was invalidated".into());
         }
         self.engine.call_global_bool(
-            "__nickelSetSurfaceStore",
+            "__twinkleSetSurfaceStore",
             &[Value::String(mount_id.to_owned()), snapshot.clone()],
         )
     }
@@ -686,7 +687,7 @@ impl JsxRuntime {
     pub fn register_surface_entry(&mut self, id: &str, source: &str) -> Result<(), String> {
         let id = serde_json::to_string(id).map_err(|error| error.to_string())?;
         self.eval(&format!(
-            "__nickelRegisterSurfaceApp({id}, (function() {{\n{source}\nreturn App;\n}})())"
+            "__twinkleRegisterSurfaceApp({id}, (function() {{\n{source}\nreturn App;\n}})())"
         ))
     }
 
@@ -707,7 +708,7 @@ impl JsxRuntime {
         let id = serde_json::to_string(id).map_err(|error| error.to_string())?;
         let identity = serde_json::to_string(identity).map_err(|error| error.to_string())?;
         self.eval(&format!(
-            "__nickelRegisterSurfaceApp({id}, (function() {{\n{source}\nreturn App;\n}})(), {identity})"
+            "__twinkleRegisterSurfaceApp({id}, (function() {{\n{source}\nreturn App;\n}})(), {identity})"
         ))
     }
 
@@ -723,12 +724,12 @@ impl JsxRuntime {
         let id = serde_json::to_string(id).map_err(|error| error.to_string())?;
         let identity = serde_json::to_string(identity).map_err(|error| error.to_string())?;
         self.eval_json(&format!(
-            "JSON.stringify(__nickelReplaceSurfaceApp({id}, (function() {{\n{source}\nreturn App;\n}})(), {identity}))"
+            "JSON.stringify(__twinkleReplaceSurfaceApp({id}, (function() {{\n{source}\nreturn App;\n}})(), {identity}))"
         ))
     }
 
     pub fn drop_surface(&mut self, id: &str) -> Result<(), String> {
-        self.call_native_void("__nickelDropSurface", &[Value::from(id)])
+        self.call_native_void("__twinkleDropSurface", &[Value::from(id)])
     }
 
     pub fn render<T>(
@@ -750,9 +751,9 @@ impl JsxRuntime {
     ) -> Result<T, String> {
         let value = match events {
             Some(events) => {
-                self.call_native_json("__nickelDispatchBatch", std::slice::from_ref(events))
+                self.call_native_json("__twinkleDispatchBatch", std::slice::from_ref(events))
             }
-            None => self.call_native_json("__nickelRender", &[]),
+            None => self.call_native_json("__twinkleRender", &[]),
         };
         self.finish_render(value, parse)
     }
@@ -782,9 +783,9 @@ impl JsxRuntime {
             .as_micros()
             .min(u128::from(u64::MAX));
         let finalizer = if parsed.is_ok() {
-            "__nickelCommitRender"
+            "__twinkleCommitRender"
         } else {
-            "__nickelRollbackRender"
+            "__twinkleRollbackRender"
         };
         self.call_native_void(finalizer, &[])
             .map_err(|error| format!("could not finalize plugin render: {error}"))?;
@@ -819,9 +820,9 @@ impl JsxRuntime {
             .min(u128::from(u64::MAX));
         self.call_native_void(
             if parsed.is_ok() {
-                "__nickelCommitRender"
+                "__twinkleCommitRender"
             } else {
-                "__nickelRollbackRender"
+                "__twinkleRollbackRender"
             },
             &[],
         )
@@ -829,7 +830,7 @@ impl JsxRuntime {
         self.report_host_profile("cold-tree", validation_micros as u64, transport_bytes)?;
         let value = parsed?;
         let reconciliation_requested = self
-            .call_native_json::<ReconciliationRequest>("__nickelReconciliationRequest", &[])?
+            .call_native_json::<ReconciliationRequest>("__twinkleReconciliationRequest", &[])?
             .requested;
         Ok(ScheduledRender::Rendered {
             value,
@@ -855,7 +856,7 @@ impl JsxRuntime {
         previous: bool,
     ) -> Result<ScheduledPatch, String> {
         let wire_value = self.call_native_json(
-            "__nickelDispatchBatchPatched",
+            "__twinkleDispatchBatchPatched",
             &[Value::Array(events), Value::Bool(previous)],
         )?;
         self.decode_scheduled_patch(wire_value)
@@ -863,7 +864,7 @@ impl JsxRuntime {
 
     pub fn dispatch_slots_patched(&mut self, events: Vec<Value>) -> Result<ScheduledPatch, String> {
         let wire_value =
-            self.call_native_json("__nickelDispatchSlotsPatched", &[Value::Array(events)])?;
+            self.call_native_json("__twinkleDispatchSlotsPatched", &[Value::Array(events)])?;
         self.decode_scheduled_patch(wire_value)
     }
 
@@ -883,7 +884,7 @@ impl JsxRuntime {
             return Err("unsupported or oversized native patch envelope".into());
         }
         let reconciliation_requested = self
-            .call_native_json::<ReconciliationRequest>("__nickelReconciliationRequest", &[])?
+            .call_native_json::<ReconciliationRequest>("__twinkleReconciliationRequest", &[])?
             .requested;
         Ok(ScheduledPatch::Patched {
             patch,
@@ -896,9 +897,9 @@ impl JsxRuntime {
     pub fn finish_patch_render(&mut self, accepted: bool) -> Result<(), String> {
         self.call_native_void(
             if accepted {
-                "__nickelCommitRender"
+                "__twinkleCommitRender"
             } else {
-                "__nickelRollbackRender"
+                "__twinkleRollbackRender"
             },
             &[],
         )
@@ -913,7 +914,7 @@ impl JsxRuntime {
         if self.checkpoint.is_some() {
             return Err("runtime transaction already pending".into());
         }
-        self.call_native_void("__nickelBeginCheckpoint", &[])?;
+        self.call_native_void("__twinkleBeginCheckpoint", &[])?;
         self.checkpoint = Some((self.settings_revision, self.settings_data.clone()));
         Ok(())
     }
@@ -931,7 +932,7 @@ impl JsxRuntime {
             self.projection_identities.clear();
         }
         if let Err(error) =
-            self.call_native_void("__nickelFinishCheckpoint", &[Value::from(accepted)])
+            self.call_native_void("__twinkleFinishCheckpoint", &[Value::from(accepted)])
         {
             self.invalidated = true;
             return Err(error);
@@ -944,19 +945,19 @@ impl JsxRuntime {
     }
 
     pub fn take_effects(&mut self) -> Result<Vec<Value>, String> {
-        self.call_native_json("__nickelTakeEffects", &[])
+        self.call_native_json("__twinkleTakeEffects", &[])
     }
 
     pub fn reconciliation_requested(&mut self) -> Result<bool, String> {
         Ok(self
-            .call_native_json::<ReconciliationRequest>("__nickelReconciliationRequest", &[])?
+            .call_native_json::<ReconciliationRequest>("__twinkleReconciliationRequest", &[])?
             .requested)
     }
 
     /// Returns the bounded, coalesced component-failure evidence retained by
     /// this package context. Reading diagnostics does not clear them.
     pub fn boundary_diagnostics(&mut self) -> Result<Vec<Value>, String> {
-        self.call_native_json("__nickelBoundaryDiagnostics", &[])
+        self.call_native_json("__twinkleBoundaryDiagnostics", &[])
     }
 
     /// Translate a rejected native candidate into the nearest JSX boundary.
@@ -971,7 +972,7 @@ impl JsxRuntime {
             return Err("too many native failure owners".into());
         }
         let expression = format!(
-            "__nickelCaptureNativeFailure({}, {})",
+            "__twinkleCaptureNativeFailure({}, {})",
             serde_json::to_string(owners).map_err(|error| error.to_string())?,
             serde_json::to_string(&message.chars().take(512).collect::<String>())
                 .map_err(|error| error.to_string())?,
@@ -988,7 +989,7 @@ impl JsxRuntime {
 
     /// Bounded render diagnostics plus per-mount execution and transport profiles.
     pub fn runtime_diagnostics(&mut self) -> Result<Value, String> {
-        let mut diagnostics: Value = self.call_native_json("__nickelRuntimeDiagnostics", &[])?;
+        let mut diagnostics: Value = self.call_native_json("__twinkleRuntimeDiagnostics", &[])?;
         let object = diagnostics
             .as_object_mut()
             .ok_or("runtime diagnostics did not return an object")?;
@@ -1061,7 +1062,7 @@ impl JsxRuntime {
             return Err("surface work query requires an idle valid runtime".into());
         }
         self.engine.call_global_bool_without_microtasks(
-            "__nickelSurfaceWorkPending",
+            "__twinkleSurfaceWorkPending",
             &[Value::String(surface.to_owned())],
         )
     }
@@ -1073,7 +1074,7 @@ impl JsxRuntime {
         transport_bytes: usize,
     ) -> Result<(), String> {
         self.call_native_void(
-            "__nickelReportHostProfile",
+            "__twinkleReportHostProfile",
             &[
                 Value::from(transport_kind),
                 Value::from(native_validation_micros),
@@ -1090,7 +1091,7 @@ impl JsxRuntime {
         accepted: bool,
     ) -> Result<(), String> {
         self.call_native_void(
-            "__nickelReportTypedPatchApply",
+            "__twinkleReportTypedPatchApply",
             &[Value::from(application_micros), Value::from(accepted)],
         )
     }
@@ -1101,9 +1102,9 @@ impl JsxRuntime {
         }
         self.call_native_void(
             if accepted {
-                "__nickelAcceptEvent"
+                "__twinkleAcceptEvent"
             } else {
-                "__nickelRollbackEvent"
+                "__twinkleRollbackEvent"
             },
             &[],
         )
@@ -1135,7 +1136,7 @@ mod tests {
             .set_mount_data(&data, None, &serde_json::json!({"label":"left"}))
             .unwrap();
         let left = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let action = left["action"].as_u64().unwrap();
         let changed = runtime
@@ -1150,7 +1151,7 @@ mod tests {
             .set_mount_data(&data, None, &serde_json::json!({"label":"right"}))
             .unwrap();
         let right = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(left["children"][0], "left:0");
         assert_eq!(right["children"][0], "right:0");
@@ -1189,10 +1190,9 @@ mod tests {
             .collect();
         let mut runtime = JsxRuntime::new("", None).unwrap();
         let observed: std::collections::BTreeSet<String> = runtime
-            .eval_json("JSON.stringify(__nickelPublicRuntimeGlobals)")
+            .eval_json("JSON.stringify(__twinklePublicRuntimeGlobals)")
             .unwrap();
         assert_eq!(declared, observed);
-        assert!(!declarations.contains("Nickel"));
     }
     #[test]
     fn standalone_tsx_fixture_prepares_and_renders_without_shell_bindings() {
@@ -1212,20 +1212,15 @@ mod tests {
         .unwrap();
         let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
         let node = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(node["id"], "main");
-        assert!(
-            runtime
-                .eval_json::<bool>("typeof nickel === 'undefined'")
-                .unwrap()
-        );
     }
 
     #[test]
-    fn standalone_bootstrap_omits_nickel_services_and_settings_registration() {
+    fn standalone_bootstrap_omits_host_services_and_settings_registration() {
         let mut runtime = super::JsxRuntime::new("", None).unwrap();
-        assert!(runtime.eval_json::<bool>("typeof nickel === 'undefined' && typeof registerSetting === 'undefined' && typeof registerSettingsPage === 'undefined' && typeof readPluginSettings === 'undefined' && typeof useWindows === 'undefined' && typeof useApplications === 'undefined' && typeof NickelStores === 'undefined' && typeof useCapability === 'undefined'").unwrap());
+        assert!(runtime.eval_json::<bool>("typeof registerSetting === 'undefined' && typeof registerSettingsPage === 'undefined' && typeof readPluginSettings === 'undefined' && typeof useWindows === 'undefined' && typeof useApplications === 'undefined' && typeof useCapability === 'undefined'").unwrap());
         let bindings = HostBindings::new(HostBindings::ABI_VERSION,"globalThis.hostState={value:1};__twinkleRegisterCheckpointParticipant({capture:copy=>copy(hostState),restore:(state,original)=>{hostState=original(state)}})",|_,_,_|Ok(()),&[]).unwrap();
         let mut runtime = super::JsxRuntime::new_with_bindings(
             "twinkle.request({type:'example'})",
@@ -1252,10 +1247,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(runtime.render("__nickelRender()", |_| Ok(())).is_err());
+        assert!(runtime.render("__twinkleRender()", |_| Ok(())).is_err());
         let snapshot = serde_json::json!({"known":["example-read"],"entries":{"example-read":{"declared":true,"available":true}}});
         assert!(runtime.set_capability_snapshot(&snapshot).unwrap());
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(!runtime.set_capability_snapshot(&snapshot).unwrap());
         assert!(
             runtime
@@ -1278,7 +1273,7 @@ mod tests {
                 )
                 .is_err()
         );
-        assert!(runtime.eval("function Unknown(){useHostCapability('windows-read')} __nickelSetApp(Unknown); __nickelRender()").is_err());
+        assert!(runtime.eval("function Unknown(){useHostCapability('windows-read')} __twinkleSetApp(Unknown); __twinkleRender()").is_err());
     }
 
     #[test]
@@ -1363,37 +1358,37 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(initial["children"][0], "ok:0");
 
         runtime.eval("phase='render'").unwrap();
         let failed = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(failed["children"][0], "failed:render boom");
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         let reset = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(reset["children"][0], "ok:0");
 
         runtime.eval("phase='memo'").unwrap();
         let failed = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(failed["children"][0], "failed:memo boom");
         runtime.eval("phase='ok'").unwrap();
         runtime.eval("Array.from(__componentRecords.values()).find(record=>record.boundary).boundaryError=undefined; for(const path of __componentRecords.keys())__dirtyComponents.add(path)").unwrap();
         let healthy = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(healthy["children"][0], "ok:0");
 
         runtime.eval("phase='reducer'").unwrap();
         let reduced = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
@@ -1412,11 +1407,11 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let committed = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(committed["children"][0], "valid");
         let fallback = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(fallback["children"][0], "fallback");
         assert_eq!(
@@ -1424,7 +1419,7 @@ mod tests {
             "effect"
         );
 
-        runtime.eval("for(let i=0;i<80;i++)__nickelRecordBoundaryFailure('root/'+i,'render',Error('failure '+i))").unwrap();
+        runtime.eval("for(let i=0;i<80;i++)__twinkleRecordBoundaryFailure('root/'+i,'render',Error('failure '+i))").unwrap();
         assert_eq!(runtime.boundary_diagnostics().unwrap().len(), 32);
     }
 
@@ -1439,7 +1434,7 @@ mod tests {
             .set_data(r#"{"name":"taskbar","fail":false}"#)
             .unwrap();
         let taskbar = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         runtime.register_surface_entry("settings", source).unwrap();
         runtime.select_surface("settings").unwrap();
@@ -1447,16 +1442,16 @@ mod tests {
             .set_data(r#"{"name":"settings","fail":true}"#)
             .unwrap();
         let settings = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(settings["children"][0], "settings failed");
 
         runtime.select_surface("default").unwrap();
         let unchanged = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(unchanged["__nativeId"], taskbar["__nativeId"]);
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(runtime.take_effects().unwrap().len(), 1);
     }
@@ -1476,8 +1471,8 @@ mod tests {
             .register_surface_entry_with_identity("hot", source, &identity)
             .unwrap();
         runtime.select_surface("hot").unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
 
         let compatible = "function App(){const [value,setValue]=useState(0);useEffect(()=>()=>log.push('cleanup'),[]);return h(Button,{onClick:()=>setValue(value+1)},'new:'+value)}";
@@ -1487,7 +1482,7 @@ mod tests {
                 .unwrap()
         );
         let tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(tree["children"][0], "new:1");
 
@@ -1497,7 +1492,7 @@ mod tests {
                 .is_err()
         );
         let tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(tree["children"][0], "new:1");
 
@@ -1515,7 +1510,7 @@ mod tests {
                 .unwrap()
         );
         let tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(tree["children"][0], "reset:9");
         assert_eq!(
@@ -1563,14 +1558,14 @@ mod tests {
     fn diagnostic_platform_tasks_recheck_readiness_before_task_admission() {
         let mut runtime =
             super::JsxRuntime::new("function App(){return h(Text,null,'ready')}", None).unwrap();
-        runtime.eval("globalThis.readinessProbes=0; const originalReadiness=__nickelPlatformMaintenanceReady; __nickelPlatformMaintenanceReady=()=>{ if (++readinessProbes === 2) __nickelRender(); return originalReadiness(); }").unwrap();
+        runtime.eval("globalThis.readinessProbes=0; const originalReadiness=__twinklePlatformMaintenanceReady; __twinklePlatformMaintenanceReady=()=>{ if (++readinessProbes === 2) __twinkleRender(); return originalReadiness(); }").unwrap();
         // Simulate readiness changing between the initial batch check and
         // admission. This must reject even when the native task queue is empty.
         assert!(runtime.diagnostic_pump_platform_tasks().is_err());
         assert_eq!(runtime.eval_json::<u64>("readinessProbes").unwrap(), 2);
         runtime.finish_patch_render(false).unwrap();
         runtime
-            .eval("__nickelPlatformMaintenanceReady=originalReadiness")
+            .eval("__twinklePlatformMaintenanceReady=originalReadiness")
             .unwrap();
         assert!(runtime.diagnostic_pump_platform_tasks().unwrap() <= 8);
     }
@@ -1605,14 +1600,14 @@ mod tests {
         let mut runtime =
             super::JsxRuntime::new("function App(){return h(Text,null,'ready')}", None).unwrap();
         runtime
-            .eval("globalThis.savedFailureReadiness=__nickelPlatformMaintenanceReady")
+            .eval("globalThis.savedFailureReadiness=__twinklePlatformMaintenanceReady")
             .unwrap();
         for (body, expected) in [
             ("throw Error('readiness failed')", "exception"),
             ("while(true){}", "deadline exceeded"),
         ] {
             runtime
-                .eval(&format!("__nickelPlatformMaintenanceReady=()=>{{{body}}}"))
+                .eval(&format!("__twinklePlatformMaintenanceReady=()=>{{{body}}}"))
                 .unwrap();
             let before = runtime.engine.diagnostics();
             let error = runtime.service_platform_tasks().unwrap_err();
@@ -1630,7 +1625,7 @@ mod tests {
                 );
             }
             runtime
-                .eval("__nickelPlatformMaintenanceReady=savedFailureReadiness")
+                .eval("__twinklePlatformMaintenanceReady=savedFailureReadiness")
                 .unwrap();
             assert!(runtime.service_platform_tasks().unwrap() <= 8);
             assert_eq!(runtime.eval_json::<u64>("6 * 7").unwrap(), 42);
@@ -1641,7 +1636,7 @@ mod tests {
     fn serviced_platform_tasks_checkpoint_microtasks_only_after_admitted_work() {
         let mut runtime =
             super::JsxRuntime::new("function App(){return h(Text,null,'ready')}", None).unwrap();
-        runtime.eval("globalThis.savedTaskReadiness=__nickelPlatformMaintenanceReady; globalThis.taskProbeQueued=true; __nickelPlatformMaintenanceReady=()=>{if(!taskProbeQueued){taskProbeQueued=true;Promise.resolve().then(()=>{globalThis.taskMicrotaskRan=true})}return savedTaskReadiness()}; globalThis.taskMicrotaskObserved=()=>taskMicrotaskRan").unwrap();
+        runtime.eval("globalThis.savedTaskReadiness=__twinklePlatformMaintenanceReady; globalThis.taskProbeQueued=true; __twinklePlatformMaintenanceReady=()=>{if(!taskProbeQueued){taskProbeQueued=true;Promise.resolve().then(()=>{globalThis.taskMicrotaskRan=true})}return savedTaskReadiness()}; globalThis.taskMicrotaskObserved=()=>taskMicrotaskRan").unwrap();
         let mut serviced = 0;
         for _ in 0..128 {
             runtime.eval("globalThis.taskMicrotaskRan=false;globalThis.taskProbeQueued=false;globalThis.taskPressure=Array.from({length:16384},(_,index)=>({index,label:'task-pressure-'+index}));globalThis.taskPressure=null").unwrap();
@@ -1673,7 +1668,7 @@ mod tests {
     fn diagnostic_platform_tasks_validate_readiness_at_batch_exit() {
         let mut runtime =
             super::JsxRuntime::new("function App(){return h(Text,null,'ready')}", None).unwrap();
-        runtime.eval("globalThis.exitReadinessProbes=0; const savedExitReadiness=__nickelPlatformMaintenanceReady; __nickelPlatformMaintenanceReady=()=>{if(++exitReadinessProbes===3)__nickelRender();return savedExitReadiness();}").unwrap();
+        runtime.eval("globalThis.exitReadinessProbes=0; const savedExitReadiness=__twinklePlatformMaintenanceReady; __twinklePlatformMaintenanceReady=()=>{if(++exitReadinessProbes===3)__twinkleRender();return savedExitReadiness();}").unwrap();
         let checkpoints = runtime.engine.diagnostics().microtask_checkpoints;
         assert!(runtime.diagnostic_pump_platform_tasks().is_err());
         assert_eq!(
@@ -1683,7 +1678,7 @@ mod tests {
         assert_eq!(runtime.eval_json::<u64>("exitReadinessProbes").unwrap(), 3);
         runtime.finish_patch_render(false).unwrap();
         runtime
-            .eval("__nickelPlatformMaintenanceReady=savedExitReadiness")
+            .eval("__twinklePlatformMaintenanceReady=savedExitReadiness")
             .unwrap();
         assert!(runtime.diagnostic_pump_platform_tasks().unwrap() <= 8);
     }
@@ -1694,14 +1689,14 @@ mod tests {
             "function App(){const [count,setCount]=useState(0);return h(Button,{onClick:()=>setCount(count+1)},String(count))}",
             None,
         ).unwrap();
-        let initial: Value = runtime.eval_json("__nickelRender()").unwrap();
+        let initial: Value = runtime.eval_json("__twinkleRender()").unwrap();
         assert!(runtime.checkpoint.is_none());
         assert!(runtime.diagnostic_pump_platform_tasks().is_err());
         runtime.finish_patch_render(true).unwrap();
         assert!(runtime.diagnostic_pump_platform_tasks().unwrap() <= 8);
 
         let candidate = runtime
-            .dispatch_patched("__nickelDispatchBatchPatched([[0,null]])")
+            .dispatch_patched("__twinkleDispatchBatchPatched([[0,null]])")
             .unwrap();
         assert!(matches!(candidate, super::ScheduledPatch::Patched { .. }));
         assert!(runtime.checkpoint.is_none());
@@ -1712,7 +1707,7 @@ mod tests {
         // owner's acceptance or rollback.
         assert!(matches!(
             runtime
-                .dispatch_patched("__nickelDispatchBatchPatched([])")
+                .dispatch_patched("__twinkleDispatchBatchPatched([])")
                 .unwrap(),
             super::ScheduledPatch::Unchanged
         ));
@@ -1720,7 +1715,7 @@ mod tests {
         runtime.finish_event(false).unwrap();
         assert!(runtime.diagnostic_pump_platform_tasks().unwrap() <= 8);
         let restored = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(restored, initial);
     }
@@ -1728,10 +1723,10 @@ mod tests {
     #[test]
     fn diagnostic_heap_snapshot_is_complete_and_runtime_remains_callable() {
         let mut runtime = super::JsxRuntime::new(
-            "const sentinel={label:'nickel diagnostic heap sentinel'}; function App(){return h(Text,null,sentinel.label)}",
+            "const sentinel={label:'twinkle diagnostic heap sentinel'}; function App(){return h(Text,null,sentinel.label)}",
             None,
         ).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let snapshot = runtime.diagnostic_heap_snapshot().unwrap();
         let snapshot: Value = serde_json::from_slice(&snapshot).unwrap();
         assert!(snapshot["snapshot"]["meta"]["node_fields"].is_array());
@@ -1741,12 +1736,12 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|value| value == "nickel diagnostic heap sentinel")
+                .any(|value| value == "twinkle diagnostic heap sentinel")
         );
         let rendered = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
-        assert_eq!(rendered["children"][0], "nickel diagnostic heap sentinel");
+        assert_eq!(rendered["children"][0], "twinkle diagnostic heap sentinel");
     }
 
     #[test]
@@ -1764,12 +1759,12 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let mut tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         for (start, end, expected) in [(0, 2, vec!["a:a", "b:b"]), (1, 3, vec!["b:b", "c:c"])] {
             let action = tree["action"].as_u64().unwrap();
             tree = runtime.render(&format!(
-                "__nickelDispatch({action},JSON.stringify({{source:1,start:{start},end:{end}}}))"
+                "__twinkleDispatch({action},JSON.stringify({{source:1,start:{start},end:{end}}}))"
             ), |node| Ok(node.clone())).unwrap();
             let labels: Vec<_> = tree["children"]
                 .as_array()
@@ -1786,14 +1781,14 @@ mod tests {
         let source = "function App(){const [show,setShow]=useState(true);const row=useMemo(()=>h(Button,{key:'row',onClick:()=>{}},'Row'),[]);return h(Column,null,h(Button,{key:'toggle',onClick:()=>setShow(v=>!v)},'Toggle'),show?row:null);}";
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let toggle = initial["children"][0]["action"].as_u64().unwrap();
         let retired = initial["children"][1]["action"].as_u64().unwrap();
         let slot = initial["children"][1]["__handlerSlots"]["action"].to_string();
         for _ in 0..2 {
             runtime
-                .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{toggle},null]])"))
+                .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{toggle},null]])"))
                 .unwrap();
             runtime.finish_patch_render(true).unwrap();
             runtime.finish_event(true).unwrap();
@@ -1879,11 +1874,11 @@ mod tests {
         let mut direct = super::JsxRuntime::new(source, None).unwrap();
         let mut oracle = super::JsxRuntime::new(source, None).unwrap();
         let first = direct
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(
             oracle
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap(),
             first
         );
@@ -1902,7 +1897,7 @@ mod tests {
                 .unwrap();
             let expected = oracle
                 .dispatch_patched(&format!(
-                    "__nickelDispatchBatchPatched({},false)",
+                    "__twinkleDispatchBatchPatched({},false)",
                     serde_json::Value::Array(events)
                 ))
                 .unwrap();
@@ -1918,13 +1913,13 @@ mod tests {
         }
         assert_eq!(direct.engine.diagnostics().script_compilations, before);
         let final_tree = direct
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(final_tree["children"][1]["children"][0], "recovered");
         assert_eq!(
             final_tree,
             oracle
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap()
         );
     }
@@ -1937,11 +1932,11 @@ mod tests {
             .eval(
                 r#"
             globalThis.nativeCalls = [];
-            __nickelSelectSurface = (...args) => nativeCalls.push(['surface', ...args]);
-            __nickelDropSurface = (...args) => nativeCalls.push(['drop', ...args]);
-            __nickelSetDiagnosticOwner = (...args) => nativeCalls.push(['owner', ...args]);
-            __nickelReportHostProfile = (...args) => nativeCalls.push(['profile', ...args]);
-            __nickelReportTypedPatchApply = (...args) => nativeCalls.push(['patch', ...args]);
+            __twinkleSelectSurface = (...args) => nativeCalls.push(['surface', ...args]);
+            __twinkleDropSurface = (...args) => nativeCalls.push(['drop', ...args]);
+            __twinkleSetDiagnosticOwner = (...args) => nativeCalls.push(['owner', ...args]);
+            __twinkleReportHostProfile = (...args) => nativeCalls.push(['profile', ...args]);
+            __twinkleReportTypedPatchApply = (...args) => nativeCalls.push(['patch', ...args]);
         "#,
             )
             .unwrap();
@@ -1990,12 +1985,12 @@ mod tests {
         let source = "function App(){const [start,setStart]=useState(0);return h(Column,null,h(Button,{key:'next',onClick:()=>setStart(n=>n+1)},'Next'),...Array.from({length:5},(_,n)=>h(Button,{key:String(start+n),onClick:()=>{}},String(start+n))));}";
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let next = initial["children"][0]["action"].as_u64().unwrap();
         let retired = initial["children"][1]["action"].as_u64().unwrap();
         runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{next},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{next},null]])"))
             .unwrap();
         runtime.finish_patch_render(false).unwrap();
         runtime.finish_event(false).unwrap();
@@ -2007,7 +2002,7 @@ mod tests {
         );
         for _ in 0..128 {
             runtime
-                .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{next},null]])"))
+                .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{next},null]])"))
                 .unwrap();
             runtime.finish_patch_render(true).unwrap();
             runtime.finish_event(true).unwrap();
@@ -2041,11 +2036,11 @@ mod tests {
             "function App(){const [n,setN]=useState(0);return h(Button,{onClick:()=>setN(n+1)},String(n));}",
             None,
         ).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         for expected in [1, 2, 2] {
             if expected == 2 {
                 runtime.select_surface("other").unwrap();
-                runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+                runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
             }
             let counts = runtime.runtime_diagnostics().unwrap()["retained"].clone();
             for field in [
@@ -2082,13 +2077,13 @@ mod tests {
         runtime
             .set_surface_store("mount-7", &serde_json::json!({"id":"settings"}))
             .unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let failures = runtime.boundary_diagnostics().unwrap();
         assert_eq!(failures[0]["package"], "diagnostic.package");
         assert_eq!(failures[0]["mount"], "mount-7");
         assert!(failures[0]["stack"].as_array().unwrap().len() >= 2);
         for _ in 0..40 {
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         }
         let diagnostics = runtime.runtime_diagnostics().unwrap();
         assert!(diagnostics["counters"]["renders"].as_u64().unwrap() >= 41);
@@ -2102,7 +2097,7 @@ mod tests {
         let source = "function App(){const locale=useLocale();const [count,setCount]=useState(0);return h(Button,{onClick:()=>setCount(value=>value+1)},String(count)+locale.tag)}";
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let action = initial["action"].as_u64().unwrap();
         for index in 0..40 {
@@ -2110,10 +2105,10 @@ mod tests {
             runtime
                 .set_locale_store(&serde_json::json!({"known":true,"tag":tag,"direction":"ltr"}))
                 .unwrap();
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
 
             let outcome = runtime
-                .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+                .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
                 .unwrap();
             assert!(matches!(outcome, super::ScheduledPatch::Patched { .. }));
             runtime.finish_patch_render(true).unwrap();
@@ -2133,11 +2128,11 @@ mod tests {
         let source = "function App(){const [value,setValue]=useState(0);return h(Button,{onClick:()=>setValue(value+1)},String(value))}";
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let action = initial["action"].as_u64().unwrap();
         let outcome = runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
             .unwrap();
         assert!(matches!(outcome, super::ScheduledPatch::Patched { .. }));
         runtime.finish_patch_render(true).unwrap();
@@ -2193,7 +2188,7 @@ mod tests {
         runtime
             .set_surface_store("mount-settings", &serde_json::json!({"id":"settings"}))
             .unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let diagnostics = runtime.runtime_diagnostics().unwrap();
         assert_eq!(diagnostics["profiles"].as_array().unwrap().len(), 2);
         assert_eq!(diagnostics["engine"]["nativeContexts"], 1);
@@ -2216,14 +2211,14 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let right_id = initial["children"][1]["__nativeId"]
             .as_str()
             .unwrap()
             .to_owned();
         let outcome = runtime
-            .dispatch_patched("__nickelDispatchBatchPatched([[0,null]])")
+            .dispatch_patched("__twinkleDispatchBatchPatched([[0,null]])")
             .unwrap();
         let super::ScheduledPatch::Patched { patch, .. } = outcome else {
             panic!()
@@ -2264,12 +2259,12 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
 
         let mut patches = Vec::new();
         for action in [2, 0, 0] {
             let super::ScheduledPatch::Patched { patch, .. } = runtime
-                .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+                .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
                 .unwrap()
             else {
                 panic!("state update must produce a typed patch");
@@ -2307,7 +2302,7 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let materialized_before =
             runtime.runtime_diagnostics().unwrap()["counters"]["nativeNodesMaterialized"]
@@ -2315,7 +2310,7 @@ mod tests {
                 .unwrap();
         let action = initial["children"][0]["action"].as_u64().unwrap();
         let outcome = runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
             .unwrap();
         let super::ScheduledPatch::Patched { patch, .. } = outcome else {
             panic!("keyed insertion must patch");
@@ -2360,7 +2355,7 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let action = initial["children"][1]["action"].as_u64().unwrap();
         let materialized_before =
@@ -2368,7 +2363,7 @@ mod tests {
                 .as_u64()
                 .unwrap();
         let outcome = runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
             .unwrap();
         let super::ScheduledPatch::Patched {
             patch,
@@ -2429,11 +2424,11 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let action = initial["children"][0]["action"].as_u64().unwrap();
         let outcome = runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
             .unwrap();
         let super::ScheduledPatch::Patched { patch, .. } = outcome else {
             panic!("conditional handler update must stay typed");
@@ -2450,7 +2445,7 @@ mod tests {
             .eval_json::<u64>("__handlerSlots.get('root:submitAction')")
             .unwrap();
         runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
             .unwrap();
         runtime.finish_patch_render(true).unwrap();
         runtime.finish_event(true).unwrap();
@@ -2464,7 +2459,7 @@ mod tests {
             1
         );
         runtime
-            .dispatch_patched(&format!("__nickelDispatchBatchPatched([[{action},null]])"))
+            .dispatch_patched(&format!("__twinkleDispatchBatchPatched([[{action},null]])"))
             .unwrap();
         runtime.finish_patch_render(true).unwrap();
         runtime.finish_event(true).unwrap();
@@ -2489,10 +2484,10 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let first = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let updated = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |node| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -2520,9 +2515,9 @@ mod tests {
             function App() { runs.app++; return h(Window,{},h(Branch)); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let outcome = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |node| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -2548,9 +2543,9 @@ mod tests {
             function App() { return h(Window,{},h(Item,{key:'left',name:'left'}),h(Item,{key:'right',name:'right'})); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |_| Ok(()))
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |_| Ok(()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
@@ -2581,9 +2576,9 @@ mod tests {
                 &serde_json::json!({"id":"main","kind":"window","width":640,"height":480}),
             )
             .unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |_| Ok(()))
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |_| Ok(()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         runtime
@@ -2592,7 +2587,7 @@ mod tests {
                 &serde_json::json!({"id":"main","kind":"window","width":800,"height":480}),
             )
             .unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<serde_json::Value>("JSON.stringify(runs)")
@@ -2614,7 +2609,7 @@ mod tests {
                 &serde_json::json!({"availableWidth":640,"availableHeight":480,"focused":false}),
             )
             .unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime
             .set_surface_store(
                 "mount",
@@ -2673,10 +2668,10 @@ mod tests {
             serde_json::json!(["left-local"])
         );
         runtime.set_mount_data(&initial, None, &left).unwrap();
-        runtime.eval("globalThis.savedPublish=__nickelPublishData;__nickelPublishData=()=>{throw Error('publication rejected')}").unwrap();
+        runtime.eval("globalThis.savedPublish=__twinklePublishData;__twinklePublishData=()=>{throw Error('publication rejected')}").unwrap();
         assert!(runtime.set_mount_data(&rejected, None, &left).is_err());
         assert!(runtime.mount_transport_identity.is_none());
-        runtime.eval("__nickelPublishData=savedPublish").unwrap();
+        runtime.eval("__twinklePublishData=savedPublish").unwrap();
         runtime.set_mount_data(&initial, None, &left).unwrap();
         assert_eq!(
             runtime
@@ -2690,14 +2685,14 @@ mod tests {
     fn surface_work_query_does_not_run_microtasks_and_reports_effect_only_work() {
         let mut runtime =
             super::JsxRuntime::new("function App(){return h(Text,null,'ready')}", None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
-        runtime.eval("globalThis.originalWorkQuery=__nickelSurfaceWorkPending;__nickelSurfaceWorkPending=id=>{Promise.resolve().then(()=>twinkle.request('show-launcher'));return originalWorkQuery(id)}").unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
+        runtime.eval("globalThis.originalWorkQuery=__twinkleSurfaceWorkPending;__twinkleSurfaceWorkPending=id=>{Promise.resolve().then(()=>twinkle.request('show-launcher'));return originalWorkQuery(id)}").unwrap();
         let before = runtime.engine.diagnostics().microtask_checkpoints;
         assert!(!runtime.surface_work_pending("default").unwrap());
         assert_eq!(runtime.engine.diagnostics().microtask_checkpoints, before);
         // An ordinary call, not the metadata query, advances queued work.
         runtime
-            .eval("__nickelSurfaceWorkPending=originalWorkQuery")
+            .eval("__twinkleSurfaceWorkPending=originalWorkQuery")
             .unwrap();
         assert!(runtime.surface_work_pending("default").unwrap());
         assert!(!runtime.reconciliation_requested().unwrap());
@@ -2719,7 +2714,7 @@ mod tests {
             runtime
                 .set_data_value(serde_json::json!({"name":name}))
                 .unwrap();
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         }
         runtime.eval("saved.left(null)").unwrap();
         assert!(!runtime.reconciliation_requested().unwrap());
@@ -2729,12 +2724,12 @@ mod tests {
         runtime.select_surface("left").unwrap();
         assert!(runtime.reconciliation_requested().unwrap());
         let fallback = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(fallback.to_string().contains("fallback"));
         runtime.select_surface("right").unwrap();
         let ready = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(ready.to_string().contains("ready"));
     }
@@ -2749,7 +2744,7 @@ mod tests {
             runtime
                 .set_data_value(serde_json::json!({"show":true}))
                 .unwrap();
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
             runtime
                 .eval("globalThis.retiredDispatch=latestDispatch")
                 .unwrap();
@@ -2757,7 +2752,7 @@ mod tests {
                 .set_data_value(serde_json::json!({"show":false}))
                 .unwrap();
             let hidden = runtime
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap();
             assert!(hidden.to_string().contains("hidden"));
             runtime.eval("retiredDispatch(88)").unwrap();
@@ -2765,13 +2760,13 @@ mod tests {
             runtime
                 .set_data_value(serde_json::json!({"show":true}))
                 .unwrap();
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
             runtime.eval("retiredDispatch(99)").unwrap();
             assert!(!runtime.reconciliation_requested().unwrap());
             runtime.eval("latestDispatch(7)").unwrap();
             assert!(runtime.reconciliation_requested().unwrap());
             let fresh = runtime
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap();
             assert!(fresh.to_string().contains("value:7"));
         }
@@ -2789,7 +2784,7 @@ mod tests {
                 runtime
                     .set_data_value(serde_json::json!({"name":name}))
                     .unwrap();
-                runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+                runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
             }
             runtime.eval("saved.left(7)").unwrap();
             assert!(runtime.surface_work_pending("left").unwrap());
@@ -2798,7 +2793,7 @@ mod tests {
             runtime.select_surface("left").unwrap();
             assert!(runtime.reconciliation_requested().unwrap());
             let rendered = runtime
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap();
             assert!(rendered.to_string().contains("left:7"));
             runtime.begin_transaction().unwrap();
@@ -2806,7 +2801,7 @@ mod tests {
             runtime.eval("saved.left(9)").unwrap();
             runtime.finish_transaction(false).unwrap();
             let restored = runtime
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap();
             assert_eq!(restored, rendered);
             runtime.eval("globalThis.retiredSetter=saved.left").unwrap();
@@ -2816,11 +2811,11 @@ mod tests {
             runtime
                 .set_data_value(serde_json::json!({"name":"left"}))
                 .unwrap();
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
             runtime.eval("retiredSetter(99)").unwrap();
             assert!(!runtime.reconciliation_requested().unwrap());
             let fresh = runtime
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap();
             assert!(fresh.to_string().contains("left:0"));
         }
@@ -2831,7 +2826,7 @@ mod tests {
         let mut warmed_counts = Vec::new();
         for count in [100, 1000, 10000] {
             let mut runtime = super::JsxRuntime::new(
-                "function App(){return h(Text,null,String(__nickelResource('inventory',{}).images.length))}",
+                "function App(){return h(Text,null,String(__twinkleResource('inventory',{}).images.length))}",
                 None,
             )
             .unwrap();
@@ -2839,7 +2834,7 @@ mod tests {
                 "images":(0..count).map(|id| serde_json::json!({"id":id.to_string(),"label":"original"})).collect::<Vec<_>>()}}));
             let props = serde_json::json!({});
             runtime.set_mount_data(&base, None, &props).unwrap();
-            runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+            runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
             runtime.eval("globalThis.stringifies=0;globalThis.savedStringify=JSON.stringify;JSON.stringify=(...args)=>{stringifies++;return savedStringify(...args)}").unwrap();
             let before = runtime.engine.diagnostics().bridge_values;
             runtime.set_mount_data(&base, None, &props).unwrap();
@@ -3029,7 +3024,7 @@ mod tests {
     #[test]
     fn locale_store_has_stable_fallback_and_normalizes_authoritative_tags() {
         let mut runtime=super::JsxRuntime::new("globalThis.seen=[];function App(){const locale=useLocale();seen.push(locale);return h(Text,null,locale.tag)}",None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<serde_json::Value>("JSON.stringify(seen[0])")
@@ -3048,7 +3043,7 @@ mod tests {
                 )
                 .unwrap()
         );
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<serde_json::Value>("JSON.stringify(seen[1])")
@@ -3067,7 +3062,7 @@ mod tests {
                 )
                 .unwrap()
         );
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<String>("JSON.stringify(seen[2].tag)")
@@ -3095,10 +3090,10 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |value| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |value| {
                 Ok(value.clone())
             })
             .unwrap();
@@ -3113,7 +3108,7 @@ mod tests {
             .set_locale_store(&serde_json::json!({"known":true,"tag":"de-DE","direction":"ltr"}))
             .unwrap();
         let incremental = runtime
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         assert_eq!(runtime.eval_json::<u64>("runs.store").unwrap(), 2);
         assert_eq!(incremental["children"][2]["children"][0], "0");
@@ -3126,18 +3121,18 @@ mod tests {
         let source = "let fail=true;function Child({value}){return h(Text,null,String(value))}const Memo=memo(Child,()=>{if(fail){fail=false;throw Error('compare failed')}return true});function App(){const [value,setValue]=useState(0);return h(Button,{onClick:()=>setValue(1)},h(Memo,{value}))}";
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         assert!(
             runtime
-                .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |value| Ok(
+                .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |value| Ok(
                     value.clone()
                 ))
                 .is_err()
         );
         runtime.finish_event(false).unwrap();
         let restored = runtime
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         assert_eq!(initial, restored);
     }
@@ -3147,10 +3142,10 @@ mod tests {
         let source = "function Child({value}){return h(Text,null,String(value))}const Memo=memo(Child);function App(){const [value,setValue]=useState(twinkle.data.initial);return h(Button,{onClick:()=>setValue(1)},h(Memo,{value}))}";
         let mut incremental = super::JsxRuntime::new(source, Some(r#"{"initial":0}"#)).unwrap();
         incremental
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         let updated = match incremental
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |value| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |value| {
                 Ok(value.clone())
             })
             .unwrap()
@@ -3161,7 +3156,7 @@ mod tests {
         incremental.finish_event(true).unwrap();
         let mut cold = super::JsxRuntime::new(source, Some(r#"{"initial":1}"#)).unwrap();
         let expected = cold
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         assert_eq!(updated, expected);
     }
@@ -3173,7 +3168,7 @@ mod tests {
             function App(){const theme=useTheme();observed.push(theme);return h(Text,null,theme.mode)}
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<serde_json::Value>("JSON.stringify(observed[0])")
@@ -3187,9 +3182,9 @@ mod tests {
                 "muted":6,"accent":7,"accentSoft":8,"complement":9}
         });
         assert!(runtime.set_theme_store(&dark).unwrap());
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(!runtime.set_theme_store(&dark).unwrap());
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(runtime.eval_json::<bool>("observed[1] === observed[2] && Object.isFrozen(observed[1]) && Object.isFrozen(observed[1].palette)").unwrap());
         assert_eq!(
             runtime.eval_json::<u64>("__themeStore.generation").unwrap(),
@@ -3200,7 +3195,7 @@ mod tests {
             "palette":{"background":1,"panel":2,"surface":3,"surfaceHover":4,"text":5,
                 "muted":6,"accent":7,"accentSoft":8,"complement":9}});
         assert!(runtime.set_theme_store(&light).unwrap());
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(
             runtime
                 .eval_json::<bool>("observed[2].palette === observed[3].palette")
@@ -3223,9 +3218,9 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let outcome = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |node| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -3251,9 +3246,9 @@ mod tests {
             function App() { return h(Window,{className:'root'},h(Leaf),h(Stable)); }
         "#;
         let mut incremental = super::JsxRuntime::new(source, None).unwrap();
-        incremental.render("__nickelRender()", |_| Ok(())).unwrap();
+        incremental.render("__twinkleRender()", |_| Ok(())).unwrap();
         let updated = incremental
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |node| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -3265,7 +3260,7 @@ mod tests {
         let mut cold = super::JsxRuntime::new(source, None).unwrap();
         cold.eval("initial = 1").unwrap();
         let expected = cold
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(updated, expected);
     }
@@ -3281,7 +3276,7 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let node = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(node["action"], 0);
         assert!(runtime.eval("JSON.stringify(virtualNode)").is_err());
@@ -3311,7 +3306,7 @@ mod tests {
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         for _ in 0..2 {
             let node = runtime
-                .render("__nickelRender()", |node| Ok(node.clone()))
+                .render("__twinkleRender()", |node| Ok(node.clone()))
                 .unwrap();
             assert_eq!(node["children"][0]["action"], 0);
             assert_eq!(node["children"][1]["action"], 1);
@@ -3322,7 +3317,7 @@ mod tests {
                 2
             );
         }
-        runtime.render("__nickelDispatch(1)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(1)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
             runtime
@@ -3343,12 +3338,12 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime.eval("changed = true").unwrap();
         runtime
-            .render("__nickelRender()", |_| Err::<(), _>("reject".into()))
+            .render("__twinkleRender()", |_| Err::<(), _>("reject".into()))
             .unwrap_err();
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
             runtime
@@ -3371,8 +3366,8 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(
             runtime
                 .eval_json::<bool>("ids[0][0] === ids[1][0] && ids[0][1] === ids[1][1]")
@@ -3386,16 +3381,16 @@ mod tests {
         let default_id = runtime
             .eval_json::<String>("JSON.stringify(ids[0][0])")
             .unwrap();
-        assert!(default_id.starts_with(":nickel:default:"));
+        assert!(default_id.starts_with(":twinkle:default:"));
 
         runtime.register_surface_entry("other", source).unwrap();
         runtime.select_surface("other").unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let other_id = runtime
             .eval_json::<String>("JSON.stringify(ids[ids.length - 1][0])")
             .unwrap();
         assert_ne!(default_id, other_id);
-        assert!(other_id.starts_with(":nickel:other:"));
+        assert!(other_id.starts_with(":twinkle:other:"));
     }
 
     #[test]
@@ -3406,9 +3401,9 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         runtime
-            .render("__nickelRender()", |_| Err::<(), _>("reject".into()))
+            .render("__twinkleRender()", |_| Err::<(), _>("reject".into()))
             .unwrap_err();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(
             runtime
                 .eval_json::<bool>("ids.length === 2 && ids[0] === ids[1]")
@@ -3423,11 +3418,11 @@ mod tests {
             function App() { const id = useId(); ids.push(id); return h(Text, null, id); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime.drop_surface("default").unwrap();
         runtime.register_surface_entry("default", source).unwrap();
         runtime.select_surface("default").unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(
             runtime
                 .eval_json::<bool>("ids.length === 2 && ids[0] !== ids[1]")
@@ -3454,8 +3449,8 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert!(
             runtime
@@ -3492,7 +3487,7 @@ mod tests {
             "function App(){const [value,dispatch]=useReducer(value=>value+1,0);if(value===0)dispatch();return h(Text,null,String(value))}",
         ] {
             let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-            let error = runtime.render("__nickelRender()", |_| Ok(())).unwrap_err();
+            let error = runtime.render("__twinkleRender()", |_| Ok(())).unwrap_err();
             assert!(error.contains("updates are not allowed during component render"));
             assert_eq!(
                 runtime
@@ -3516,9 +3511,9 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let outcome = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |_| Ok(()))
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |_| Ok(()))
             .unwrap();
         assert_eq!(outcome, super::ScheduledRender::Unchanged);
         runtime.finish_event(true).unwrap();
@@ -3539,9 +3534,9 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         let outcome = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |node| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -3568,20 +3563,20 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |_| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |_| {
                 Err::<(), _>("native rejection".into())
             })
             .unwrap_err();
         runtime.finish_event(false).unwrap();
         let tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(tree["children"][0], "0");
         assert!(
             !runtime
-                .eval_json::<super::ReconciliationRequest>("__nickelReconciliationRequest()")
+                .eval_json::<super::ReconciliationRequest>("__twinkleReconciliationRequest()")
                 .unwrap()
                 .requested
         );
@@ -3610,7 +3605,7 @@ mod tests {
                 )
                 .unwrap()
         );
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(
             !runtime
                 .set_surface_store(
@@ -3619,14 +3614,14 @@ mod tests {
                 )
                 .unwrap()
         );
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert!(
             runtime
                 .eval_json::<bool>("observed[0].surface === observed[1].surface")
                 .unwrap()
         );
         let unchanged = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |_| Ok(()))
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |_| Ok(()))
             .unwrap();
         assert_eq!(unchanged, super::ScheduledRender::Unchanged);
         runtime.finish_event(true).unwrap();
@@ -3640,7 +3635,7 @@ mod tests {
                 .unwrap()
         );
         let changed = runtime
-            .dispatch_scheduled("__nickelDispatchBatchScheduled([[0,null]])", |node| {
+            .dispatch_scheduled("__twinkleDispatchBatchScheduled([[0,null]])", |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -3669,7 +3664,7 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let component_tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(
             runtime
@@ -3679,7 +3674,7 @@ mod tests {
         );
         let native_tree = runtime
             .eval_json::<serde_json::Value>(
-                "JSON.stringify(__nickelMaterializeVirtual(h(Column,{className:'root'},h(Text,{className:'value'},'same'))))",
+                "JSON.stringify(__twinkleMaterializeVirtual(h(Column,{className:'root'},h(Text,{className:'value'},'same'))))",
             )
             .unwrap();
         assert_eq!(component_tree, native_tree);
@@ -3699,7 +3694,7 @@ mod tests {
                 h(Consumer,{name:'after'})); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<Vec<String>>("JSON.stringify(seen)")
@@ -3722,11 +3717,11 @@ mod tests {
             function App() { const [value,setValue]=useState('accepted'); return h(Button,{onClick:()=>setValue('rejected')},h(Value.Provider,{value},h(Consumer))); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime
-            .render("__nickelDispatch(0)", |_| Err::<(), _>("reject".into()))
+            .render("__twinkleDispatch(0)", |_| Err::<(), _>("reject".into()))
             .unwrap_err();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<Vec<String>>("JSON.stringify(seen)")
@@ -3746,8 +3741,8 @@ mod tests {
                 h(Value.Provider,{key:'right',value:'right'},right?h(Consumer,{key:'moving'}):null)); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
             runtime
@@ -3768,11 +3763,11 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         runtime.set_data(r#"{"surface":{"id":"first"}}"#).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime.register_surface_entry("second", source).unwrap();
         runtime.select_surface("second").unwrap();
         runtime.set_data(r#"{"surface":{"id":"second"}}"#).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<Vec<String>>("JSON.stringify(seen)")
@@ -3790,7 +3785,7 @@ mod tests {
         .unwrap();
         assert!(runtime.eval("JSON.stringify(h(Child))").is_err());
         let tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(tree["kind"], "text");
     }
@@ -3812,7 +3807,7 @@ mod tests {
             }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<Vec<String>>("JSON.stringify(log)")
@@ -3824,7 +3819,7 @@ mod tests {
                 "setup child"
             ]
         );
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
             runtime
@@ -3853,12 +3848,12 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         let first = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(first["children"][1]["children"][0], "a");
         assert_eq!(first["children"][2]["children"][0], "b");
         let second = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(second["children"][1]["children"][0], "b");
@@ -3877,7 +3872,7 @@ mod tests {
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
         runtime
-            .render("__nickelRender()", |_| Err::<(), _>("reject".into()))
+            .render("__twinkleRender()", |_| Err::<(), _>("reject".into()))
             .unwrap_err();
         assert!(
             runtime
@@ -3885,14 +3880,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         assert_eq!(
             runtime
                 .eval_json::<Vec<String>>("JSON.stringify(log)")
                 .unwrap(),
             ["setup 0"]
         );
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
             runtime
@@ -3917,9 +3912,9 @@ mod tests {
             function App() { const [shown, setShown] = useState(true); return h(Button, {onClick: () => setShown(false)}, shown ? h(Child) : 'gone'); }
         "#;
         let mut runtime = super::JsxRuntime::new(source, None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime
-            .render("__nickelDispatch(0)", |_| Err::<(), _>("reject".into()))
+            .render("__twinkleDispatch(0)", |_| Err::<(), _>("reject".into()))
             .unwrap_err();
         assert!(
             runtime
@@ -3927,7 +3922,7 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        runtime.render("__nickelDispatch(0)", |_| Ok(())).unwrap();
+        runtime.render("__twinkleDispatch(0)", |_| Ok(())).unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(
             runtime
@@ -3940,17 +3935,17 @@ mod tests {
     #[test]
     fn checkpoint_discards_consumed_effects_and_restores_supported_hook_objects_in_place() {
         let mut runtime=super::JsxRuntime::new("function App(){const [state]=useState({count:0});return h(Button,{onClick:()=>{state.count++;globalThis.outside=(globalThis.outside||0)+1;twinkle.request('show-launcher');}},String(state.count));}",None).unwrap();
-        runtime.render("__nickelRender()", |_| Ok(())).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
         runtime.begin_transaction().unwrap();
         runtime
-            .render("__nickelDispatch(0,null)", |_| Ok(()))
+            .render("__twinkleDispatch(0,null)", |_| Ok(()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert_eq!(runtime.take_effects().unwrap().len(), 1);
         runtime.finish_transaction(false).unwrap();
         assert!(runtime.take_effects().unwrap().is_empty());
         let tree = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(tree["children"][0], "0");
         // Arbitrary package globals are explicitly outside the checkpoint.
@@ -3966,12 +3961,12 @@ mod tests {
     fn slider_numeric_ranges_normalize_native_values_and_quantize_changes() {
         let mut runtime = JsxRuntime::new("function App() { return h(Slider, {id:'volume', accessibilityLabel:'Volume', min:10, max:110, step:5, value:60, onChange:value=>twinkle.request({type:'changed',value})}); }", None).unwrap();
         let rendered = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(rendered["value"], serde_json::json!(0.5));
         let action = rendered["action"].as_u64().unwrap();
         runtime
-            .render(&format!("__nickelDispatch({action},0.53)"), |node| {
+            .render(&format!("__twinkleDispatch({action},0.53)"), |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -3981,17 +3976,17 @@ mod tests {
         );
         assert!(
             runtime
-                .eval("__nickelResolveVirtual(h(Slider,{min:1,max:1,value:1,onChange:()=>{}}))")
+                .eval("__twinkleResolveVirtual(h(Slider,{min:1,max:1,value:1,onChange:()=>{}}))")
                 .is_err()
         );
         assert!(
             runtime
-                .eval("__nickelResolveVirtual(h(Slider,{min:0,max:10,value:11,onChange:()=>{}}))")
+                .eval("__twinkleResolveVirtual(h(Slider,{min:0,max:10,value:11,onChange:()=>{}}))")
                 .is_err()
         );
         assert!(
             runtime
-                .eval("__nickelResolveVirtual(h(Slider,{value:0.5,step:0,onChange:()=>{}}))")
+                .eval("__twinkleResolveVirtual(h(Slider,{value:0.5,step:0,onChange:()=>{}}))")
                 .is_err()
         );
     }
@@ -4001,14 +3996,14 @@ mod tests {
         let source = "function App() { return h('div', {id: 'target', onDrop: event => twinkle.request({type: 'dropped', ...event})}); }";
         let mut runtime = JsxRuntime::new(source, None).unwrap();
         let rendered = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let action = rendered["dropAction"].as_u64().unwrap();
         let event = serde_json::json!({"x": 12, "y": 14, "sourceId": "source", "targetId": "target",
             "sourceBounds": {"x": 0, "y": 0, "width": 20, "height": 20},
             "targetBounds": {"x": 10, "y": 0, "width": 20, "height": 20}});
         runtime
-            .render(&format!("__nickelDispatch({action},{event})"), |node| {
+            .render(&format!("__twinkleDispatch({action},{event})"), |node| {
                 Ok(node.clone())
             })
             .unwrap();
@@ -4026,16 +4021,16 @@ mod tests {
         let source = "function App() { const [count, setCount] = useState(0); return h(Window, {}, h(Button, {onClick: () => setCount(count + 1)}, String(count))); }";
         let mut runtime = JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         let changed = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         assert_ne!(initial, changed);
         assert!(runtime.take_effects().unwrap().is_empty());
         runtime.finish_event(false).unwrap();
         let restored = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(initial, restored);
     }
@@ -4047,57 +4042,57 @@ mod tests {
         runtime.select_surface("first").unwrap();
         runtime.set_data(r#"{"surface":{"id":"first"}}"#).unwrap();
         let first = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(first.to_string().contains("first:0"));
 
         runtime.select_surface("second").unwrap();
         runtime.set_data(r#"{"surface":{"id":"second"}}"#).unwrap();
         let second = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(second.to_string().contains("second:0"));
         let changed = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert!(changed.to_string().contains("second:1"));
 
         runtime.select_surface("first").unwrap();
         let first = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(first.to_string().contains("first:0"));
         let changed = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert!(changed.to_string().contains("first:1"));
 
         runtime.select_surface("second").unwrap();
         let second = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(second.to_string().contains("second:1"));
         runtime.drop_surface("second").unwrap();
         runtime.select_surface("second").unwrap();
         runtime.set_data(r#"{"surface":{"id":"second"}}"#).unwrap();
         let reopened = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(reopened.to_string().contains("second:0"));
         runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(false).unwrap();
         runtime.select_surface("first").unwrap();
         let first = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(first.to_string().contains("first:1"));
         runtime.select_surface("second").unwrap();
         let second = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(second.to_string().contains("second:0"));
     }
@@ -4110,10 +4105,10 @@ mod tests {
         )
         .unwrap();
         runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         runtime
@@ -4129,17 +4124,17 @@ mod tests {
         );
         runtime.select_surface("menu").unwrap();
         let menu = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(menu.to_string().contains("Menu 0"));
         let menu = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert!(menu.to_string().contains("Menu 1"));
         runtime.select_surface("default").unwrap();
         let main = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(main.to_string().contains("Main 1"));
         runtime.drop_surface("menu").unwrap();
@@ -4150,7 +4145,7 @@ mod tests {
         );
         runtime.select_surface("default").unwrap();
         let main = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(main.to_string().contains("Main 1"));
     }
@@ -4166,16 +4161,16 @@ mod tests {
         let source = "function App() { return h(Window, {}, h(Button, {onClick: () => { while (true) {} }}, 'Loop')); }";
         let mut runtime = JsxRuntime::new(source, None).unwrap();
         let initial = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(
             runtime
-                .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+                .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
                 .is_err()
         );
         runtime.finish_event(false).unwrap();
         let restored = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert_eq!(initial, restored);
     }

@@ -115,7 +115,7 @@ pub enum ActionLegendDensity {
     Compact,
 }
 
-/// Provenance for a controller control's visual mark. Nickel currently ships
+/// Provenance for a controller control's visual mark. Twinkle currently ships
 /// no third-party branded controller artwork, so every family uses a truthful,
 /// font-rendered fallback with an independent spoken name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1191,7 +1191,7 @@ mod tests {
         ShortcutRow::new(
             theme(),
             Text::new("□"),
-            "Nickel",
+            "Twinkle",
             "Desktop shell",
             Some(Message::Open),
             false,
@@ -1245,7 +1245,7 @@ mod tests {
             .child(CompactIconTile::new(
                 theme,
                 Text::new("N"),
-                "Nickel",
+                "Twinkle",
                 Message::Open,
             ));
         let detail = Column::new()
@@ -1312,7 +1312,7 @@ mod tests {
             .child(ShortcutRow::new(
                 theme(),
                 Text::new("□"),
-                "Nickel",
+                "Twinkle",
                 "Desktop shell",
                 Some(Message::Open),
                 false,
@@ -1333,7 +1333,7 @@ mod tests {
         assert!(
             tree.accessibility_nodes()
                 .iter()
-                .any(|node| { node.interactive && node.label.as_deref() == Some("Nickel") })
+                .any(|node| { node.interactive && node.label.as_deref() == Some("Twinkle") })
         );
     }
 
@@ -1418,7 +1418,7 @@ mod tests {
         let id = accessibility_tree
             .accessibility_nodes()
             .iter()
-            .find(|node| node.interactive && node.label.as_deref() == Some("Nickel"))
+            .find(|node| node.interactive && node.label.as_deref() == Some("Twinkle"))
             .expect("accessible row action")
             .id
             .clone();
@@ -1436,7 +1436,7 @@ mod tests {
             ProjectStatusRow::new(
                 theme(),
                 Text::new("□"),
-                "Nickel",
+                "Twinkle",
                 "Status unknown",
                 None,
                 None::<Message>,
@@ -1446,7 +1446,7 @@ mod tests {
         );
         assert!(tree.semantic_targets_for_message(&Message::Open).is_empty());
         assert!(tree.accessibility_nodes().iter().any(|node| {
-            node.label.as_deref() == Some("Nickel")
+            node.label.as_deref() == Some("Twinkle")
                 && node.state.as_deref() == Some("Status unknown")
         }));
         assert!(tree.commands().iter().any(|command| matches!(
@@ -1978,7 +1978,7 @@ mod tests {
     #[test]
     fn fallback_avatar_is_deterministic_for_names_and_empty_identity() {
         assert_eq!(fallback_avatar_initials("Steven Shorton"), "SS");
-        assert_eq!(fallback_avatar_initials("nickel"), "N");
+        assert_eq!(fallback_avatar_initials("twinkle"), "T");
         assert_eq!(fallback_avatar_initials("  "), "•");
 
         let first = UiFrame::layout(
@@ -2025,7 +2025,7 @@ mod tests {
             let tree = UiFrame::layout_with_diagnostics(
                 component_state_sheet(
                     theme,
-                    "Nickel",
+                    "Twinkle",
                     "Desktop shell and local session",
                     ReadingDirection::LeftToRight,
                 ),
@@ -2079,7 +2079,7 @@ mod tests {
             ),
             (
                 "expanded",
-                "[!! Nickel desktop shell project with synthetic expansion !!]",
+                "[!! Twinkle desktop shell project with synthetic expansion !!]",
                 "[!! Local session supporting text expanded for localization testing !!]",
                 ReadingDirection::LeftToRight,
             ),

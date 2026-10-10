@@ -51,11 +51,11 @@ impl Default for Adapter {
     }
 }
 
-/// Stable Nickel identities for winit's intentionally opaque native device IDs.
+/// Stable Twinkle identities for winit's intentionally opaque native device IDs.
 ///
 /// A runtime should retain one registry for the lifetime of its event loop. Removing a native
 /// device ends that identity's lifetime; if winit later reports the same opaque value again it is
-/// assigned a fresh Nickel identity.
+/// assigned a fresh Twinkle identity.
 #[derive(Debug, Default)]
 pub struct DeviceRegistry {
     next_id: u64,

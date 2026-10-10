@@ -46,7 +46,7 @@ impl JsxPreview {
         let mut runtime = JsxRuntime::new_modules(&graph, None)?;
         runtime.set_locale_store(&json!({"tag":"en-US","direction":"ltr","known":true}))?;
         let accepted =
-            render_retained_panel(&mut runtime, &bounds, Some("main"), "__nickelRender()", 1)?;
+            render_retained_panel(&mut runtime, &bounds, Some("main"), "__twinkleRender()", 1)?;
         accepted.validate_candidate(accepted.source(), &bounds, Some("main"), &stylesheet)?;
         Ok(Self {
             runtime,

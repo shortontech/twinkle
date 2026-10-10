@@ -97,7 +97,7 @@ impl<'a> AdmissionReport<'a> {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "nickel_release_admission={{\"schema\":1,\"suite\":\"{}\",\"workload\":\"{}\",\"metadata\":{{{metadata}}},\"work\":{{{work}}},\"timings\":{{{timings}}}}}",
+            "twinkle_release_admission={{\"schema\":1,\"suite\":\"{}\",\"workload\":\"{}\",\"metadata\":{{{metadata}}},\"work\":{{{work}}},\"timings\":{{{timings}}}}}",
             self.suite, self.workload
         )
     }
@@ -141,7 +141,7 @@ mod tests {
             );
         assert_eq!(
             report.render(),
-            "nickel_release_admission={\"schema\":1,\"suite\":\"retained\",\"workload\":\"unchanged\",\"metadata\":{\"iterations\":3,\"nodes\":2000},\"work\":{\"nodes_measured\":0},\"timings\":{\"retained\":{\"p50_ns\":3,\"p95_ns\":7,\"p99_ns\":7,\"max_ns\":7}}}"
+            "twinkle_release_admission={\"schema\":1,\"suite\":\"retained\",\"workload\":\"unchanged\",\"metadata\":{\"iterations\":3,\"nodes\":2000},\"work\":{\"nodes_measured\":0},\"timings\":{\"retained\":{\"p50_ns\":3,\"p95_ns\":7,\"p99_ns\":7,\"max_ns\":7}}}"
         );
     }
 }

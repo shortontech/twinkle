@@ -468,11 +468,11 @@ mod tests {
 
     #[test]
     fn selection_collapses_toward_motion() {
-        let mut editor = TextEditor::new("nickel");
+        let mut editor = TextEditor::new("twinkle");
         editor.move_home(false);
         editor.move_right(true);
         editor.move_right(true);
-        assert_eq!(editor.selected_text(), Some("ni"));
+        assert_eq!(editor.selected_text(), Some("tw"));
         editor.move_right(false);
         assert_eq!(editor.cursor(), 2);
         assert_eq!(editor.selection(), None);

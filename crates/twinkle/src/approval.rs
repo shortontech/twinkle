@@ -123,7 +123,7 @@ mod tests {
             requester: "Codex".into(),
             identity: RequesterIdentity::BackendReported,
             action: "Run a command".into(),
-            scope: Some("/projects/nickel".into()),
+            scope: Some("/projects/twinkle".into()),
             duration: None,
             warning: None,
             detail: Some("Command: cargo test".into()),

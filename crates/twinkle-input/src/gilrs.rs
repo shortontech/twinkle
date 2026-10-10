@@ -14,7 +14,7 @@ pub fn event(event: &Event, identity: Option<ControllerIdentity>) -> Option<Cont
 }
 
 /// Convert a backend event while undoing Gilrs's sideways single-Joy-Con
-/// orientation. Nickel treats a connected left/right half as a vertically held
+/// orientation. Twinkle treats a connected left/right half as a vertically held
 /// split controller, matching the physical orientation beside a display.
 pub fn event_for_reported_name(
     event: &Event,

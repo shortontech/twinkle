@@ -184,37 +184,37 @@ impl JsxModuleGraph {
         let mut order = Vec::new();
         self.visit_roots(&mut visited, &mut order, &mut Vec::new())?;
         let mut output = String::from(
-            "const __nickelModules = new Map();\nconst __nickelModuleCache = new Map();\n\
-             function __nickelDefineModule(id, factory) { __nickelModules.set(id, factory); }\n\
-             function __nickelRequireModule(id) {\n\
-               if (__nickelModuleCache.has(id)) return __nickelModuleCache.get(id).exports;\n\
-               const factory = __nickelModules.get(id);\n\
+            "const __twinkleModules = new Map();\nconst __twinkleModuleCache = new Map();\n\
+             function __twinkleDefineModule(id, factory) { __twinkleModules.set(id, factory); }\n\
+             function __twinkleRequireModule(id) {\n\
+               if (__twinkleModuleCache.has(id)) return __twinkleModuleCache.get(id).exports;\n\
+               const factory = __twinkleModules.get(id);\n\
                if (!factory) throw Error(`unknown module ${id}`);\n\
-               const module = {exports: {}}; __nickelModuleCache.set(id, module);\n\
-               factory(module, module.exports, __nickelRequireModule); return module.exports;\n}\n",
+               const module = {exports: {}}; __twinkleModuleCache.set(id, module);\n\
+               factory(module, module.exports, __twinkleRequireModule); return module.exports;\n}\n",
         );
         if self.component_bridge {
             output.push_str(&format!(
-                "const __nickelContributionCatalog = {};\n",
+                "const __twinkleContributionCatalog = {};\n",
                 self.contribution_catalog
             ));
             output.push_str(&format!(
-                "const __nickelLocalComponents = {};\n",
+                "const __twinkleLocalComponents = {};\n",
                 self.local_components
             ));
             output.push_str(r#"
-function __nickelSetContributionCatalog(catalog) {
-    Object.keys(__nickelContributionCatalog).forEach(key => delete __nickelContributionCatalog[key]);
-    Object.assign(__nickelContributionCatalog, catalog);
+function __twinkleSetContributionCatalog(catalog) {
+    Object.keys(__twinkleContributionCatalog).forEach(key => delete __twinkleContributionCatalog[key]);
+    Object.assign(__twinkleContributionCatalog, catalog);
 }
-function __nickelComponentProxy(selection) {
-    const local = __nickelLocalComponents[selection.contract ? 'export:' + selection.contract : 'contribution:' + selection.contribution];
-    if (local) return __nickelPublicComponents.get(local);
-    return __nickelMarkNonRetainedComponent(function HostComponent(props) {
+function __twinkleComponentProxy(selection) {
+    const local = __twinkleLocalComponents[selection.contract ? 'export:' + selection.contract : 'contribution:' + selection.contribution];
+    if (local) return __twinklePublicComponents.get(local);
+    return __twinkleMarkNonRetainedComponent(function HostComponent(props) {
         function encode(value) {
-            if (__nickelIsComponentDeclaration(value)) return encode(__nickelResolveVirtual(value));
-            if (__nickelIsContext(value)) throw TypeError('contexts cannot cross package ownership boundaries; pass bounded values as props');
-            if (typeof value === 'function') return {__callbackAction: __nickelHandlerBinding(args => { value(...args); __effects.push({type:'__compositionCallbackBoundary'}); })};
+            if (__twinkleIsComponentDeclaration(value)) return encode(__twinkleResolveVirtual(value));
+            if (__twinkleIsContext(value)) throw TypeError('contexts cannot cross package ownership boundaries; pass bounded values as props');
+            if (typeof value === 'function') return {__callbackAction: __twinkleHandlerBinding(args => { value(...args); __effects.push({type:'__compositionCallbackBoundary'}); })};
             if (typeof value === 'symbol') throw TypeError('cross-package symbol prop is unsupported');
             if (Array.isArray(value)) return value.map(encode);
             if (value && typeof value === 'object') {
@@ -227,7 +227,7 @@ function __nickelComponentProxy(selection) {
             return value;
         }
         props = encode(props);
-        return __nickelVirtualNativeNode({kind:'__packageComponent', ...selection, props});
+        return __twinkleVirtualNativeNode({kind:'__packageComponent', ...selection, props});
     });
 }
 const __twinkleCompositionClient = Object.freeze({
@@ -235,17 +235,17 @@ const __twinkleCompositionClient = Object.freeze({
     request(effect) { twinkle.request(effect); },
     component(contract) {
         if (typeof contract !== 'string') throw TypeError('invalid component contract');
-        return __nickelComponentProxy({contract});
+        return __twinkleComponentProxy({contract});
     },
     contributions(collection) {
         if (typeof collection !== 'string') throw TypeError('invalid contribution collection');
-        return Object.freeze((__nickelContributionCatalog[collection] || []).map(entry => Object.freeze({
-            ...entry, component: __nickelComponentProxy({contribution:entry.key})
+        return Object.freeze((__twinkleContributionCatalog[collection] || []).map(entry => Object.freeze({
+            ...entry, component: __twinkleComponentProxy({contribution:entry.key})
         })));
     }
 });
-function __nickelHydrateComponentProps(value) {
-    if (Array.isArray(value)) return value.map(__nickelHydrateComponentProps);
+function __twinkleHydrateComponentProps(value) {
+    if (Array.isArray(value)) return value.map(__twinkleHydrateComponentProps);
     if (value && typeof value === 'object') {
         if (Object.keys(value).length === 1 && Object.prototype.hasOwnProperty.call(value, '__hostChild'))
             return {kind:'__packageChild', child:value.__hostChild};
@@ -256,7 +256,7 @@ function __nickelHydrateComponentProps(value) {
                 __effects.push({type:'__compositionCallback', callback, args});
             };
         }
-        return Object.fromEntries(Object.entries(value).map(([key,item]) => [key,__nickelHydrateComponentProps(item)]));
+        return Object.fromEntries(Object.entries(value).map(([key,item]) => [key,__twinkleHydrateComponentProps(item)]));
     }
     return value;
 }
@@ -269,7 +269,7 @@ function __nickelHydrateComponentProps(value) {
             let source = transpile_module(&path, source)?;
             let transformed = transform_module(&path, &source)?;
             output.push_str(&format!(
-                "__nickelDefineModule({}, function(module, exports, require) {{\n{}\n}});\n",
+                "__twinkleDefineModule({}, function(module, exports, require) {{\n{}\n}});\n",
                 js_string(&path),
                 format!(
                     "{}\n{}\n{transformed}",
@@ -284,7 +284,7 @@ function __nickelHydrateComponentProps(value) {
         }
         for (contract, (path, name)) in &self.public_exports {
             output.push_str(&format!(
-                "__nickelPublishComponent({}, __nickelRequireModule({})[{}], {}, {});\n",
+                "__twinklePublishComponent({}, __twinkleRequireModule({})[{}], {}, {});\n",
                 js_string(contract),
                 js_string(path),
                 js_string(name),
@@ -293,7 +293,7 @@ function __nickelHydrateComponentProps(value) {
             ));
         }
         output.push_str(&format!(
-            "const __nickelEntryModule = __nickelRequireModule({});\nvar App = __nickelEntryModule.default ?? __nickelEntryModule.App;\n",
+            "const __twinkleEntryModule = __twinkleRequireModule({});\nvar App = __twinkleEntryModule.default ?? __twinkleEntryModule.App;\n",
             js_string(&self.entry)
         ));
         // Composition providers can publish components and Settings without a
@@ -595,11 +595,11 @@ mod tests {
         assert_eq!(graph.stylesheet().unwrap(), ".root { color: #fff; }");
         let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
         let first: serde_json::Value = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(first.to_string().contains("0"));
         let second: serde_json::Value = runtime
-            .render("__nickelDispatch(0)", |node| Ok(node.clone()))
+            .render("__twinkleDispatch(0)", |node| Ok(node.clone()))
             .unwrap();
         runtime.finish_event(true).unwrap();
         assert!(second.to_string().contains("1"));
@@ -638,7 +638,7 @@ mod tests {
         let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
         assert!(runtime.eval_json::<bool>("JSON.stringify(twinkle.component('shell.widget') === twinkle.component('shell.widget.alias'))").unwrap());
         let rendered: serde_json::Value = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(rendered.to_string().contains("widget 1"));
         assert!(runtime.eval("twinkle.component('missing')").is_err());
@@ -671,13 +671,13 @@ mod tests {
     fn named_and_namespace_imports_work() {
         let graph = JsxModuleGraph::new("main.js", [
             ModuleSource { path: "main.js", source: "import {label as text} from './values.js';\nimport * as values from './values.js';\nexport function App() { return h(Text, {}, text + values.suffix); }" },
-            ModuleSource { path: "values.js", source: "export const label = 'Nickel';\nexport const suffix = '!';" },
+            ModuleSource { path: "values.js", source: "export const label = 'Twinkle';\nexport const suffix = '!';" },
         ]).unwrap();
         let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
         let rendered: serde_json::Value = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
-        assert!(rendered.to_string().contains("Nickel!"));
+        assert!(rendered.to_string().contains("Twinkle!"));
     }
 
     #[test]
@@ -685,7 +685,7 @@ mod tests {
         let graph = JsxModuleGraph::new("main.tsx", [
             ModuleSource {
                 path: "main.tsx",
-                source: "import type { Label } from './values.ts';\nimport { suffix } from './values.ts';\ninterface GreetingProps { prefix: string }\nfunction Greeting({prefix}: GreetingProps) { const label: Label = 'Nickel'; return <Text>{prefix + label + suffix}</Text>; }\nexport default function App() { return <Window><Greeting prefix=\"Hello \" /></Window>; }",
+                source: "import type { Label } from './values.ts';\nimport { suffix } from './values.ts';\ninterface GreetingProps { prefix: string }\nfunction Greeting({prefix}: GreetingProps) { const label: Label = 'Twinkle'; return <Text>{prefix + label + suffix}</Text>; }\nexport default function App() { return <Window><Greeting prefix=\"Hello \" /></Window>; }",
             },
             ModuleSource {
                 path: "values.ts",
@@ -695,9 +695,9 @@ mod tests {
         .unwrap();
         let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
         let rendered: serde_json::Value = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
-        assert!(rendered.to_string().contains("Hello Nickel!"));
+        assert!(rendered.to_string().contains("Hello Twinkle!"));
 
         let jsx = JsxModuleGraph::new(
             "main.jsx",
@@ -709,7 +709,7 @@ mod tests {
         .unwrap();
         let mut runtime = JsxRuntime::new_modules(&jsx, None).unwrap();
         let rendered: serde_json::Value = runtime
-            .render("__nickelRender()", |node| Ok(node.clone()))
+            .render("__twinkleRender()", |node| Ok(node.clone()))
             .unwrap();
         assert!(rendered.to_string().contains("JSX compatibility"));
     }

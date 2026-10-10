@@ -579,14 +579,14 @@ fn expand_component(mut function: ItemFn) -> Result<TokenStream2> {
         for order in permutations(&included) {
             let pattern = order.iter().map(|index| {
                 let property = &properties[*index].0;
-                let variable = format_ident!("__nickel_{property}");
+                let variable = format_ident!("__twinkle_{property}");
                 quote! { #property = { $ #variable:expr } }
             });
             let arguments = properties
                 .iter()
                 .enumerate()
                 .map(|(index, (property, optional))| {
-                    let variable = format_ident!("__nickel_{property}");
+                    let variable = format_ident!("__twinkle_{property}");
                     if *optional {
                         if included.contains(&index) {
                             quote! { ::core::option::Option::Some($ #variable) }

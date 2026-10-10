@@ -3085,7 +3085,7 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         runtime.select_surface(&surface(id))?;
         runtime.set_surface_store(&surface(id), &surface_snapshot)?;
         runtime.set_mount_data(&package.data, state.surface.as_ref(), &state.props)?;
-        let expression = format!("__nickelDispatchBatchScheduled({events})");
+        let expression = format!("__twinkleDispatchBatchScheduled({events})");
         let outcome = runtime.dispatch_scheduled(&expression, |value| {
             bounded_json(value)?;
             let mut node = value.clone();

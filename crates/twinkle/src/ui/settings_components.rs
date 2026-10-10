@@ -2256,7 +2256,7 @@ mod tests {
             theme,
             width,
             navigation,
-            PageHeader::new(theme, "Appearance", "Customize how Nickel looks and feels")
+            PageHeader::new(theme, "Appearance", "Customize how Twinkle looks and feels")
                 .id("page-header"),
             Surface::new(theme, SurfaceRole::Window)
                 .id("page-content")
@@ -2587,28 +2587,28 @@ mod tests {
             (
                 "English",
                 "Appearance",
-                "Choose how Nickel looks and behaves",
+                "Choose how Twinkle looks and behaves",
                 "Reduce transparency",
                 ReadingDirection::LeftToRight,
             ),
             (
                 "German",
                 "Darstellung",
-                "Wählen Sie aus, wie Nickel aussieht und sich verhält",
+                "Wählen Sie aus, wie Twinkle aussieht und sich verhält",
                 "Transparenzeffekte reduzieren",
                 ReadingDirection::LeftToRight,
             ),
             (
                 "Chinese",
                 "外观",
-                "选择 Nickel 的外观和行为方式",
+                "选择 Twinkle 的外观和行为方式",
                 "减少透明效果",
                 ReadingDirection::LeftToRight,
             ),
             (
                 "Spanish",
                 "Apariencia",
-                "Elige cómo se ve y se comporta Nickel",
+                "Elige cómo se ve y se comporta Twinkle",
                 "Reducir la transparencia",
                 ReadingDirection::LeftToRight,
             ),
@@ -2653,7 +2653,7 @@ mod tests {
                 localized_shell(
                     width,
                     "Appearance",
-                    "Choose how Nickel looks and behaves",
+                    "Choose how Twinkle looks and behaves",
                     "Reduce transparency",
                     ReadingDirection::LeftToRight,
                 ),

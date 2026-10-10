@@ -563,7 +563,7 @@ mod declarative_tests {
 
     #[test]
     fn declarative_components_expressions_lists_keys_and_messages_share_the_ui_tree() {
-        let title = String::from("Nickel");
+        let title = String::from("Twinkle");
         let items = [(7_u32, "Seven"), (9, "Nine")];
         let show_slider = true;
         let view = ui! {
@@ -579,7 +579,7 @@ mod declarative_tests {
                 } else {
                     ui! { <Text>{"Volume unavailable"}</Text> }
                 }}
-                <TextField id={id!(query)} value={"nickel"} on_change={query} />
+                <TextField id={id!(query)} value={"twinkle"} on_change={query} />
                 <Grid>
                     {items.iter().map(|(key, label)| ui! {
                         <ItemCard key={*key} message={Message::Select(*key)} label={label} />
@@ -602,7 +602,7 @@ mod declarative_tests {
         assert_eq!(save.source.expect("declarative source").component, "Button");
         assert!(tree.commands().iter().any(|command| matches!(
             command,
-            super::backend::PaintCommand::Text { text, .. } if text == "Nickel"
+            super::backend::PaintCommand::Text { text, .. } if text == "Twinkle"
         )));
         assert!(tree.commands().iter().any(|command| matches!(
             command,
@@ -621,7 +621,7 @@ mod declarative_tests {
         assert_eq!(
             tree.handle_event(&mut state, UiEvent::TextInput("!".into()))
                 .messages,
-            vec![Message::Query("nickel!".into())]
+            vec![Message::Query("twinkle!".into())]
         );
     }
 

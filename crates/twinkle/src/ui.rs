@@ -940,7 +940,7 @@ pub(crate) fn assert_background_color_policy(identity: &str, commands: &[PaintCo
         return;
     }
     // A terminal owns its viewport palette. Its surrounding root must retain a
-    // different identity so title bars, menus, and other Nickel chrome remain checked.
+    // different identity so title bars, menus, and other Twinkle chrome remain checked.
     if identity
         .split('/')
         .any(|segment| segment == "terminal-viewport")

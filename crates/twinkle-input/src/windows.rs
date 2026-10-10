@@ -591,7 +591,7 @@ mod native_runtime {
         pub alt_physically_held: bool,
         pub primary_physically_held: bool,
         pub secondary_physically_held: bool,
-        /// WH_MOUSE_LL attribution. Nickel-generated events must never count as
+        /// WH_MOUSE_LL attribution. Twinkle-generated events must never count as
         /// local input or satisfy trusted emergency/control arbitration.
         pub injected: bool,
     }

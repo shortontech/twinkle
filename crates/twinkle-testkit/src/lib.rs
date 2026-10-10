@@ -4372,12 +4372,12 @@ mod tests {
             .expect("activate button")
             .set_value(
                 &Selector::id("root/query"),
-                SemanticValueInput::Text("nickel".into()),
+                SemanticValueInput::Text("twinkle".into()),
             )
             .expect("set text value");
 
         assert_eq!(scenario.host_mut().application_mut().count, 1);
-        assert_eq!(scenario.host_mut().application_mut().query, "nickel");
+        assert_eq!(scenario.host_mut().application_mut().query, "twinkle");
         assert_eq!(scenario.trace().len(), 2);
         assert!(scenario.trace().iter().all(|step| step.changed));
         assert!(

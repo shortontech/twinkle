@@ -32,7 +32,7 @@ mod image_profile {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         static STATE: OnceLock<Mutex<State>> = OnceLock::new();
         ENABLED
-            .get_or_init(|| std::env::var_os("NICKEL_FILE_PROFILE_ICONS").is_some())
+            .get_or_init(|| std::env::var_os("TWINKLE_FILE_PROFILE_ICONS").is_some())
             .then(|| {
                 STATE.get_or_init(|| {
                     Mutex::new(State {
@@ -48,7 +48,7 @@ mod image_profile {
             return;
         }
         eprintln!(
-            "nickel-file icon-profile: fingerprint calls={} bytes={} time={:.2?}; raster calls={} pixels={} time={:.2?}",
+            "twinkle icon-profile: fingerprint calls={} bytes={} time={:.2?}; raster calls={} pixels={} time={:.2?}",
             state.totals.fingerprints,
             state.totals.fingerprint_bytes,
             state.totals.fingerprint_time,

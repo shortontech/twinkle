@@ -154,7 +154,7 @@ mod implementation {
         WATCHDOG.get_or_init(|| {
             let (sender, receiver) = mpsc::channel::<Deadline>();
             std::thread::Builder::new()
-                .name("nickel-v8-watchdog".into())
+                .name("twinkle-v8-watchdog".into())
                 .spawn(move || {
                     let mut pending = Vec::<Deadline>::new();
                     loop {
@@ -190,7 +190,7 @@ mod implementation {
                         });
                     }
                 })
-                .expect("Nickel must be able to start the V8 execution watchdog");
+                .expect("Twinkle must be able to start the V8 execution watchdog");
             sender
         })
     }
@@ -206,7 +206,7 @@ mod implementation {
     impl JavascriptEngine {
         pub(crate) fn new() -> Self {
             INITIALIZE_V8.call_once(|| {
-                // Nickel runs bounded synchronous calls, not a V8 foreground
+                // Twinkle runs bounded synchronous calls, not a V8 foreground
                 // event loop. Speculative minor-GC tasks otherwise accumulate
                 // as canceled task objects in DefaultForegroundTaskRunner.
                 // Keep ordinary allocation-triggered GC; do not schedule work
@@ -283,7 +283,7 @@ mod implementation {
                 // Read bootstrap transaction state without the ordinary bridge's
                 // microtask checkpoint: a rejected diagnostic must not advance
                 // provisional render/event work before returning to its owner.
-                let readiness = v8::String::new(&scope, "__nickelPlatformMaintenanceReady")
+                let readiness = v8::String::new(&scope, "__twinklePlatformMaintenanceReady")
                     .and_then(|key| context.global(&scope).get(&scope, key.into()))
                     .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok());
                 let probe_ready = || {
@@ -751,7 +751,7 @@ mod implementation {
                     active: Arc::clone(&self.active_deadline),
                     isolate: self.isolate.thread_safe_handle(),
                 })
-                .expect("Nickel V8 watchdog unexpectedly stopped");
+                .expect("Twinkle V8 watchdog unexpectedly stopped");
             DeadlineGuard(Arc::clone(&self.active_deadline))
         }
     }

@@ -48,7 +48,7 @@ pub struct VirtualCollectionTarget {
 
 fn virtual_row_id(source: &crate::virtual_source::VirtualSource, ordinal: usize) -> String {
     use std::fmt::Write;
-    let mut id = format!("__nickel_virtual_row_{}_", source.identity());
+    let mut id = format!("__twinkle_virtual_row_{}_", source.identity());
     for byte in source
         .key(ordinal)
         .expect("validated virtual row ordinal")
@@ -6712,7 +6712,7 @@ mod class_lookup_tests {
     #[test]
     fn namespaced_target_below_fragment_root_matches_cold_tree() {
         let target =
-            "root/#1/export:shell.taskbar::root/#0/@io.nickel.codex.project.7bad8b9af270552f";
+            "root/#1/export:shell.taskbar::root/#0/@dev.twinkle.example.project.7bad8b9af270552f";
         let root = json!({"kind":"column","__nativeId":"root","children":[
             {"kind":"text","__nativeId":target,"children":["old"]}
         ]});
@@ -8245,7 +8245,7 @@ mod tests {
     fn checkbox_public_jsx_normalizes_flags_and_routes_boolean_changes() {
         let mut runtime = JsxRuntime::new("function App() { return h(Checkbox,{id:'check',checked:true,'aria-label':'Enabled',onChange:checked=>twinkle.request({type:'changed',checked})}); }",None).unwrap();
         let value = runtime
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         assert_eq!(value["kind"], serde_json::json!("checkbox"));
         assert_eq!(value["state"], serde_json::json!("on"));
@@ -8255,7 +8255,7 @@ mod tests {
         ));
         let action = value["action"].as_u64().unwrap();
         runtime
-            .render(&format!("__nickelDispatch({action})"), |value| {
+            .render(&format!("__twinkleDispatch({action})"), |value| {
                 Ok(value.clone())
             })
             .unwrap();
@@ -8265,7 +8265,7 @@ mod tests {
         );
         let mut runtime = JsxRuntime::new("function App(){return h(Checkbox,{id:'disabled',checked:true,disabled:true,accessibilityLabel:'Disabled',onChange:()=>twinkle.request({type:'forbidden'})});}",None).unwrap();
         let value = runtime
-            .render("__nickelRender()", |value| Ok(value.clone()))
+            .render("__twinkleRender()", |value| Ok(value.clone()))
             .unwrap();
         assert!(matches!(
             PanelNode::parse(&value).unwrap(),

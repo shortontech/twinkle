@@ -100,7 +100,7 @@ impl JsxPage {
                     &mut runtime,
                     &self.manifest,
                     self.surface_id.as_deref(),
-                    "__nickelRender()",
+                    "__twinkleRender()",
                 )?
             };
             self.node = Some(node);
@@ -127,7 +127,7 @@ impl JsxPage {
             &mut runtime,
             &self.manifest,
             self.surface_id.as_deref(),
-            &format!("__nickelDispatch({action},{value})"),
+            &format!("__twinkleDispatch({action},{value})"),
         );
         let effects = if rendered.is_ok() {
             runtime.take_effects()
@@ -295,7 +295,7 @@ mod tests {
         let data = json!({"label":"Settings"});
         let action = page.render(&data).unwrap().button_action("go").unwrap();
         let label = page
-            .evaluate_with_data(&data, "__nickelRender(Metadata)", |value| {
+            .evaluate_with_data(&data, "__twinkleRender(Metadata)", |value| {
                 value["value"]
                     .as_str()
                     .map(str::to_owned)

@@ -8,4 +8,4 @@ Run from the repository root:
 cargo check --manifest-path crates/twinkle/tests/fixtures/renamed-dependency/Cargo.toml
 ```
 
-It must resolve the native window dependency without inheriting a patch from the repository root. `cargo tree` for this workspace must contain no JSX runtime, Oxc, V8, Nickel crate, or compositor dependency.
+It must resolve the native window dependency without inheriting a patch from the repository root. `cargo tree` for this workspace must contain no JSX runtime, Oxc, V8, or compositor dependency.
