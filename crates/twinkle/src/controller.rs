@@ -92,6 +92,48 @@ pub enum ControllerPhysicalControl {
     Direction(AxisDirection),
 }
 
+/// Backend-neutral physical controller input offered directly to an application.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ApplicationControllerEvent {
+    /// One connected device lifetime. A reconnected native slot receives a new value.
+    pub device: ControllerId,
+    /// Presentation family inferred from backend-reported hardware identity.
+    pub family: ControllerFamily,
+    /// Monotonic order assigned by the native controller reader.
+    pub backend_order: u64,
+    /// Production time when the backend supplies one, expressed as Unix milliseconds.
+    pub produced_unix_ms: u64,
+    /// Physical event payload.
+    pub input: ApplicationControllerInput,
+}
+
+/// Physical controller payload delivered before optional semantic UI translation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApplicationControllerInput {
+    /// A controller connection became available.
+    Connected,
+    /// A controller connection retired.
+    Disconnected,
+    /// The focused controller route retired; applications must clear held state.
+    RouteNeutralized,
+    /// A normalized physical button edge.
+    Button {
+        /// Portable physical button identity.
+        button: ControllerButton,
+        /// Press or release edge.
+        edge: KeyEdge,
+        /// Whether the backend marked this press as a held-button repeat.
+        repeat: bool,
+    },
+    /// A normalized analog axis sample in the inclusive range `-1.0..=1.0`.
+    Axis {
+        /// Portable physical axis identity.
+        axis: twinkle_input::controller::ControllerAxis,
+        /// Finite normalized value clamped to `-1.0..=1.0`.
+        value: f32,
+    },
+}
+
 /// Immutable execution identity assigned by the session broker and routing
 /// authority. Primitive fields keep the UI crate independent of its transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -270,6 +312,7 @@ pub struct ControllerInput {
     barrier_unix_ms: u64,
     last_poll_events: usize,
     last_poll_activity: bool,
+    application_events: Vec<ApplicationControllerEvent>,
 }
 
 #[cfg(feature = "native-controller")]
@@ -283,6 +326,7 @@ impl ControllerInput {
         self.identities.clear();
         self.families.clear();
         self.active_family = None;
+        self.application_events.clear();
     }
 
     /// Initializes native discovery, logging and retaining an unavailable source on failure.
@@ -335,6 +379,7 @@ impl ControllerInput {
             barrier_unix_ms: 0,
             last_poll_events: 0,
             last_poll_activity: false,
+            application_events: Vec::new(),
         }
     }
 
@@ -433,6 +478,18 @@ impl ControllerInput {
         self.poll_with_fence(now, window_focused, ControllerFence::default)
     }
 
+    /// Polls one native batch while retaining physical application events and
+    /// the semantic envelopes derived from the same ordered source records.
+    pub fn poll_application(
+        &mut self,
+        now: Instant,
+        window_focused: bool,
+    ) -> (Vec<ApplicationControllerEvent>, Vec<ControllerEnvelope>) {
+        let envelopes =
+            self.poll_envelopes_inner(now, Some((window_focused, ControllerFence::default)), None);
+        (std::mem::take(&mut self.application_events), envelopes)
+    }
+
     /// Polls an ordinary client and asks its host for session admission only when
     /// there is controller input (including a pending repeat) to dispatch.
     pub fn poll_with_fence(
@@ -495,6 +552,7 @@ impl ControllerInput {
         F: FnOnce() -> ControllerFence,
     {
         let mut envelopes = Vec::new();
+        self.application_events.clear();
         self.last_poll_events = 0;
         self.last_poll_activity = false;
         let Some(gilrs) = &mut self.gilrs else {
@@ -523,6 +581,27 @@ impl ControllerInput {
             }
             Some((true, fence)) => fence(),
         };
+        if (fence.blocked || fence.barrier_unix_ms != self.barrier_unix_ms)
+            && self.normalizer.has_held_input()
+        {
+            let produced_unix_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |age| age.as_millis() as u64);
+            for (device, family) in &self.families {
+                let Some(order) = self.backend_order.checked_add(1) else {
+                    self.retire_reader();
+                    return Vec::new();
+                };
+                self.backend_order = order;
+                self.application_events.push(ApplicationControllerEvent {
+                    device: *device,
+                    family: *family,
+                    backend_order: order,
+                    produced_unix_ms,
+                    input: ApplicationControllerInput::RouteNeutralized,
+                });
+            }
+        }
         if fence.blocked || fence.barrier_unix_ms != self.barrier_unix_ms {
             self.normalizer.suppress_held();
         }
@@ -572,6 +651,21 @@ impl ControllerInput {
                 identity,
                 &reported_name,
             ) {
+                let family = self
+                    .families
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(ControllerFamily::Generic);
+                if admitted
+                    && let Some(application_event) = application_controller_event(
+                        &event,
+                        family,
+                        self.backend_order,
+                        produced_at,
+                    )
+                {
+                    self.application_events.push(application_event);
+                }
                 let now_ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
                 let was_held = self.normalizer.has_held_input();
                 let signals = self.normalizer.handle(event, now_ms);
@@ -631,6 +725,49 @@ impl ControllerInput {
         }
         envelopes
     }
+}
+
+#[cfg(feature = "native-controller")]
+fn application_controller_event(
+    event: &ControllerEvent,
+    family: ControllerFamily,
+    backend_order: u64,
+    produced_at: SystemTime,
+) -> Option<ApplicationControllerEvent> {
+    let (device, input) = match event {
+        ControllerEvent::Connected { id, .. } => (*id, ApplicationControllerInput::Connected),
+        ControllerEvent::Disconnected { id } => (*id, ApplicationControllerInput::Disconnected),
+        ControllerEvent::Button {
+            id,
+            button,
+            edge,
+            repeat,
+        } => (
+            *id,
+            ApplicationControllerInput::Button {
+                button: button.clone(),
+                edge: *edge,
+                repeat: *repeat,
+            },
+        ),
+        ControllerEvent::Axis { id, axis, value } if value.is_finite() => (
+            *id,
+            ApplicationControllerInput::Axis {
+                axis: axis.clone(),
+                value: value.clamp(-1.0, 1.0),
+            },
+        ),
+        ControllerEvent::Axis { .. } => return None,
+    };
+    Some(ApplicationControllerEvent {
+        device,
+        family,
+        backend_order,
+        produced_unix_ms: produced_at
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |age| age.as_millis() as u64),
+        input,
+    })
 }
 
 /// Assigns a never-reused identity to each connected lifetime of a backend slot.
@@ -781,6 +918,15 @@ impl ControllerInput {
         }
     }
 
+    /// Native application controller input is unavailable in this build.
+    pub fn poll_application(
+        &mut self,
+        _now: Instant,
+        _window_focused: bool,
+    ) -> (Vec<ApplicationControllerEvent>, Vec<ControllerEnvelope>) {
+        (Vec::new(), Vec::new())
+    }
+
     /// No native controller family is active.
     #[must_use]
     pub const fn active_family(&self) -> Option<ControllerFamily> {
@@ -914,9 +1060,71 @@ fn signal_id(signal: &ControllerSignal) -> Option<ControllerId> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControllerAction, ControllerFamily, ControllerFence, NativeControllerGenerations,
-        signal_action, signal_action_for_family, signal_envelope,
+        ApplicationControllerInput, ControllerAction, ControllerFamily, ControllerFence,
+        NativeControllerGenerations, application_controller_event, signal_action,
+        signal_action_for_family, signal_envelope,
     };
+
+    #[test]
+    fn application_controller_event_preserves_edges_axes_order_and_time() {
+        let device = ControllerId(9);
+        let produced = UNIX_EPOCH + Duration::from_millis(123);
+        let button = application_controller_event(
+            &ControllerEvent::Button {
+                id: device,
+                button: ControllerButton::West,
+                edge: twinkle_input::KeyEdge::Released,
+                repeat: false,
+            },
+            ControllerFamily::Xbox,
+            41,
+            produced,
+        )
+        .expect("button event");
+        assert_eq!(button.device, device);
+        assert_eq!(button.backend_order, 41);
+        assert_eq!(button.produced_unix_ms, 123);
+        assert_eq!(
+            button.input,
+            ApplicationControllerInput::Button {
+                button: ControllerButton::West,
+                edge: twinkle_input::KeyEdge::Released,
+                repeat: false,
+            }
+        );
+
+        let axis = application_controller_event(
+            &ControllerEvent::Axis {
+                id: device,
+                axis: ControllerAxis::RightX,
+                value: 1.5,
+            },
+            ControllerFamily::Generic,
+            42,
+            produced,
+        )
+        .expect("finite axis event");
+        assert_eq!(
+            axis.input,
+            ApplicationControllerInput::Axis {
+                axis: ControllerAxis::RightX,
+                value: 1.0,
+            }
+        );
+        assert!(
+            application_controller_event(
+                &ControllerEvent::Axis {
+                    id: device,
+                    axis: ControllerAxis::RightX,
+                    value: f32::NAN,
+                },
+                ControllerFamily::Generic,
+                43,
+                produced,
+            )
+            .is_none()
+        );
+    }
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use twinkle_input::NativeCode;
     use twinkle_input::controller::{

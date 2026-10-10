@@ -34,6 +34,49 @@ worker and deliver bounded results through a `HostAdapter`; do not block `update
 `AsyncRasterWorker` is renderer infrastructure, not a general application executor. Make shutdown
 and stale-result behavior explicit in the adapter.
 
+## Direct controller input and semantic menus
+
+Use Twinkle's ordinary semantic controller navigation for buttons, menus, dialogs, sliders, and
+other focusable UI. Games and other direct-input surfaces can instead implement
+`Application::controller_input`. The callback runs before Twinkle derives semantic navigation from
+the same physical event. Return `ControllerInputOutcome::handled(changed)` while gameplay owns the
+control, or `ControllerInputOutcome::unhandled()` while a menu is open so D-pad/stick navigation and
+confirm continue through the declarative UI.
+
+```rust
+fn controller_input(
+    &mut self,
+    event: ApplicationControllerEvent,
+) -> ControllerInputOutcome {
+    if self.menu_open {
+        return ControllerInputOutcome::unhandled();
+    }
+    match event.input {
+        ApplicationControllerInput::Button {
+            button: ControllerButton::DPadLeft,
+            edge: KeyEdge::Pressed,
+            repeat: false,
+        } => {
+            self.move_left();
+            ControllerInputOutcome::handled(true)
+        }
+        ApplicationControllerInput::Button { edge: KeyEdge::Released, .. } => {
+            self.release_controller_button();
+            ControllerInputOutcome::handled(false)
+        }
+        _ => ControllerInputOutcome::unhandled(),
+    }
+}
+```
+
+Track held controls in application state from press and release edges when the domain needs them.
+Clear every held control for the indicated device on `RouteNeutralized`; Twinkle sends it when the
+focused route retires so an application cannot retain a stuck input across focus changes.
+Axis values are finite and normalized to `-1.0..=1.0`. Do not create one focusable button per game
+action or open a second controller backend; both physical application input and semantic fallback
+share Twinkle's focused, fenced controller reader. Hosted sources currently carry semantic actions
+only and do not fabricate physical events.
+
 ## Headless testing
 
 Construct `UiHost` or `UiFrame` at a fixed logical size, dispatch typed or semantic actions, and

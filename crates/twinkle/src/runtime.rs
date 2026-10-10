@@ -789,6 +789,19 @@ pub trait Application: Sized {
         ShortcutOutcome::from_changed(false)
     }
 
+    /// Offers admitted physical controller input before Twinkle derives semantic
+    /// navigation from the same native event.
+    ///
+    /// Return a handled disposition to suppress semantic navigation while a
+    /// gameplay or other direct-input surface owns the control. Leave the event
+    /// unhandled for ordinary menu navigation and activation.
+    fn controller_input(
+        &mut self,
+        _event: crate::ApplicationControllerEvent,
+    ) -> ControllerInputOutcome {
+        ControllerInputOutcome::unhandled()
+    }
+
     /// Offers normalized RGBA clipboard pixels to the focused application.
     /// Returning true makes image data win over simultaneous clipboard text.
     fn paste_clipboard_image(&mut self, _width: u32, _height: u32, _rgba: &[u8]) -> bool {
@@ -1208,6 +1221,41 @@ pub enum GlobalAction {
 pub struct ShortcutOutcome {
     pub disposition: crate::EventDisposition,
     pub changed: bool,
+}
+
+/// Independent consumption and state-change result for physical controller input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ControllerInputOutcome {
+    /// Whether semantic UI translation should stop for this physical event.
+    pub disposition: crate::EventDisposition,
+    /// Whether application state changed and its declaration must be rebuilt.
+    pub changed: bool,
+}
+
+impl ControllerInputOutcome {
+    /// Leaves the event available to Twinkle's semantic controller navigation.
+    pub const fn unhandled() -> Self {
+        Self {
+            disposition: crate::EventDisposition::Unhandled,
+            changed: false,
+        }
+    }
+
+    /// Consumes the physical event, optionally requesting a declarative rebuild.
+    pub const fn handled(changed: bool) -> Self {
+        Self {
+            disposition: crate::EventDisposition::Handled,
+            changed,
+        }
+    }
+
+    /// Rejects the event without allowing semantic fallback.
+    pub const fn rejected(reason: &'static str) -> Self {
+        Self {
+            disposition: crate::EventDisposition::Rejected(reason),
+            changed: false,
+        }
+    }
 }
 
 impl ShortcutOutcome {
@@ -3458,6 +3506,19 @@ impl<A: Application> UiHost<A> {
         .changed
     }
 
+    /// Delivers admitted physical controller input to the application before
+    /// optional semantic UI translation.
+    pub fn handle_application_controller_input(
+        &mut self,
+        event: crate::ApplicationControllerEvent,
+    ) -> ControllerInputOutcome {
+        let outcome = self.application.controller_input(event);
+        if outcome.changed {
+            self.rebuild();
+        }
+        outcome
+    }
+
     pub fn handle_event(&mut self, event: UiEvent) -> HostEventOutcome {
         self.step(HostBatch {
             events: vec![HostEvent::Ui(event)],
@@ -4728,6 +4789,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 .host
                 .as_ref()
                 .is_some_and(|host| host.inspect().window_focused);
+            let mut handled_physical_orders = HashSet::new();
             let (actions, controller_connected) = if local_controller_poll_lease(
                 self.controller_discovery,
                 self.local_controller_lease,
@@ -4737,15 +4799,35 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 let Some(controller) = &mut self.controller else {
                     return None;
                 };
-                let actions: Vec<_> = controller
-                    .poll(now, focused)
+                let (application_events, envelopes) = controller.poll_application(now, focused);
+                for event in application_events {
+                    let order = event.backend_order;
+                    let family = event.family;
+                    let Some(host) = self.host.as_mut() else {
+                        break;
+                    };
+                    if host.set_controller_family(family) {
+                        self.scheduler.invalidate();
+                    }
+                    let outcome = host.handle_application_controller_input(event);
+                    if outcome.disposition != crate::EventDisposition::Unhandled {
+                        handled_physical_orders.insert(order);
+                    }
+                    if outcome.changed {
+                        self.scheduler.invalidate();
+                    }
+                }
+                let actions: Vec<_> = envelopes
                     .into_iter()
-                    .map(|action| {
+                    .filter_map(|envelope| {
+                        let action = envelope.action?;
                         (
                             Some(action),
-                            controller.active_family().unwrap_or_default(),
+                            envelope.family,
                             None::<(ControllerExecutionBinding, ControllerExecutionAuthority)>,
+                            Some(envelope.evidence.backend_order),
                         )
+                            .into()
                     })
                     .collect();
                 (actions, controller.connected())
@@ -4763,13 +4845,16 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                         .into_iter()
                         .filter(|_| focused)
                         .map(|(action, family, binding, authority)| {
-                            (action, family, Some((binding, authority)))
+                            (action, family, Some((binding, authority)), None)
                         })
                         .collect(),
                     connected,
                 )
             };
-            for (action, family, admission) in actions {
+            for (action, family, admission, physical_order) in actions {
+                if physical_order.is_some_and(|order| handled_physical_orders.contains(&order)) {
+                    continue;
+                }
                 let Some(host) = self.host.as_mut() else {
                     break;
                 };
@@ -11132,5 +11217,70 @@ mod tests {
             host.inspect().available_semantic_actions,
             [crate::ActionKind::Activate]
         );
+    }
+
+    #[test]
+    fn application_controller_callback_separates_consumption_from_rebuild() {
+        struct Game {
+            events: Vec<crate::ApplicationControllerEvent>,
+            playing: bool,
+        }
+
+        impl Application for Game {
+            type Message = ();
+
+            fn update(&mut self, (): Self::Message) {}
+
+            fn controller_input(
+                &mut self,
+                event: crate::ApplicationControllerEvent,
+            ) -> super::ControllerInputOutcome {
+                self.events.push(event);
+                if self.playing {
+                    super::ControllerInputOutcome::handled(true)
+                } else {
+                    super::ControllerInputOutcome::unhandled()
+                }
+            }
+
+            fn view(&self, _context: ViewContext) -> impl crate::View<Self::Message> {
+                crate::Text::new(if self.playing { "Playing" } else { "Menu" })
+            }
+        }
+
+        let event = crate::ApplicationControllerEvent {
+            device: crate::ControllerId(7),
+            family: crate::ControllerFamily::Generic,
+            backend_order: 11,
+            produced_unix_ms: 13,
+            input: crate::ApplicationControllerInput::Button {
+                button: crate::ControllerButton::South,
+                edge: crate::KeyEdge::Pressed,
+                repeat: false,
+            },
+        };
+        let mut host = UiHost::new(
+            Game {
+                events: Vec::new(),
+                playing: true,
+            },
+            320,
+            200,
+        );
+        let before = host.inspect().frame_generation;
+        let consumed = host.handle_application_controller_input(event.clone());
+        assert_eq!(consumed, super::ControllerInputOutcome::handled(true));
+        assert!(host.inspect().frame_generation > before);
+        assert_eq!(
+            host.application().events.as_slice(),
+            std::slice::from_ref(&event)
+        );
+
+        host.application_mut().playing = false;
+        let before = host.inspect().frame_generation;
+        let fallback = host.handle_application_controller_input(event.clone());
+        assert_eq!(fallback, super::ControllerInputOutcome::unhandled());
+        assert_eq!(host.inspect().frame_generation, before);
+        assert_eq!(host.application().events, [event.clone(), event]);
     }
 }

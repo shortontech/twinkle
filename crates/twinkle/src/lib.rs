@@ -43,9 +43,9 @@ mod ui;
 #[cfg(target_os = "linux")]
 pub use controller::NativeControllerDevice;
 pub use controller::{
-    ControllerAction, ControllerEnvelope, ControllerExecutionAuthority, ControllerExecutionBinding,
-    ControllerFamily, ControllerFence, ControllerInput, ControllerObservation,
-    ControllerPhysicalControl, ControllerSourceEvidence,
+    ApplicationControllerEvent, ApplicationControllerInput, ControllerAction, ControllerEnvelope,
+    ControllerExecutionAuthority, ControllerExecutionBinding, ControllerFamily, ControllerFence,
+    ControllerInput, ControllerObservation, ControllerPhysicalControl, ControllerSourceEvidence,
 };
 pub use document_selection::{
     DocumentSelection, SelectionAffinity, SelectionDocument, SelectionEndpoint, SelectionRun,
@@ -80,14 +80,15 @@ pub use retained_surface::{
 pub use runtime::{
     AdapterOutcome, Application, BoundedSemanticActionError, Completion, CompletionFailure,
     CompletionFailureKind, ControllerExecutionDisposition, ControllerExecutionEvidence,
-    ControllerPollSchedule, DefaultHostAdapter, EffectEvidence, FileDragAction, FileDragEvent,
-    FrameOverlay, GlobalAction, HostAdapter, HostBatch, HostChangeToken, HostEvent,
-    HostEventOutcome, HostFailure, HostFailureStage, HostInputLease, HostInspection, HostServices,
-    HostTelemetry, MessageEvidence, NativeFrameCorrelation, NormalizedAdmissionBinding,
-    NormalizedIngressAuthority, NormalizedInputEnvelope, NormalizedRecipientBinding,
-    NormalizedSourceBinding, OutboundFileDrag, OverlayDeclarationFailure, Popover, ScrollAnchor,
-    SemanticActionFailure, Shortcut, ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost,
-    UiHostViewport, ViewContext, run, run_with_adapter, run_with_controller_source,
+    ControllerInputOutcome, ControllerPollSchedule, DefaultHostAdapter, EffectEvidence,
+    FileDragAction, FileDragEvent, FrameOverlay, GlobalAction, HostAdapter, HostBatch,
+    HostChangeToken, HostEvent, HostEventOutcome, HostFailure, HostFailureStage, HostInputLease,
+    HostInspection, HostServices, HostTelemetry, MessageEvidence, NativeFrameCorrelation,
+    NormalizedAdmissionBinding, NormalizedIngressAuthority, NormalizedInputEnvelope,
+    NormalizedRecipientBinding, NormalizedSourceBinding, OutboundFileDrag,
+    OverlayDeclarationFailure, Popover, ScrollAnchor, SemanticActionFailure, Shortcut,
+    ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost, UiHostViewport, ViewContext, run,
+    run_with_adapter, run_with_controller_source,
 };
 #[cfg(target_os = "windows")]
 pub use runtime::{run_with_adapter_on_any_thread, run_with_controller_source_on_any_thread};
@@ -108,6 +109,8 @@ pub use theme::{
     SpacingScale, SurfaceColors, TextColors, TextStyle, ThemePreferences, TransparencyPreference,
     TypographyScale, focused_surface, focused_surface_with_foreground,
 };
+pub use twinkle_input::KeyEdge;
+pub use twinkle_input::controller::{ControllerAxis, ControllerButton, ControllerId};
 pub use twinkle_macros::{component, id, ui};
 pub use twinkle_render_assets::{
     DependencyOwnerDiagnostics, DependencyOwnerKind, dependency_owner_diagnostics,
@@ -430,34 +433,35 @@ impl<Message, T: Component<Message>> View<Message> for T {}
 pub mod prelude {
     pub use crate::{
         AccentColors, AccessibilityPreferences, AccountSummaryRow, ActionRegion, Align, AnyView,
-        AppearancePreference, Application, ArtworkPresentation, Background, Border, BorderColors,
-        Button, ButtonPresentation, ChoiceCard, ChoiceCardGroup, Collection, CollectionError,
-        CollectionPresentation, CollectionSource, CollectionState, CollisionPolicy, Color,
-        ColorSwatch, Column, CompactIconTile, Component, ComponentBuilderExt, Container,
-        ContrastPreference, CustomPaint, DesktopDensity, DiagnosticKind, DismissPolicy,
-        DismissReason, Dropdown, DropdownPartStyle, EasingCurve, FallbackAvatar, FieldGroup,
-        FontWeight, Fragment, Grid, GridColumnSpec, Icon, Image, ImageAlignment, ImageFit,
-        ImagePresentation, InlineButtonGroup, Insets, ItemPresentation, Justify,
-        LauncherSearchField, Length, Menu, MenuBar, MenuItem, MotionPreference, MotionScale,
-        NavigationDirection, NavigationEntry, NavigationExit, NavigationItem, NavigationNeighbors,
-        NavigationScope, NavigationSectionLabel, NavigationTraversal, Overflow, OverlayAnchor,
-        OverlayFocusPolicy, OverlayId, OverlayMenu, OverlayMenuItem, OverlayMenuPresentation,
-        OverlayPlacement, OverlayStyle, PageHeader, PlatformThemePreferences, PointerIcon, Popover,
-        PreviewState, PreviewTile, ProjectStatusRow, RESPONSIVE_NAVIGATION_BREAKPOINT, RadioButton,
-        RadioGroup, RadioOption, RadiusScale, ReadingDirection, ResolvedAppearance,
-        ResolvedThemePreferences, ResponsiveNavigation, ResponsiveNavigationDestination,
-        ResponsiveNavigationError, ResponsiveNavigationPresentation, Row,
-        SETTINGS_SHELL_NARROW_BREAKPOINT, START_MENU_SINGLE_PANE_BREAKPOINT, SectionHeader,
-        SelectField, SelectionIndicator, SelectionRegion, SemanticTheme, SemanticTokenSet,
-        SessionActionRow, SettingsCard, SettingsListCard, SettingsNavigation, SettingsRow,
-        SettingsSearchEntry, SettingsSection, SettingsShell, SettingsStatus, SettingsStatusKind,
-        Shortcut, ShortcutRow, ShortcutState, SizingScale, Slider, SliderField, Spacer,
-        SpacingScale, StartMenuNarrowPane, StartMenuShell, StatusRegion, Surface, SurfaceColors,
-        SurfaceRole, SurfaceScaffold, Switch, SwitchState, TabList, Text, TextAlign, TextBoundary,
-        TextColors, TextField, TextStyle, ThemePreferences, Tone, ToolRegion, Tooltip, Track,
-        TransientKind, TransientSurface, TransientTone, TransparencyPreference, TypographyScale,
-        UiEvent, UiId, UiStateStore, View, VirtualColumn, VirtualWindow, component, id,
-        place_transient, run, search_settings, ui,
+        AppearancePreference, Application, ApplicationControllerEvent, ApplicationControllerInput,
+        ArtworkPresentation, Background, Border, BorderColors, Button, ButtonPresentation,
+        ChoiceCard, ChoiceCardGroup, Collection, CollectionError, CollectionPresentation,
+        CollectionSource, CollectionState, CollisionPolicy, Color, ColorSwatch, Column,
+        CompactIconTile, Component, ComponentBuilderExt, Container, ContrastPreference,
+        ControllerAxis, ControllerButton, ControllerId, ControllerInputOutcome, CustomPaint,
+        DesktopDensity, DiagnosticKind, DismissPolicy, DismissReason, Dropdown, DropdownPartStyle,
+        EasingCurve, FallbackAvatar, FieldGroup, FontWeight, Fragment, Grid, GridColumnSpec, Icon,
+        Image, ImageAlignment, ImageFit, ImagePresentation, InlineButtonGroup, Insets,
+        ItemPresentation, Justify, KeyEdge, LauncherSearchField, Length, Menu, MenuBar, MenuItem,
+        MotionPreference, MotionScale, NavigationDirection, NavigationEntry, NavigationExit,
+        NavigationItem, NavigationNeighbors, NavigationScope, NavigationSectionLabel,
+        NavigationTraversal, Overflow, OverlayAnchor, OverlayFocusPolicy, OverlayId, OverlayMenu,
+        OverlayMenuItem, OverlayMenuPresentation, OverlayPlacement, OverlayStyle, PageHeader,
+        PlatformThemePreferences, PointerIcon, Popover, PreviewState, PreviewTile,
+        ProjectStatusRow, RESPONSIVE_NAVIGATION_BREAKPOINT, RadioButton, RadioGroup, RadioOption,
+        RadiusScale, ReadingDirection, ResolvedAppearance, ResolvedThemePreferences,
+        ResponsiveNavigation, ResponsiveNavigationDestination, ResponsiveNavigationError,
+        ResponsiveNavigationPresentation, Row, SETTINGS_SHELL_NARROW_BREAKPOINT,
+        START_MENU_SINGLE_PANE_BREAKPOINT, SectionHeader, SelectField, SelectionIndicator,
+        SelectionRegion, SemanticTheme, SemanticTokenSet, SessionActionRow, SettingsCard,
+        SettingsListCard, SettingsNavigation, SettingsRow, SettingsSearchEntry, SettingsSection,
+        SettingsShell, SettingsStatus, SettingsStatusKind, Shortcut, ShortcutRow, ShortcutState,
+        SizingScale, Slider, SliderField, Spacer, SpacingScale, StartMenuNarrowPane,
+        StartMenuShell, StatusRegion, Surface, SurfaceColors, SurfaceRole, SurfaceScaffold, Switch,
+        SwitchState, TabList, Text, TextAlign, TextBoundary, TextColors, TextField, TextStyle,
+        ThemePreferences, Tone, ToolRegion, Tooltip, Track, TransientKind, TransientSurface,
+        TransientTone, TransparencyPreference, TypographyScale, UiEvent, UiId, UiStateStore, View,
+        VirtualColumn, VirtualWindow, component, id, place_transient, run, search_settings, ui,
     };
 }
 
