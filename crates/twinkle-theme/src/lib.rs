@@ -1,5 +1,10 @@
 //! Portable effective appearance parameters and perceptual palette calculations.
 //! Preference persistence, authorization and native appearance discovery belong to hosts.
+//!
+//! Use this crate when a non-UI host or protocol layer needs the small portable [`Appearance`] and
+//! [`ThemePalette`] vocabulary. Ordinary `twinkle-ui` applications should prefer its richer
+//! `SemanticTheme`, which covers component states, spacing, typography, motion, and accessibility
+//! preferences. This crate performs no platform theme discovery and stores no user settings.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThemeMode {

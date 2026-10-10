@@ -2,6 +2,10 @@
 //!
 //! Hosts own component validation and effect authority. This crate owns only
 //! the direct V8 context and the bootstrap's render and event transactions.
+//!
+//! This is an advanced opt-in dependency for trusted hosts that intentionally execute JSX. Native
+//! Rust applications do not need it. See `types/twinkle.d.ts` in the package for the declaration
+//! vocabulary and keep application-specific services behind explicit host bindings.
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;

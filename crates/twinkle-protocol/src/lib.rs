@@ -1,5 +1,10 @@
 //! Executor-neutral native tree patch and scheduling protocol.
 //! Serialized values and native tree algorithms grant no host authority.
+//!
+//! This crate is intended for transport and host implementers. It defines bounded tree/surface
+//! descriptions and incremental patches without depending on a renderer or event loop. Receiving a
+//! syntactically valid patch does not authorize effects, filesystem access, or native services;
+//! validate package identity and capabilities at the host boundary before presentation.
 use serde::Deserialize;
 use serde_json::Value;
 
