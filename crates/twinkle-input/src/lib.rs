@@ -18,6 +18,8 @@ pub mod on_screen_keyboard;
 pub mod windows;
 #[cfg(feature = "winit")]
 pub mod winit;
+#[cfg(feature = "winit-030")]
+pub mod winit_030;
 
 /// Identifies one connected lifetime of an input device within a backend instance.
 ///

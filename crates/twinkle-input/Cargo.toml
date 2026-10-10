@@ -9,12 +9,14 @@ description = "Backend-neutral input vocabulary and shortcut recognition for Twi
 [features]
 default = []
 winit = ["dep:winit"]
+winit-030 = ["dep:winit-030"]
 gilrs = ["dep:gilrs"]
 windows = []
 
 [dependencies]
 serde.workspace = true
 winit = { workspace = true, optional = true }
+winit-030 = { workspace = true, optional = true }
 gilrs = { workspace = true, optional = true }
 
 [dev-dependencies]

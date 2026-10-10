@@ -43,4 +43,5 @@ unicode-segmentation = "1.12.0"
 proc-macro2 = { version = "1.0.101", features = ["span-locations"] }
 proptest = "1"
 winit = "0.31.0-beta.3"
+winit-030 = { package = "winit", version = "0.30.13" }
 windows = "0.62.2"
