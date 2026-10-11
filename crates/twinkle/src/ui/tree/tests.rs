@@ -2133,6 +2133,81 @@ fn slider_and_text_field_semantic_values_use_production_mappers() {
 }
 
 #[test]
+fn accessibility_projection_preserves_adapter_semantic_matrix() {
+    let field_id = UiId::from("root/form/query");
+    let frame = UiFrame::layout(
+        Column::new()
+            .id("form")
+            .semantic_role(SemanticRole::Group)
+            .accessibility_label("Account form")
+            .accessibility_description("Profile settings")
+            .accessibility_role("region")
+            .accessibility_state("busy")
+            .accessibility_controls(field_id.clone())
+            .child(
+                TextField::on_change("twinkle", map_query)
+                    .id("query")
+                    .accessibility_label("Search"),
+            )
+            .child(
+                Slider::on_change(map_volume, 0.5)
+                    .id("volume")
+                    .accessibility_label("Volume"),
+            )
+            .child(
+                Button::new(TestMessage::Named("save"), "Save")
+                    .id("save")
+                    .enabled(false),
+            ),
+        Rect::new(0.0, 0.0, 320.0, 140.0),
+    );
+    let nodes = frame.accessibility_nodes();
+    let form = nodes
+        .iter()
+        .find(|node| node.id == UiId::from("root/form"))
+        .expect("form projection");
+    assert_eq!(form.parent, None);
+    assert_eq!(form.label.as_deref(), Some("Account form"));
+    assert_eq!(form.description.as_deref(), Some("Profile settings"));
+    assert_eq!(form.role.as_deref(), Some("group"));
+    assert_eq!(form.state.as_deref(), Some("busy"));
+    assert_eq!(form.controls.as_ref(), Some(&field_id));
+    assert_eq!(form.semantic_role, Some(SemanticRole::Group));
+
+    let field = nodes.iter().find(|node| node.id == field_id).unwrap();
+    assert_eq!(field.parent, Some(UiId::from("root/form")));
+    assert_eq!(field.semantic_role, Some(SemanticRole::TextField));
+    assert_eq!(field.label.as_deref(), Some("Search"));
+    assert_eq!(
+        field.value,
+        Some(SemanticValueSnapshot::Text("twinkle".into()))
+    );
+    assert_eq!(field.actions, vec![ActionKind::SetValue]);
+
+    let slider = nodes
+        .iter()
+        .find(|node| node.id == UiId::from("root/form/volume"))
+        .unwrap();
+    assert_eq!(slider.semantic_role, Some(SemanticRole::Slider));
+    assert_eq!(slider.label.as_deref(), Some("Volume"));
+    assert!(slider.actions.contains(&ActionKind::Increment));
+    assert!(slider.actions.contains(&ActionKind::Decrement));
+    assert!(slider.actions.contains(&ActionKind::SetValue));
+    assert!(matches!(
+        slider.value,
+        Some(SemanticValueSnapshot::Number { .. })
+    ));
+
+    let disabled = nodes
+        .iter()
+        .find(|node| node.id == UiId::from("root/form/save"))
+        .unwrap();
+    assert_eq!(disabled.semantic_role, Some(SemanticRole::Button));
+    assert!(!disabled.enabled);
+    assert!(disabled.actions.is_empty());
+}
+
+#[test]
 fn masked_text_field_semantics_never_publish_the_input_value() {
     let frame = UiFrame::layout(
         TextField::on_change_masked_with_placeholder("secret", "Password", '•', map_query)
