@@ -1855,6 +1855,11 @@ impl RetainedNodeArena {
         self.nodes.values()
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_id(&self, id: &UiId) -> Option<RetainedNodeId> {
+        self.by_ui_id.get(id).copied()
+    }
+
     pub(crate) fn capture_layout(&mut self, id: &UiId, measured: Size, allocated: Rect) {
         if let Some(node) = self
             .by_ui_id

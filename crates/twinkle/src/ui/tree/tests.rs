@@ -4596,6 +4596,60 @@ fn explicit_identity_survives_sibling_insertion_and_list_reordering() {
 }
 
 #[test]
+fn retained_sidecars_follow_keys_and_retire_removed_accessibility_nodes() {
+    let bounds = Rect::new(0.0, 0.0, 240.0, 180.0);
+    let make_view = |order: &[usize]| {
+        let mut form = Column::new().id("form").gap(4.0);
+        for key in order {
+            form = form.child(
+                Button::new(TestMessage::Option(*key), format!("Field {key}"))
+                    .id(format!("field-{key}"))
+                    .accessibility_description(format!("Description {key}"))
+                    .width(180.0)
+                    .height(28.0),
+            );
+        }
+        form
+    };
+
+    let mut state = UiStateStore::default();
+    let mut first = UiFrame::resolve(make_view(&[1, 2, 3]), FrameRequest::new(bounds, &mut state));
+    let one = UiId::from("root/form/field-1");
+    let two = UiId::from("root/form/field-2");
+    let three = UiId::from("root/form/field-3");
+    let prior_one = first.retained_nodes.retained_id(&one).unwrap();
+    let prior_three = first.retained_nodes.retained_id(&three).unwrap();
+
+    let next = UiFrame::resolve_against_reusing(
+        make_view(&[3, 4, 1]),
+        FrameRequest::new(bounds, &mut state),
+        &mut first,
+    );
+    assert_eq!(next.retained_nodes.retained_id(&one), Some(prior_one));
+    assert_eq!(next.retained_nodes.retained_id(&three), Some(prior_three));
+    assert_eq!(next.retained_nodes.retained_id(&two), None);
+    assert_eq!(next.resolved_layout().find(&two), None);
+    assert!(
+        next.accessibility_nodes().iter().all(|node| node.id != two),
+        "removed keyed semantics must not survive in the accessibility projection"
+    );
+
+    let mut cold_state = UiStateStore::default();
+    let cold = UiFrame::resolve(
+        make_view(&[3, 4, 1]),
+        FrameRequest::new(bounds, &mut cold_state),
+    );
+    assert_eq!(next.resolved_layout(), cold.resolved_layout());
+    assert_eq!(next.commands(), cold.commands());
+    assert_eq!(next.semantic_nodes(), cold.semantic_nodes());
+    assert_eq!(next.accessibility_nodes(), cold.accessibility_nodes());
+    assert_eq!(
+        next.resource_diagnostics().retained_metadata_sidecar_count,
+        cold.resource_diagnostics().retained_metadata_sidecar_count
+    );
+}
+
+#[test]
 fn pointer_keyboard_controller_and_accessibility_share_typed_activation() {
     let tree = UiFrame::layout(
         Button::new(TestMessage::Option(7), "Seven").id("seven"),
