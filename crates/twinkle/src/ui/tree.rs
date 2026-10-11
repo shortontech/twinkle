@@ -556,6 +556,18 @@ pub struct FrameResourceDiagnostics {
     pub transient_style_overlay_count: usize,
     /// Canonical kind payloads journaled while transient state is active.
     pub transient_kind_overlay_count: usize,
+    /// Bytes copied solely to construct whole-payload transient journal
+    /// entries, including inline payloads and directly owned nested storage.
+    pub transient_whole_payload_clone_bytes: usize,
+    /// Heap allocations performed by nested storage cloned solely for
+    /// whole-payload transient journal entries. Hash-table allocations are
+    /// reported separately below.
+    pub transient_whole_payload_clone_allocations: usize,
+    /// Peak inline hash-table and retained payload storage of the transient
+    /// journal before it is dropped at publication.
+    pub transient_overlay_storage_bytes: usize,
+    /// Hash-table allocations owned by the transient journal at its peak.
+    pub transient_overlay_table_allocations: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
     /// Number of resolved nodes with optional grid, scroll, navigation,
@@ -762,6 +774,10 @@ pub struct UiFrame<Message = String> {
     declaration_root_id: Option<UiId>,
     transient_style_overlay_count: usize,
     transient_kind_overlay_count: usize,
+    transient_whole_payload_clone_bytes: usize,
+    transient_whole_payload_clone_allocations: usize,
+    transient_overlay_storage_bytes: usize,
+    transient_overlay_table_allocations: usize,
     overlap_previous_owned_bytes: usize,
     pointer_position_affects_geometry: bool,
     commands: Vec<PaintCommand>,
@@ -834,6 +850,10 @@ impl<Message> Default for UiFrame<Message> {
             declaration_root_id: None,
             transient_style_overlay_count: 0,
             transient_kind_overlay_count: 0,
+            transient_whole_payload_clone_bytes: 0,
+            transient_whole_payload_clone_allocations: 0,
+            transient_overlay_storage_bytes: 0,
+            transient_overlay_table_allocations: 0,
             overlap_previous_owned_bytes: 0,
             pointer_position_affects_geometry: false,
             commands: Vec::new(),
@@ -2378,6 +2398,11 @@ impl<Message: Clone> UiFrame<Message> {
         tree.retained_nodes.commit_frame();
         tree.transient_style_overlay_count = transient_overlay.style_count();
         tree.transient_kind_overlay_count = transient_overlay.kind_count();
+        tree.transient_whole_payload_clone_bytes = transient_overlay.whole_payload_clone_bytes();
+        tree.transient_whole_payload_clone_allocations =
+            transient_overlay.whole_payload_clone_allocations();
+        tree.transient_overlay_storage_bytes = transient_overlay.storage_bytes();
+        tree.transient_overlay_table_allocations = transient_overlay.table_allocations();
         tree.declaration_root = Some(root);
         tree.release_build_scratch();
         tree
@@ -4291,6 +4316,11 @@ impl<Message: Clone> UiFrame<Message> {
             transient_declaration_nodes_cloned: 0,
             transient_style_overlay_count: self.transient_style_overlay_count,
             transient_kind_overlay_count: self.transient_kind_overlay_count,
+            transient_whole_payload_clone_bytes: self.transient_whole_payload_clone_bytes,
+            transient_whole_payload_clone_allocations: self
+                .transient_whole_payload_clone_allocations,
+            transient_overlay_storage_bytes: self.transient_overlay_storage_bytes,
+            transient_overlay_table_allocations: self.transient_overlay_table_allocations,
             resolved_storage_bytes,
             resolved_sidecar_count,
             resolved_sidecar_bytes,
@@ -4304,7 +4334,8 @@ impl<Message: Clone> UiFrame<Message> {
             index_storage_bytes,
             estimated_owned_bytes,
             peak_overlapping_generation_bytes: estimated_owned_bytes
-                .saturating_add(self.overlap_previous_owned_bytes),
+                .saturating_add(self.overlap_previous_owned_bytes)
+                .saturating_add(self.transient_overlay_storage_bytes),
             retained_build_scratch_bytes,
             retained_node_count: self.retained_nodes.node_count(),
             retained_nodes_reused: retained.reused,

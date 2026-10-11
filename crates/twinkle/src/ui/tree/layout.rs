@@ -922,11 +922,186 @@ pub(super) fn apply_transient_state<Message>(
     apply_transient_state_with_parent(element, id, state, None);
 }
 
+fn style_owned_bytes(style: &Style) -> usize {
+    style.details().map_or(0, |details| {
+        std::mem::size_of::<StyleDetails>()
+            + details
+                .accessibility_label
+                .as_ref()
+                .map_or(0, String::capacity)
+            + details
+                .accessibility_description
+                .as_ref()
+                .map_or(0, String::capacity)
+            + details
+                .accessibility_role
+                .as_ref()
+                .map_or(0, String::capacity)
+            + details
+                .accessibility_state
+                .as_ref()
+                .map_or(0, String::capacity)
+            + details
+                .selection_run_id
+                .as_ref()
+                .map_or(0, String::capacity)
+            + details
+                .interaction_paints
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
+            + details
+                .editing_parts
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
+            + details
+                .editing_menu
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
+            + details
+                .scrollbar_parts
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
+    })
+}
+
+fn style_clone_cost(style: &Style) -> (usize, usize) {
+    let allocations = style.details().map_or(0, |details| {
+        1 + [
+            details.accessibility_label.as_ref(),
+            details.accessibility_description.as_ref(),
+            details.accessibility_role.as_ref(),
+            details.accessibility_state.as_ref(),
+            details.selection_run_id.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| value.capacity() != 0)
+        .count()
+            + usize::from(details.interaction_paints.is_some())
+            + usize::from(details.editing_parts.is_some())
+            + usize::from(details.editing_menu.is_some())
+            + usize::from(details.scrollbar_parts.is_some())
+    });
+    (
+        std::mem::size_of::<Style>() + style_owned_bytes(style),
+        allocations,
+    )
+}
+
+fn kind_owned_bytes(kind: &Kind) -> usize {
+    match kind {
+        Kind::Grid {
+            columns: GridColumnSpec::Tracks(tracks),
+        } => tracks.capacity() * std::mem::size_of::<Track>(),
+        Kind::CustomPaintCommands { commands } => {
+            commands.capacity() * std::mem::size_of::<PaintCommand>()
+        }
+        Kind::Text { value, details, .. } => {
+            value.capacity()
+                + details.as_ref().map_or(0, |details| {
+                    std::mem::size_of::<TextDetails>()
+                        + details.input_value.as_ref().map_or(0, String::capacity)
+                        + details
+                            .input_placeholder
+                            .as_ref()
+                            .map_or(0, String::capacity)
+                })
+        }
+        Kind::StyledText(styled) => {
+            std::mem::size_of::<StyledTextKind>()
+                + styled.value.capacity()
+                + styled.spans.capacity() * std::mem::size_of::<StyledTextSpan>()
+        }
+        Kind::Slider { presentation, .. } => presentation
+            .as_ref()
+            .map_or(0, |value| std::mem::size_of_val(value.as_ref())),
+        Kind::Dropdown(dropdown) => {
+            std::mem::size_of::<DropdownKind>()
+                + dropdown.selected.capacity()
+                + dropdown.options.capacity() * std::mem::size_of::<String>()
+                + dropdown.options.iter().map(String::capacity).sum::<usize>()
+                + dropdown
+                    .presentation
+                    .as_ref()
+                    .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
+                + dropdown.details.as_ref().map_or(0, |details| {
+                    std::mem::size_of::<DropdownDetails>()
+                        + details.option_presentations.capacity()
+                            * std::mem::size_of::<DropdownPartStyle>()
+                        + details.resolved_options.capacity()
+                            * std::mem::size_of::<DropdownPartStyle>()
+                        + details.option_icons.capacity()
+                            * std::mem::size_of::<Option<(u16, Arc<RgbaImage>, u64)>>()
+                })
+        }
+        Kind::Flex(_)
+        | Kind::Layer
+        | Kind::VerticalScroll { .. }
+        | Kind::Grid { .. }
+        | Kind::CustomPaint { .. }
+        | Kind::Image { .. } => 0,
+    }
+}
+
+fn kind_clone_cost(kind: &Kind) -> (usize, usize) {
+    let allocated = |capacity: usize| usize::from(capacity != 0);
+    let allocations = match kind {
+        Kind::Grid {
+            columns: GridColumnSpec::Tracks(tracks),
+        } => allocated(tracks.capacity()),
+        Kind::CustomPaintCommands { commands } => allocated(commands.capacity()),
+        Kind::Text { value, details, .. } => {
+            allocated(value.capacity())
+                + details.as_ref().map_or(0, |details| {
+                    1 + details
+                        .input_value
+                        .as_ref()
+                        .map_or(0, |value| allocated(value.capacity()))
+                        + details
+                            .input_placeholder
+                            .as_ref()
+                            .map_or(0, |value| allocated(value.capacity()))
+                })
+        }
+        Kind::StyledText(styled) => {
+            1 + allocated(styled.value.capacity()) + allocated(styled.spans.capacity())
+        }
+        Kind::Slider { presentation, .. } => usize::from(presentation.is_some()),
+        Kind::Dropdown(dropdown) => {
+            1 + allocated(dropdown.selected.capacity())
+                + allocated(dropdown.options.capacity())
+                + dropdown
+                    .options
+                    .iter()
+                    .map(|value| allocated(value.capacity()))
+                    .sum::<usize>()
+                + usize::from(dropdown.presentation.is_some())
+                + dropdown.details.as_ref().map_or(0, |details| {
+                    1 + allocated(details.option_presentations.capacity())
+                        + allocated(details.resolved_options.capacity())
+                        + allocated(details.option_icons.capacity())
+                })
+        }
+        Kind::Flex(_)
+        | Kind::Layer
+        | Kind::VerticalScroll { .. }
+        | Kind::Grid { .. }
+        | Kind::CustomPaint { .. }
+        | Kind::Image { .. } => 0,
+    };
+    (
+        std::mem::size_of::<Kind>() + kind_owned_bytes(kind),
+        allocations,
+    )
+}
+
 #[derive(Default)]
 pub(super) struct TransientStateJournal {
     styles: std::collections::HashMap<UiId, Style>,
     kinds: std::collections::HashMap<UiId, Kind>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
+    whole_payload_clone_bytes: usize,
+    whole_payload_clone_allocations: usize,
 }
 
 impl TransientStateJournal {
@@ -936,6 +1111,29 @@ impl TransientStateJournal {
 
     pub(super) fn kind_count(&self) -> usize {
         self.kinds.len()
+    }
+
+    pub(super) fn whole_payload_clone_bytes(&self) -> usize {
+        self.whole_payload_clone_bytes
+    }
+
+    pub(super) fn whole_payload_clone_allocations(&self) -> usize {
+        self.whole_payload_clone_allocations
+    }
+
+    pub(super) fn storage_bytes(&self) -> usize {
+        self.styles.capacity() * std::mem::size_of::<(UiId, Style)>()
+            + self.kinds.capacity() * std::mem::size_of::<(UiId, Kind)>()
+            + self.phases.capacity()
+                * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
+            + self.styles.values().map(style_owned_bytes).sum::<usize>()
+            + self.kinds.values().map(kind_owned_bytes).sum::<usize>()
+    }
+
+    pub(super) fn table_allocations(&self) -> usize {
+        usize::from(self.styles.capacity() != 0)
+            + usize::from(self.kinds.capacity() != 0)
+            + usize::from(self.phases.capacity() != 0)
     }
 
     pub(super) fn affected_phases(
@@ -1060,6 +1258,12 @@ fn capture_transient_state<Message>(
         if !overlay.styles.contains_key(id) {
             let original = std::mem::take(&mut element.style);
             element.style = original.clone();
+            let (bytes, allocations) = style_clone_cost(&element.style);
+            overlay.whole_payload_clone_bytes =
+                overlay.whole_payload_clone_bytes.saturating_add(bytes);
+            overlay.whole_payload_clone_allocations = overlay
+                .whole_payload_clone_allocations
+                .saturating_add(allocations);
             overlay.styles.insert(id.clone(), original);
         }
     }
@@ -1075,6 +1279,12 @@ fn capture_transient_state<Message>(
         if !overlay.kinds.contains_key(id) {
             let original = std::mem::replace(&mut element.kind, Kind::Layer);
             element.kind = original.clone();
+            let (bytes, allocations) = kind_clone_cost(&element.kind);
+            overlay.whole_payload_clone_bytes =
+                overlay.whole_payload_clone_bytes.saturating_add(bytes);
+            overlay.whole_payload_clone_allocations = overlay
+                .whole_payload_clone_allocations
+                .saturating_add(allocations);
             overlay.kinds.insert(id.clone(), original);
         }
     }
@@ -1782,11 +1992,7 @@ fn flex_bounds<Message>(
             let style = effective_child_style(child, context, index);
             let (intrinsic, min, max) = match axis {
                 Axis::Horizontal => (measured.width, style.min_width, style.max_width),
-                Axis::Vertical => (
-                    measured.height,
-                    style.min_height,
-                    style.max_height,
-                ),
+                Axis::Vertical => (measured.height, style.min_height, style.max_height),
             };
             let parent = match axis {
                 Axis::Horizontal => content.size.width,
@@ -1871,8 +2077,7 @@ fn flex_bounds<Message>(
             Axis::Horizontal => {
                 rect.origin.x += main_offset;
                 let cross = measured.height.min(content.size.height);
-                if alignment != Align::Stretch
-                    || (style.css_paint && style.height != Length::Auto)
+                if alignment != Align::Stretch || (style.css_paint && style.height != Length::Auto)
                 {
                     rect.size.height = cross;
                     rect.origin.y += match alignment {
@@ -1886,9 +2091,7 @@ fn flex_bounds<Message>(
             Axis::Vertical => {
                 rect.origin.y += main_offset;
                 let cross = measured.width.min(content.size.width);
-                if alignment != Align::Stretch
-                    || (style.css_paint && style.width != Length::Auto)
-                {
+                if alignment != Align::Stretch || (style.css_paint && style.width != Length::Auto) {
                     rect.size.width = cross;
                     rect.origin.x += match alignment {
                         Align::Center => (content.size.width - cross) / 2.0,

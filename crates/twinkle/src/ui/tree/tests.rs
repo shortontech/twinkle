@@ -1190,6 +1190,10 @@ fn transient_overlay_restores_canonical_declaration_before_publication() {
     let resources = frame.resource_diagnostics();
     assert_eq!(resources.transient_declaration_nodes_cloned, 0);
     assert!(resources.transient_style_overlay_count > 0);
+    assert!(resources.transient_whole_payload_clone_bytes >= std::mem::size_of::<Style>());
+    assert!(resources.transient_whole_payload_clone_allocations > 0);
+    assert!(resources.transient_overlay_storage_bytes > 0);
+    assert!(resources.transient_overlay_table_allocations > 0);
 }
 
 #[test]
