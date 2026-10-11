@@ -1469,6 +1469,8 @@ pub(super) fn transient_dirty_phases<Message>(
         || effective_style.overflow_y != canonical.style.overflow_y
         || effective_style.absolute_position != canonical.style.absolute_position
         || effective_style.follow_scroll_end != canonical.style.follow_scroll_end
+        || effective_style.scroll_offset_x.to_bits() != canonical.style.scroll_offset_x.to_bits()
+        || effective_style.scroll_offset.to_bits() != canonical.style.scroll_offset.to_bits()
     {
         dirty.insert(DirtyPhases::PLACE);
     }
@@ -2651,6 +2653,13 @@ mod tests {
         measure_style.width = Length::Px(40.0);
         let measure = transient_dirty_phases(&canonical, &measure_style, &canonical.kind);
         assert!(measure.contains(DirtyPhases::MEASURE));
+
+        let mut placement_style = canonical.style.clone();
+        placement_style.scroll_offset = 12.0;
+        let placement = transient_dirty_phases(&canonical, &placement_style, &canonical.kind);
+        assert!(placement.contains(DirtyPhases::PLACE));
+        assert!(!placement.contains(DirtyPhases::MEASURE));
+        assert!(!placement.contains(DirtyPhases::PAINT));
 
         let mut semantic_style = canonical.style.clone();
         semantic_style.accessibility_state = Some("busy".into());
