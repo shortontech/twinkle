@@ -7,8 +7,8 @@ mod scrollbar;
 mod selection;
 use emission::{EmissionPhases, emit_element};
 use layout::{
-    apply_transient_state, explicit_px, layout_element, resolve_grid_columns,
-    scale_explicit_geometry,
+    TransientStateJournal, apply_transient_state, apply_transient_state_staged, explicit_px,
+    layout_element, resolve_grid_columns, scale_explicit_geometry,
 };
 pub use scrollbar::ScrollExtent;
 #[cfg(test)]
@@ -536,6 +536,14 @@ pub struct FrameResourceDiagnostics {
     pub declaration_navigation_sidecar_count: usize,
     /// Inline payload bytes of navigation-scope declarations.
     pub declaration_navigation_sidecar_bytes: usize,
+    /// Declaration nodes deep-cloned solely to stage transient state. Ordinary
+    /// resolution keeps this at zero by journaling only mutated style/kind
+    /// payloads and restoring the canonical declaration before publication.
+    pub transient_declaration_nodes_cloned: usize,
+    /// Canonical style payloads journaled while transient state is active.
+    pub transient_style_overlay_count: usize,
+    /// Canonical kind payloads journaled while transient state is active.
+    pub transient_kind_overlay_count: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
     /// Number of resolved nodes with optional grid, scroll, navigation,
@@ -725,6 +733,8 @@ pub struct UiFrame<Message = String> {
     semantic_nodes_reused: usize,
     declaration_root: Option<Element<Message>>,
     declaration_root_id: Option<UiId>,
+    transient_style_overlay_count: usize,
+    transient_kind_overlay_count: usize,
     pointer_position_affects_geometry: bool,
     commands: Vec<PaintCommand>,
     paint_fragments: Vec<PaintFragment>,
@@ -794,6 +804,8 @@ impl<Message> Default for UiFrame<Message> {
             semantic_nodes_reused: 0,
             declaration_root: None,
             declaration_root_id: None,
+            transient_style_overlay_count: 0,
+            transient_kind_overlay_count: 0,
             pointer_position_affects_geometry: false,
             commands: Vec::new(),
             paint_fragments: Vec::new(),
@@ -877,6 +889,43 @@ fn pointer_position_affects_geometry<Message>(element: &Element<Message>) -> boo
             .children
             .iter()
             .any(pointer_position_affects_geometry)
+}
+
+fn compact_kind_capacity(kind: &mut Kind) {
+    match kind {
+        Kind::Grid {
+            columns: GridColumnSpec::Tracks(tracks),
+        } => tracks.shrink_to_fit(),
+        Kind::CustomPaintCommands { commands } => commands.shrink_to_fit(),
+        Kind::StyledText { value, spans, .. } => {
+            value.shrink_to_fit();
+            spans.shrink_to_fit();
+        }
+        Kind::Text { value, details, .. } => {
+            value.shrink_to_fit();
+            if let Some(details) = details {
+                if let Some(value) = &mut details.input_value {
+                    value.shrink_to_fit();
+                }
+                if let Some(placeholder) = &mut details.input_placeholder {
+                    placeholder.shrink_to_fit();
+                }
+            }
+        }
+        Kind::Dropdown(dropdown) => {
+            dropdown.selected.shrink_to_fit();
+            for option in &mut dropdown.options {
+                option.shrink_to_fit();
+            }
+            dropdown.options.shrink_to_fit();
+            if let Some(details) = &mut dropdown.details {
+                details.option_presentations.shrink_to_fit();
+                details.resolved_options.shrink_to_fit();
+                details.option_icons.shrink_to_fit();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn declared_child_matches(relative_target: &str, explicit_id: Option<&UiId>, index: usize) -> bool {
@@ -2093,20 +2142,21 @@ impl<Message: Clone> UiFrame<Message> {
         changed_view_ids: Option<&[UiId]>,
     ) -> Self {
         let mut root = root.into_element();
-        let declaration_root = root.clone();
         let root_id = root.id.as_ref().map_or_else(
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
         );
+        let pointer_position_affects_geometry = pointer_position_affects_geometry(&root);
         state.begin_frame();
         state.begin_geometry_animation_frame();
-        apply_transient_state(&mut root, &root_id, state);
+        let mut transient_overlay = TransientStateJournal::default();
+        apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
         let mut tree = Self {
             // This property belongs to the immutable declaration, not the
             // pointer position. Re-evaluating it on motion walks offscreen and
             // unrelated descendants even when the frame remains unchanged.
-            pointer_position_affects_geometry: pointer_position_affects_geometry(&declaration_root),
-            declaration_root: Some(declaration_root),
+            pointer_position_affects_geometry,
+            declaration_root: None,
             declaration_root_id: Some(root_id.clone()),
             diagnostics_enabled: diagnostics,
             viewport: bounds,
@@ -2195,7 +2245,7 @@ impl<Message: Clone> UiFrame<Message> {
             && state.navigation().controller_selected().is_none()
         {
             state.set_focus(Some(initial));
-            apply_transient_state(&mut root, &root_id, state);
+            apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
         }
         tree.selection_regions = collect_selection_regions(&root, &tree.resolved);
         for region in &tree.selection_regions {
@@ -2261,6 +2311,12 @@ impl<Message: Clone> UiFrame<Message> {
         let live = &tree.resolved_indices;
         tree.retained_layout.retain(|id, _| live.contains_key(id));
         tree.retained_nodes.commit_frame();
+        tree.transient_style_overlay_count = transient_overlay.style_count();
+        tree.transient_kind_overlay_count = transient_overlay.kind_count();
+        if !transient_overlay.is_empty() {
+            transient_overlay.restore(&mut root, &root_id);
+        }
+        tree.declaration_root = Some(root);
         tree.release_build_scratch();
         tree
     }
@@ -4011,6 +4067,9 @@ impl<Message: Clone> UiFrame<Message> {
             declaration_style_sidecar_bytes,
             declaration_navigation_sidecar_count,
             declaration_navigation_sidecar_bytes,
+            transient_declaration_nodes_cloned: 0,
+            transient_style_overlay_count: self.transient_style_overlay_count,
+            transient_kind_overlay_count: self.transient_kind_overlay_count,
             resolved_storage_bytes,
             resolved_sidecar_count,
             resolved_sidecar_bytes,

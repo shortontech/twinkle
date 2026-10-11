@@ -878,6 +878,131 @@ pub(super) fn apply_transient_state<Message>(
     apply_transient_state_with_parent(element, id, state, None);
 }
 
+#[derive(Default)]
+pub(super) struct TransientStateJournal {
+    styles: std::collections::HashMap<UiId, Style>,
+    kinds: std::collections::HashMap<UiId, Kind>,
+}
+
+impl TransientStateJournal {
+    pub(super) fn is_empty(&self) -> bool {
+        self.styles.is_empty() && self.kinds.is_empty()
+    }
+
+    pub(super) fn style_count(&self) -> usize {
+        self.styles.len()
+    }
+
+    pub(super) fn kind_count(&self) -> usize {
+        self.kinds.len()
+    }
+
+    pub(super) fn restore<Message>(mut self, element: &mut Element<Message>, id: &UiId) {
+        self.restore_tree(element, id);
+        debug_assert!(self.styles.is_empty());
+        debug_assert!(self.kinds.is_empty());
+    }
+
+    fn restore_tree<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
+        for (index, child) in element.children.iter_mut().enumerate() {
+            let child_id = resolved_child_id(id, child, index);
+            self.restore_tree(child, &child_id);
+        }
+        self.restore_node(element, id);
+    }
+
+    fn restore_node<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
+        if let Some(style) = self.styles.remove(id) {
+            element.style = style;
+        }
+        if let Some(kind) = self.kinds.remove(id) {
+            element.kind = kind;
+        }
+        compact_kind_capacity(&mut element.kind);
+    }
+}
+
+pub(super) fn apply_transient_state_staged<Message>(
+    element: &mut Element<Message>,
+    id: &UiId,
+    state: &mut UiStateStore,
+    overlay: &mut TransientStateJournal,
+) {
+    capture_transient_state(element, id, state, None, false, false, overlay);
+    apply_transient_state(element, id, state);
+}
+
+fn capture_transient_state<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &UiStateStore,
+    parent_interaction: Option<usize>,
+    inherited_text_paint: bool,
+    inherited_geometry: bool,
+    overlay: &mut TransientStateJournal,
+) {
+    let direct_interaction = if state.pressed() == Some(id) {
+        Some(1)
+    } else if state.window_focused()
+        && (state.focused() == Some(id) || state.navigation().controller_selected() == Some(id))
+    {
+        Some(2)
+    } else if state.hovered() == Some(id) {
+        Some(0)
+    } else {
+        None
+    };
+    let interaction_index = if element.style.parent_interaction {
+        parent_interaction.or(direct_interaction)
+    } else {
+        direct_interaction
+    };
+    let owns_state = element.style.parent_interaction
+        || element.primary_message().is_some()
+        || element.navigation_scope.is_some()
+        || element.text_mapper.is_some()
+        || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
+        || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
+        || matches!(
+            element.kind,
+            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
+        );
+    if owns_state || inherited_text_paint || inherited_geometry {
+        overlay
+            .styles
+            .entry(id.clone())
+            .or_insert_with(|| element.style.clone());
+    }
+    if element.text_mapper.is_some()
+        || matches!(
+            element.kind,
+            Kind::VerticalScroll { .. }
+                | Kind::Slider { .. }
+                | Kind::Dropdown(_)
+                | Kind::Text { .. }
+        ) && (owns_state || inherited_text_paint)
+    {
+        overlay
+            .kinds
+            .entry(id.clone())
+            .or_insert_with(|| element.kind.clone());
+    }
+    let child_text_paint = inherited_text_paint || interaction_index.is_some();
+    let child_geometry = inherited_geometry || element.style.proximity_magnification.is_some();
+    for (index, child) in element.children.iter().enumerate() {
+        let child_id = resolved_child_id(id, child, index);
+        capture_transient_state(
+            child,
+            &child_id,
+            state,
+            interaction_index,
+            child_text_paint,
+            child_geometry,
+            overlay,
+        );
+    }
+}
+
 fn apply_transient_state_with_parent<Message>(
     element: &mut Element<Message>,
     id: &UiId,
@@ -1350,6 +1475,13 @@ fn apply_transient_state_with_parent<Message>(
             direct_interaction.or(parent_interaction),
         );
     }
+    // The application just built this declaration and relinquishes it after
+    // resolution. Normalize common builder over-allocation in the traversal
+    // already required for transient state instead of walking the tree again.
+    element.children.shrink_to_fit();
+    element.option_messages.shrink_to_fit();
+    element.inline_messages.shrink_to_fit();
+    compact_kind_capacity(&mut element.kind);
 }
 
 pub(super) fn scale_explicit_geometry<Message>(element: &mut Element<Message>, scale: f32) {

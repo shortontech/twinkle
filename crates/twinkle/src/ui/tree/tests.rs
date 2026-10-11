@@ -1063,7 +1063,7 @@ fn unchanged_paint_refresh_does_not_clone_declaration_messages() {
 }
 
 #[test]
-fn consuming_rebuild_transfers_the_old_declaration_and_clones_messages_once() {
+fn consuming_rebuild_transfers_declaration_without_staging_message_clone() {
     struct CountedMessage(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl Clone for CountedMessage {
         fn clone(&self) -> Self {
@@ -1093,10 +1093,15 @@ fn consuming_rebuild_transfers_the_old_declaration_and_clones_messages_once() {
         &mut previous,
     );
 
-    // One clone separates retained/working declarations; hit and message
-    // output authority account for the other two clones.
-    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 3);
+    // Hit and message output authority account for both clones. Transient
+    // staging no longer clones the declaration or its message payload.
+    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 2);
     assert!(next.declaration_root.is_some());
+    assert_eq!(
+        next.resource_diagnostics()
+            .transient_declaration_nodes_cloned,
+        0
+    );
 }
 
 #[test]
@@ -1131,8 +1136,46 @@ fn transactional_rebuild_clones_without_consuming_the_published_declaration() {
         &previous,
     );
 
-    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 3);
+    // The explicit snapshot clone above preserves the published frame; staging
+    // itself adds no declaration-message clone beyond its two output records.
+    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 2);
     assert!(previous.declaration_root.is_some());
+}
+
+#[test]
+fn transient_overlay_restores_canonical_declaration_before_publication() {
+    let mut state = UiStateStore::default();
+    state.set_hovered(Some(UiId::from("root/button")));
+    let frame = UiFrame::resolve(
+        Container::<TestMessage>::new()
+            .id("button")
+            .background(0x112233)
+            .hover_background(0x445566)
+            .message(TestMessage::Named("activate")),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+
+    assert!(frame.commands().iter().any(|command| matches!(
+        command,
+        PaintCommand::Fill {
+            color: 0x445566,
+            ..
+        } | PaintCommand::RoundedFill {
+            color: 0x445566,
+            ..
+        }
+    )));
+    let declaration = frame
+        .declaration_root
+        .as_ref()
+        .expect("canonical declaration retained");
+    assert_eq!(
+        declaration.style.background,
+        Some(Background::Solid(0x112233))
+    );
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_declaration_nodes_cloned, 0);
+    assert!(resources.transient_style_overlay_count > 0);
 }
 
 fn legacy_is_descendant_or_self<Message: Clone>(
