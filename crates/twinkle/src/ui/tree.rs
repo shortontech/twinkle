@@ -291,7 +291,13 @@ pub struct InteractionState {
     pub controller_selected: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+/// Resolved common geometry and identity for one UI node.
+///
+/// Optional navigation, scrolling, grid, interaction-index and semantic data
+/// live in a lazily allocated [`ResolvedNodeDetails`] sidecar. Direct field
+/// access remains available through deref; exhaustive struct literals are an
+/// intentional 0.2 representation boundary.
 pub struct ResolvedNode {
     pub component: &'static str,
     pub id: UiId,
@@ -306,10 +312,17 @@ pub struct ResolvedNode {
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub clip: Option<Rect>,
+    pub interaction: InteractionState,
+    pub children: Vec<usize>,
+    details: Option<Box<ResolvedNodeDetails>>,
+}
+
+/// Lazily allocated uncommon state associated with a [`ResolvedNode`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedNodeDetails {
     pub scroll: Option<ScrollExtent>,
     pub grid_tracks: Vec<f32>,
     pub hit_stack: Option<usize>,
-    pub interaction: InteractionState,
     pub auto_focus: bool,
     pub navigation_scope: Option<crate::NavigationScope>,
     pub virtual_navigation: Option<super::VirtualNavigation>,
@@ -324,7 +337,90 @@ pub struct ResolvedNode {
     pub semantic_role: Option<SemanticRole>,
     pub semantic_actions: Vec<ActionKind>,
     pub semantic_value: Option<SemanticValueSnapshot>,
-    pub children: Vec<usize>,
+}
+
+impl Default for ResolvedNodeDetails {
+    fn default() -> Self {
+        Self {
+            scroll: None,
+            grid_tracks: Vec::new(),
+            hit_stack: None,
+            auto_focus: false,
+            navigation_scope: None,
+            virtual_navigation: None,
+            adjustment_step: 0.05,
+            controller_value: None,
+            accessibility_label: None,
+            accessibility_description: None,
+            accessibility_role: None,
+            accessibility_state: None,
+            accessibility_controls: None,
+            accessibility_hidden: false,
+            semantic_role: None,
+            semantic_actions: Vec::new(),
+            semantic_value: None,
+        }
+    }
+}
+
+impl ResolvedNodeDetails {
+    fn compact(details: Self) -> Option<Box<Self>> {
+        (details != Self::default()).then(|| Box::new(details))
+    }
+}
+
+impl ResolvedNode {
+    fn details(&self) -> Option<&ResolvedNodeDetails> {
+        self.details.as_deref()
+    }
+
+    fn clear_hit_stack(&mut self) {
+        if let Some(details) = self.details.as_deref_mut() {
+            details.hit_stack = None;
+            if *details == ResolvedNodeDetails::default() {
+                self.details = None;
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for ResolvedNode {
+    type Target = ResolvedNodeDetails;
+
+    fn deref(&self) -> &Self::Target {
+        static DEFAULT: std::sync::OnceLock<ResolvedNodeDetails> = std::sync::OnceLock::new();
+        self.details
+            .as_deref()
+            .unwrap_or_else(|| DEFAULT.get_or_init(ResolvedNodeDetails::default))
+    }
+}
+
+impl std::ops::DerefMut for ResolvedNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.details
+            .get_or_insert_with(|| Box::new(ResolvedNodeDetails::default()))
+    }
+}
+
+impl PartialEq for ResolvedNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.component == other.component
+            && self.id == other.id
+            && self.source == other.source
+            && self.allocated == other.allocated
+            && self.padding_box == other.padding_box
+            && self.border_box == other.border_box
+            && self.content == other.content
+            && self.constraints == other.constraints
+            && self.preferred == other.preferred
+            && self.flex_basis == other.flex_basis
+            && self.flex_grow == other.flex_grow
+            && self.flex_shrink == other.flex_shrink
+            && self.clip == other.clip
+            && self.interaction == other.interaction
+            && self.children == other.children
+            && **self == **other
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -442,6 +538,12 @@ pub struct FrameResourceDiagnostics {
     pub declaration_navigation_sidecar_bytes: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
+    /// Number of resolved nodes with optional grid, scroll, navigation,
+    /// interaction-index, or semantic state stored out of line.
+    pub resolved_sidecar_count: usize,
+    /// Inline payload bytes of resolved-node sidecars, excluding nested owned
+    /// vectors and strings which are included in `resolved_storage_bytes`.
+    pub resolved_sidecar_bytes: usize,
     /// Retained reconciliation arena storage, including cached paint buffers.
     pub retained_arena_bytes: usize,
     /// Accessibility records and their directly owned strings/action buffers.
@@ -1032,34 +1134,27 @@ impl<Message: Clone> UiFrame<Message> {
             flex_grow: 0.0,
             flex_shrink: 0.0,
             clip: None,
-            scroll: None,
-            grid_tracks: Vec::new(),
-            hit_stack: None,
             interaction: InteractionState::default(),
-            auto_focus: false,
-            virtual_navigation: None,
-            navigation_scope: Some(crate::NavigationScope::group()),
-            adjustment_step: 0.05,
-            controller_value: None,
-            accessibility_label: surface
-                .accessible_name
-                .clone()
-                .or_else(|| Some(format!("{:?}", surface.kind))),
-            accessibility_description: None,
-            accessibility_role: role.map(|role| role.as_str().into()),
-            accessibility_state: Some("expanded".into()),
-            accessibility_controls: Some(surface.anchor.id().clone()),
-            accessibility_hidden: false,
-            semantic_role: role,
-            semantic_actions: [
-                surface.dismiss.action.then_some(ActionKind::Dismiss),
-                surface.dismiss.cancel.then_some(ActionKind::Cancel),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-            semantic_value: None,
             children: Vec::new(),
+            details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
+                navigation_scope: Some(crate::NavigationScope::group()),
+                accessibility_label: surface
+                    .accessible_name
+                    .clone()
+                    .or_else(|| Some(format!("{:?}", surface.kind))),
+                accessibility_role: role.map(|role| role.as_str().into()),
+                accessibility_state: Some("expanded".into()),
+                accessibility_controls: Some(surface.anchor.id().clone()),
+                semantic_role: role,
+                semantic_actions: [
+                    surface.dismiss.action.then_some(ActionKind::Dismiss),
+                    surface.dismiss.cancel.then_some(ActionKind::Cancel),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+                ..ResolvedNodeDetails::default()
+            }),
         });
         if let Some(root) = self.resolved.nodes.first_mut() {
             root.children.push(index);
@@ -1400,30 +1495,25 @@ impl<Message: Clone> UiFrame<Message> {
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
                 clip: Some(rect),
-                scroll: None,
-                grid_tracks: Vec::new(),
-                hit_stack: Some(self.hits.len()),
                 interaction,
-                auto_focus: false,
-                virtual_navigation: None,
-                navigation_scope: (!item.children.is_empty()).then(|| {
-                    crate::NavigationScope::group().traversal(crate::NavigationTraversal::Vertical)
-                }),
-                adjustment_step: 0.05,
-                controller_value: None,
-                accessibility_label: Some(item.label.clone()),
-                accessibility_description: None,
-                accessibility_role: Some(SemanticRole::MenuItem.as_str().into()),
-                accessibility_state: None,
-                accessibility_controls: (!item.children.is_empty()).then(|| id.scoped("submenu")),
-                accessibility_hidden: false,
-                semantic_role: Some(SemanticRole::MenuItem),
-                semantic_actions: enabled
-                    .then_some(ActionKind::Activate)
-                    .into_iter()
-                    .collect(),
-                semantic_value: None,
                 children: Vec::new(),
+                details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
+                    hit_stack: Some(self.hits.len()),
+                    navigation_scope: (!item.children.is_empty()).then(|| {
+                        crate::NavigationScope::group()
+                            .traversal(crate::NavigationTraversal::Vertical)
+                    }),
+                    accessibility_label: Some(item.label.clone()),
+                    accessibility_role: Some(SemanticRole::MenuItem.as_str().into()),
+                    accessibility_controls: (!item.children.is_empty())
+                        .then(|| id.scoped("submenu")),
+                    semantic_role: Some(SemanticRole::MenuItem),
+                    semantic_actions: enabled
+                        .then_some(ActionKind::Activate)
+                        .into_iter()
+                        .collect(),
+                    ..ResolvedNodeDetails::default()
+                }),
             });
             self.resolved.nodes[menu_index].children.push(item_index);
             self.hits.push(HitRegion {
@@ -1512,27 +1602,16 @@ impl<Message: Clone> UiFrame<Message> {
             flex_grow: 0.0,
             flex_shrink: 0.0,
             clip: None,
-            scroll: None,
-            grid_tracks: Vec::new(),
-            hit_stack: None,
             interaction: InteractionState::default(),
-            auto_focus: false,
-            virtual_navigation: None,
-            navigation_scope: Some(
-                crate::NavigationScope::group().traversal(crate::NavigationTraversal::Vertical),
-            ),
-            adjustment_step: 0.05,
-            controller_value: None,
-            accessibility_label: None,
-            accessibility_description: None,
-            accessibility_role: Some(SemanticRole::Menu.as_str().into()),
-            accessibility_state: None,
-            accessibility_controls: None,
-            accessibility_hidden: false,
-            semantic_role: Some(SemanticRole::Menu),
-            semantic_actions: Vec::new(),
-            semantic_value: None,
             children: Vec::with_capacity(children.len()),
+            details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
+                navigation_scope: Some(
+                    crate::NavigationScope::group().traversal(crate::NavigationTraversal::Vertical),
+                ),
+                accessibility_role: Some(SemanticRole::Menu.as_str().into()),
+                semantic_role: Some(SemanticRole::Menu),
+                ..ResolvedNodeDetails::default()
+            }),
         });
         self.resolved.nodes[parent_index]
             .children
@@ -1662,25 +1741,14 @@ impl<Message: Clone> UiFrame<Message> {
             flex_grow: 0.0,
             flex_shrink: 0.0,
             clip: None,
-            scroll: None,
-            grid_tracks: Vec::new(),
-            hit_stack: None,
             interaction: InteractionState::default(),
-            auto_focus: false,
-            virtual_navigation: None,
-            navigation_scope: Some(crate::NavigationScope::group()),
-            adjustment_step: 0.05,
-            controller_value: None,
-            accessibility_label: None,
-            accessibility_description: None,
-            accessibility_role: Some(SemanticRole::Menu.as_str().into()),
-            accessibility_state: None,
-            accessibility_controls: None,
-            accessibility_hidden: false,
-            semantic_role: Some(SemanticRole::Menu),
-            semantic_actions: Vec::new(),
-            semantic_value: None,
             children: Vec::with_capacity(item_count),
+            details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
+                navigation_scope: Some(crate::NavigationScope::group()),
+                accessibility_role: Some(SemanticRole::Menu.as_str().into()),
+                semantic_role: Some(SemanticRole::Menu),
+                ..ResolvedNodeDetails::default()
+            }),
         });
         self.accessibility.push(AccessibilityDescriptor {
             resolved_index: menu_index,
@@ -3762,6 +3830,13 @@ impl<Message: Clone> UiFrame<Message> {
                 projection.capacity() * std::mem::size_of::<AccessibilityNode>()
             })
             + self.resolved.nodes.capacity() * std::mem::size_of::<ResolvedNode>()
+            + self
+                .resolved
+                .nodes
+                .iter()
+                .filter(|node| node.details().is_some())
+                .count()
+                * std::mem::size_of::<ResolvedNodeDetails>()
             + self.diagnostics.capacity() * std::mem::size_of::<LayoutDiagnostic>()
     }
 
@@ -3807,8 +3882,17 @@ impl<Message: Clone> UiFrame<Message> {
             .declaration_root
             .as_ref()
             .map_or((0, 0), Self::declaration_navigation_sidecars);
+        let resolved_sidecar_count = self
+            .resolved
+            .nodes
+            .iter()
+            .filter(|node| node.details().is_some())
+            .count();
+        let resolved_sidecar_bytes =
+            resolved_sidecar_count.saturating_mul(std::mem::size_of::<ResolvedNodeDetails>());
         let resolved_storage_bytes = self.resolved.nodes.capacity()
             * std::mem::size_of::<ResolvedNode>()
+            + resolved_sidecar_bytes
             + self
                 .resolved
                 .nodes
@@ -3920,6 +4004,8 @@ impl<Message: Clone> UiFrame<Message> {
             declaration_navigation_sidecar_count,
             declaration_navigation_sidecar_bytes,
             resolved_storage_bytes,
+            resolved_sidecar_count,
+            resolved_sidecar_bytes,
             retained_arena_bytes,
             accessibility_storage_bytes,
             accessibility_projection_bytes,
@@ -7406,7 +7492,7 @@ impl<Message: Clone> UiFrame<Message> {
         self.focus_messages.clear();
         self.text_inputs.clear();
         for node in &mut self.resolved.nodes {
-            node.hit_stack = None;
+            node.clear_hit_stack();
         }
     }
 

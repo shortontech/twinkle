@@ -319,6 +319,8 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
                 "declarationStyleSidecarBytes": resources.declaration_style_sidecar_bytes,
                 "declarationNavigationSidecars": resources.declaration_navigation_sidecar_count,
                 "declarationNavigationSidecarBytes": resources.declaration_navigation_sidecar_bytes,
+                "resolvedSidecars": resources.resolved_sidecar_count,
+                "resolvedSidecarBytes": resources.resolved_sidecar_bytes,
                 "accessibilityProjectionBytes": resources.accessibility_projection_bytes,
                 "estimatedOwnedBytes": resources.estimated_owned_bytes,
             },

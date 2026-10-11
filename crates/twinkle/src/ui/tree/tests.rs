@@ -1628,6 +1628,8 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
 #[test]
 #[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 fn accessibility_projection_is_compact_and_materialized_only_on_demand() {
+    assert_eq!(std::mem::size_of::<super::ResolvedNode>(), 240);
+    assert_eq!(std::mem::size_of::<super::ResolvedNodeDetails>(), 416);
     assert_eq!(std::mem::size_of::<super::AccessibilityDescriptor>(), 72);
     assert_eq!(std::mem::size_of::<super::AccessibilityNode>(), 280);
 
@@ -1652,6 +1654,19 @@ fn accessibility_projection_is_compact_and_materialized_only_on_demand() {
         after.accessibility_storage_bytes,
         before.accessibility_storage_bytes + after.accessibility_projection_bytes
     );
+}
+
+#[test]
+fn ordinary_layout_nodes_do_not_allocate_resolved_sidecars() {
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        Container::<TestMessage>::new().child(Container::new()),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+
+    assert_eq!(resources.resolved_sidecar_count, 0);
+    assert_eq!(resources.resolved_sidecar_bytes, 0);
 }
 
 #[test]

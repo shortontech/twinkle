@@ -90,6 +90,54 @@ pub(super) fn layout_element<Message: Clone>(
     let semantic_hidden = element.style.accessibility_hidden
         || element.style.semantic_decorative
         || missing_accessible_name;
+    let semantic_actions = {
+        let mut actions = Vec::new();
+        if !missing_accessible_name {
+            if let Kind::Slider { value, .. } = &element.kind
+                && (element.message_mapper.is_some() || element.seeded_value_mapper.is_some())
+            {
+                if *value < 1.0 {
+                    actions.push(ActionKind::Increment);
+                }
+                if *value > 0.0 {
+                    actions.push(ActionKind::Decrement);
+                }
+                actions.push(ActionKind::SetValue);
+            } else if element.text_mapper.is_some() {
+                actions.push(ActionKind::SetValue);
+            } else if element.primary_message().is_some() && !is_scroll_container(element) {
+                actions.push(ActionKind::Activate);
+            }
+            if element.declared_context_message().is_some() {
+                actions.push(ActionKind::ContextMenu);
+            }
+        }
+        actions
+    };
+    let semantic_value = match &element.kind {
+        Kind::Slider { value, .. } => Some(SemanticValueSnapshot::Number {
+            value: f64::from(*value),
+            minimum: 0.0,
+            maximum: 1.0,
+            step: f64::from(element.adjustment_step),
+        }),
+        Kind::Text {
+            details: Some(details),
+            ..
+        } if details.input_value.is_some() && details.input_mask.is_some() => {
+            Some(SemanticValueSnapshot::ProtectedText {
+                character_count: details.input_value.as_ref().unwrap().chars().count(),
+            })
+        }
+        Kind::Text {
+            details: Some(details),
+            ..
+        } if details.input_value.is_some() => Some(SemanticValueSnapshot::Text(
+            details.input_value.as_ref().unwrap().clone(),
+        )),
+        Kind::Dropdown(dropdown) => Some(SemanticValueSnapshot::Text(dropdown.selected.clone())),
+        _ => None,
+    };
     tree.resolved.nodes.push(ResolvedNode {
         component: element.kind.name(),
         id: id.clone(),
@@ -107,79 +155,28 @@ pub(super) fn layout_element<Message: Clone>(
         flex_grow: element.style.grow,
         flex_shrink: element.style.shrink,
         clip: inherited_clip,
-        scroll: None,
-        grid_tracks: Vec::new(),
-        hit_stack: None,
         interaction,
-        auto_focus: element.style.auto_focus,
-        navigation_scope: element.navigation_scope.as_deref().cloned(),
-        virtual_navigation: element.virtual_navigation.clone(),
-        adjustment_step: element.adjustment_step,
-        controller_value: match &element.kind {
-            Kind::Slider { value, .. } => Some(*value),
-            _ => None,
-        },
-        accessibility_label: derived_accessible_name,
-        accessibility_description: element.style.accessibility_description.clone(),
-        accessibility_role: element.style.accessibility_role.clone(),
-        accessibility_state: element.style.accessibility_state.clone(),
-        accessibility_controls: element.style.accessibility_controls.clone(),
-        accessibility_hidden: semantic_hidden,
-        semantic_role,
-        semantic_actions: {
-            let mut actions = Vec::new();
-            if missing_accessible_name {
-                actions.clear();
-                actions
-            } else {
-                if let Kind::Slider { value, .. } = &element.kind
-                    && (element.message_mapper.is_some() || element.seeded_value_mapper.is_some())
-                {
-                    if *value < 1.0 {
-                        actions.push(ActionKind::Increment);
-                    }
-                    if *value > 0.0 {
-                        actions.push(ActionKind::Decrement);
-                    }
-                    actions.push(ActionKind::SetValue);
-                } else if element.text_mapper.is_some() {
-                    actions.push(ActionKind::SetValue);
-                } else if element.primary_message().is_some() && !is_scroll_container(element) {
-                    actions.push(ActionKind::Activate);
-                }
-                if element.declared_context_message().is_some() {
-                    actions.push(ActionKind::ContextMenu);
-                }
-                actions
-            }
-        },
-        semantic_value: match &element.kind {
-            Kind::Slider { value, .. } => Some(SemanticValueSnapshot::Number {
-                value: f64::from(*value),
-                minimum: 0.0,
-                maximum: 1.0,
-                step: f64::from(element.adjustment_step),
-            }),
-            Kind::Text {
-                details: Some(details),
-                ..
-            } if details.input_value.is_some() && details.input_mask.is_some() => {
-                Some(SemanticValueSnapshot::ProtectedText {
-                    character_count: details.input_value.as_ref().unwrap().chars().count(),
-                })
-            }
-            Kind::Text {
-                details: Some(details),
-                ..
-            } if details.input_value.is_some() => Some(SemanticValueSnapshot::Text(
-                details.input_value.as_ref().unwrap().clone(),
-            )),
-            Kind::Dropdown(dropdown) => {
-                Some(SemanticValueSnapshot::Text(dropdown.selected.clone()))
-            }
-            _ => None,
-        },
         children: Vec::new(),
+        details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
+            auto_focus: element.style.auto_focus,
+            navigation_scope: element.navigation_scope.as_deref().cloned(),
+            virtual_navigation: element.virtual_navigation.clone(),
+            adjustment_step: element.adjustment_step,
+            controller_value: match &element.kind {
+                Kind::Slider { value, .. } => Some(*value),
+                _ => None,
+            },
+            accessibility_label: derived_accessible_name,
+            accessibility_description: element.style.accessibility_description.clone(),
+            accessibility_role: element.style.accessibility_role.clone(),
+            accessibility_state: element.style.accessibility_state.clone(),
+            accessibility_controls: element.style.accessibility_controls.clone(),
+            accessibility_hidden: semantic_hidden,
+            semantic_role,
+            semantic_actions,
+            semantic_value,
+            ..ResolvedNodeDetails::default()
+        }),
     });
     if missing_accessible_name {
         tree.diagnostic(

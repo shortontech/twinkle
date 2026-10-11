@@ -1212,29 +1212,19 @@ pub(super) fn emit_element<Message: Clone>(
                         flex_grow: 0.0,
                         flex_shrink: 0.0,
                         clip: node.clip,
-                        scroll: None,
-                        grid_tracks: Vec::new(),
-                        hit_stack: None,
                         interaction: InteractionState::default(),
-                        auto_focus: false,
-                        virtual_navigation: None,
-                        navigation_scope: None,
-                        adjustment_step: 0.05,
-                        controller_value: None,
-                        accessibility_label: Some(option.clone()),
-                        accessibility_description: None,
-                        accessibility_role: Some(SemanticRole::MenuItem.as_str().into()),
-                        accessibility_state: None,
-                        accessibility_controls: None,
-                        accessibility_hidden: false,
-                        semantic_role: Some(SemanticRole::MenuItem),
-                        semantic_actions: message
-                            .is_some()
-                            .then_some(ActionKind::Activate)
-                            .into_iter()
-                            .collect(),
-                        semantic_value: None,
                         children: Vec::new(),
+                        details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
+                            accessibility_label: Some(option.clone()),
+                            accessibility_role: Some(SemanticRole::MenuItem.as_str().into()),
+                            semantic_role: Some(SemanticRole::MenuItem),
+                            semantic_actions: message
+                                .is_some()
+                                .then_some(ActionKind::Activate)
+                                .into_iter()
+                                .collect(),
+                            ..ResolvedNodeDetails::default()
+                        }),
                     });
                     tree.resolved.nodes[node_index].children.push(option_node);
                     if let Some(message) = &message {
