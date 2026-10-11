@@ -352,7 +352,7 @@ fn kind_tag(kind: &Kind) -> KindTag {
         Kind::Grid { .. } => KindTag::Grid,
         Kind::CustomPaint { .. } | Kind::CustomPaintCommands { .. } => KindTag::CustomPaint,
         Kind::Text { .. } => KindTag::Text,
-        Kind::StyledText { .. } => KindTag::StyledText,
+        Kind::StyledText(_) => KindTag::StyledText,
         Kind::Image { .. } => KindTag::Image,
         Kind::Slider { .. } => KindTag::Slider,
         Kind::Dropdown(_) => KindTag::Dropdown,
@@ -432,20 +432,13 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
             );
             paint.add(&details.as_ref().and_then(|details| details.input_mask));
         }
-        Kind::StyledText {
-            value,
-            spans,
-            scale,
-            wrap,
-            line_height,
-        } => {
-            let _ = (value, spans);
+        Kind::StyledText(styled) => {
             measure_content_sensitive = true;
             paint_content_sensitive = true;
             semantics_content_sensitive = true;
-            content_measure.add(&bits(*scale));
-            content_measure.add(wrap);
-            content_measure.add(&line_height.map(bits));
+            content_measure.add(&bits(styled.scale));
+            content_measure.add(&styled.wrap);
+            content_measure.add(&styled.line_height.map(bits));
         }
         Kind::Image {
             id,
@@ -775,23 +768,10 @@ fn exact_metadata_equal<Message>(current: &Element<Message>, previous: &Element<
                         _ => false,
                     }
             }
-            (
-                Kind::StyledText {
-                    scale: current_scale,
-                    wrap: current_wrap,
-                    line_height: current_line_height,
-                    ..
-                },
-                Kind::StyledText {
-                    scale: previous_scale,
-                    wrap: previous_wrap,
-                    line_height: previous_line_height,
-                    ..
-                },
-            ) => {
-                current_scale.to_bits() == previous_scale.to_bits()
-                    && current_wrap == previous_wrap
-                    && optional_f32_equal(*current_line_height, *previous_line_height)
+            (Kind::StyledText(current), Kind::StyledText(previous)) => {
+                current.scale.to_bits() == previous.scale.to_bits()
+                    && current.wrap == previous.wrap
+                    && optional_f32_equal(current.line_height, previous.line_height)
             }
             (
                 Kind::Image {
@@ -965,23 +945,10 @@ fn exact_measure_kind(current: &Kind, previous: &Kind) -> bool {
                 && exact_optional_f32(*current_line_height, *previous_line_height)
                 && current_max_lines == previous_max_lines
         }
-        (
-            Kind::StyledText {
-                scale: current_scale,
-                wrap: current_wrap,
-                line_height: current_line_height,
-                ..
-            },
-            Kind::StyledText {
-                scale: previous_scale,
-                wrap: previous_wrap,
-                line_height: previous_line_height,
-                ..
-            },
-        ) => {
-            current_scale.to_bits() == previous_scale.to_bits()
-                && current_wrap == previous_wrap
-                && exact_optional_f32(*current_line_height, *previous_line_height)
+        (Kind::StyledText(current), Kind::StyledText(previous)) => {
+            current.scale.to_bits() == previous.scale.to_bits()
+                && current.wrap == previous.wrap
+                && exact_optional_f32(current.line_height, previous.line_height)
         }
         (
             Kind::Image {
@@ -1085,7 +1052,7 @@ fn exact_paint_kind<Message>(current: &Element<Message>, previous: &Element<Mess
                     _ => false,
                 }
         }
-        (Kind::StyledText { .. }, Kind::StyledText { .. }) => true,
+        (Kind::StyledText(_), Kind::StyledText(_)) => true,
         (
             Kind::Image {
                 id: current_id,
@@ -2012,10 +1979,15 @@ mod tests {
     fn declarative_element_inline_size_does_not_regress() {
         let small = std::mem::size_of::<Element<usize>>();
         let large = std::mem::size_of::<Element<[u8; 64]>>();
-        eprintln!("element_inline_bytes small_message={small} large_message={large}");
+        eprintln!(
+            "element_inline_bytes small_message={small} large_message={large} styled_text_sidecar={}",
+            std::mem::size_of::<super::super::StyledTextKind>()
+        );
         assert_eq!(std::mem::size_of::<RetainedNode>(), 128);
         assert_eq!(std::mem::size_of::<RetainedPhaseData>(), 56);
         assert_eq!(std::mem::size_of::<RetainedNodeMetadata>(), 88);
+        assert_eq!(std::mem::size_of::<Kind>(), 56);
+        assert_eq!(small, 448);
         assert!(
             small <= 1_032,
             "small-message Element grew to {small} bytes"

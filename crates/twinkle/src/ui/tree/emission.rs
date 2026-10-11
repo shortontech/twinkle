@@ -730,19 +730,13 @@ pub(super) fn emit_element<Message: Clone>(
                 });
             }
         }
-        Kind::StyledText {
-            value,
-            spans,
-            scale,
-            wrap,
-            line_height,
-        } => {
+        Kind::StyledText(styled) => {
             if phases.paint {
                 tree.commands.push(PaintCommand::StyledText {
                     bounds: rect,
-                    text: value.clone(),
-                    spans: spans.clone(),
-                    scale: *scale,
+                    text: styled.value.clone(),
+                    spans: styled.spans.clone(),
+                    scale: styled.scale,
                     font_size: None,
                     color: foreground.unwrap_or(0x00ff_ffff),
                     align: element.style.text_align,
@@ -750,13 +744,13 @@ pub(super) fn emit_element<Message: Clone>(
             }
             if phases.interaction && !element.inline_messages.is_empty() {
                 let glyphs = shape_styled_selection_glyphs(
-                    value,
-                    spans,
+                    &styled.value,
+                    &styled.spans,
                     rect,
                     node.clip,
-                    *scale,
-                    *wrap,
-                    *line_height,
+                    styled.scale,
+                    styled.wrap,
+                    styled.line_height,
                     element.style.text_align,
                 );
                 for (index, (range, message)) in element.inline_messages.iter().enumerate() {

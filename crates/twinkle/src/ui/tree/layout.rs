@@ -357,7 +357,7 @@ pub(super) fn layout_element<Message: Clone>(
     }
     match &element.kind {
         Kind::Text { .. }
-        | Kind::StyledText { .. }
+        | Kind::StyledText(_)
         | Kind::CustomPaint { .. }
         | Kind::CustomPaintCommands { .. }
         | Kind::Image { .. }

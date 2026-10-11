@@ -1382,13 +1382,13 @@ impl<Message> StyledText<Message> {
     pub fn new(value: impl Into<String>, spans: Vec<StyledTextSpan>) -> Self {
         let value = value.into();
         let mut element = Element {
-            kind: Kind::StyledText {
+            kind: Kind::StyledText(Box::new(super::StyledTextKind {
                 value: value.clone(),
                 spans,
                 scale: 2.0,
                 wrap: false,
                 line_height: None,
-            },
+            })),
             id: None,
             source: None,
             content_revision: None,
@@ -1417,8 +1417,8 @@ impl<Message> StyledText<Message> {
     }
 
     pub fn scale(mut self, value: f32) -> Self {
-        if let Kind::StyledText { scale, .. } = &mut self.0.kind {
-            *scale = value;
+        if let Kind::StyledText(styled) = &mut self.0.kind {
+            styled.scale = value;
         }
         self
     }
@@ -1429,8 +1429,8 @@ impl<Message> StyledText<Message> {
     }
 
     pub fn wrap(mut self, enabled: bool) -> Self {
-        if let Kind::StyledText { wrap, .. } = &mut self.0.kind {
-            *wrap = enabled;
+        if let Kind::StyledText(styled) = &mut self.0.kind {
+            styled.wrap = enabled;
         }
         self
     }

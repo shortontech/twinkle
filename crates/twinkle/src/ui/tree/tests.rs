@@ -1780,6 +1780,35 @@ fn ordinary_dropdown_accounts_for_only_its_compact_kind_sidecar() {
 }
 
 #[test]
+fn rich_text_accounts_for_only_its_explicit_kind_sidecar() {
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        StyledText::<TestMessage>::new(
+            "Hello",
+            vec![StyledTextSpan {
+                range: 0..5,
+                bold: false,
+                italic: false,
+                monospace: false,
+                font_family: None,
+                strikethrough: false,
+                underline: TextUnderlineStyle::None,
+                color: Some(0xff12_3456),
+                background: None,
+            }],
+        ),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+
+    assert_eq!(resources.declaration_kind_sidecar_count, 1);
+    assert_eq!(
+        resources.declaration_kind_sidecar_bytes,
+        std::mem::size_of::<super::super::StyledTextKind>()
+    );
+}
+
+#[test]
 fn navigation_scope_storage_is_counted_only_when_present() {
     let mut state = UiStateStore::default();
     let frame = UiFrame::resolve(

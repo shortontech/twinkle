@@ -1229,6 +1229,15 @@ struct DropdownKind {
     details: Option<Box<DropdownDetails>>,
 }
 
+#[derive(Clone, Debug)]
+struct StyledTextKind {
+    value: String,
+    spans: Vec<StyledTextSpan>,
+    scale: f32,
+    wrap: bool,
+    line_height: Option<f32>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct DropdownDetails {
     option_presentations: Vec<DropdownPartStyle>,
@@ -1271,13 +1280,7 @@ enum Kind {
         ellipsis: bool,
         details: Option<Box<TextDetails>>,
     },
-    StyledText {
-        value: String,
-        spans: Vec<StyledTextSpan>,
-        scale: f32,
-        wrap: bool,
-        line_height: Option<f32>,
-    },
+    StyledText(Box<StyledTextKind>),
     Image {
         id: u16,
         generation: u64,
@@ -1307,7 +1310,7 @@ impl Kind {
             Self::Grid { .. } => "Grid",
             Self::CustomPaint { .. } | Self::CustomPaintCommands { .. } => "CustomPaint",
             Self::Text { .. } => "Text",
-            Self::StyledText { .. } => "StyledText",
+            Self::StyledText(_) => "StyledText",
             Self::Image { .. } => "Image",
             Self::Slider { .. } => "Slider",
             Self::Dropdown(_) => "Dropdown",
@@ -3420,12 +3423,13 @@ mod background_policy_tests {
     #[test]
     #[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
     fn common_declaration_record_sizes_stay_compact() {
-        assert_eq!(std::mem::size_of::<Kind>(), 64);
-        assert_eq!(std::mem::size_of::<Element<usize>>(), 456);
+        assert_eq!(std::mem::size_of::<Kind>(), 56);
+        assert_eq!(std::mem::size_of::<Element<usize>>(), 448);
         assert_eq!(std::mem::size_of::<Style>(), 128);
         assert_eq!(std::mem::size_of::<StyleDetails>(), 360);
         assert_eq!(std::mem::size_of::<DropdownKind>(), 88);
         assert_eq!(std::mem::size_of::<DropdownDetails>(), 96);
+        assert_eq!(std::mem::size_of::<StyledTextKind>(), 64);
     }
 
     #[test]

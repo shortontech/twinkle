@@ -909,9 +909,9 @@ fn compact_kind_capacity(kind: &mut Kind) {
             columns: GridColumnSpec::Tracks(tracks),
         } => tracks.shrink_to_fit(),
         Kind::CustomPaintCommands { commands } => commands.shrink_to_fit(),
-        Kind::StyledText { value, spans, .. } => {
-            value.shrink_to_fit();
-            spans.shrink_to_fit();
+        Kind::StyledText(styled) => {
+            styled.value.shrink_to_fit();
+            styled.spans.shrink_to_fit();
         }
         Kind::Text { value, details, .. } => {
             value.shrink_to_fit();
@@ -3773,8 +3773,10 @@ impl<Message: Clone> UiFrame<Message> {
                                     .map_or(0, String::capacity)
                         })
                 }
-                Kind::StyledText { value, spans, .. } => {
-                    value.capacity() + spans.capacity() * std::mem::size_of::<StyledTextSpan>()
+                Kind::StyledText(styled) => {
+                    std::mem::size_of_val(styled.as_ref())
+                        + styled.value.capacity()
+                        + styled.spans.capacity() * std::mem::size_of::<StyledTextSpan>()
                 }
                 Kind::Slider { presentation, .. } => presentation
                     .as_ref()
@@ -3856,8 +3858,8 @@ impl<Message: Clone> UiFrame<Message> {
                                 + details.input_placeholder.as_ref().map_or(0, string)
                         })
                 }
-                Kind::StyledText { value, spans, .. } => {
-                    string(value) + allocated(spans.capacity())
+                Kind::StyledText(styled) => {
+                    1 + string(&styled.value) + allocated(styled.spans.capacity())
                 }
                 Kind::Slider { presentation, .. } => usize::from(presentation.is_some()),
                 Kind::Dropdown(dropdown) => {
@@ -3900,6 +3902,7 @@ impl<Message: Clone> UiFrame<Message> {
     fn declaration_kind_sidecars(root: &Element<Message>) -> (usize, usize) {
         fn nested<Message>(element: &Element<Message>) -> (usize, usize) {
             let (mut count, mut bytes): (usize, usize) = match &element.kind {
+                Kind::StyledText(styled) => (1, std::mem::size_of_val(styled.as_ref())),
                 Kind::Text {
                     details: Some(details),
                     ..
@@ -7888,13 +7891,14 @@ pub(super) fn measure_element<Message>(
             max_lines.map(std::num::NonZeroUsize::get),
             child_max.width,
         ),
-        Kind::StyledText {
-            value,
-            spans,
-            scale,
-            wrap,
-            line_height,
-        } => measure_styled_text(value, spans, *scale, *wrap, *line_height, child_max.width),
+        Kind::StyledText(styled) => measure_styled_text(
+            &styled.value,
+            &styled.spans,
+            styled.scale,
+            styled.wrap,
+            styled.line_height,
+            child_max.width,
+        ),
         Kind::Image { image, .. } => {
             let intrinsic = if image.width() == 0 || image.height() == 0 {
                 Size::new(16.0, 16.0)
@@ -8272,28 +8276,22 @@ fn collect_selection_regions<Message>(
         if let Some(region_index) = active
             && !excluded
             && element.style.selectable != Some(false)
-            && let Kind::StyledText {
-                value,
-                spans,
-                scale,
-                wrap,
-                line_height,
-            } = &element.kind
+            && let Kind::StyledText(styled) = &element.kind
         {
             let run_id = element
                 .style
                 .selection_run_id
                 .clone()
                 .unwrap_or_else(|| node.id.as_str().to_owned());
-            let text = value.clone();
+            let text = styled.value.clone();
             let glyphs = shape_styled_selection_glyphs(
                 &text,
-                spans,
+                &styled.spans,
                 node.content,
                 node.clip,
-                *scale,
-                *wrap,
-                *line_height,
+                styled.scale,
+                styled.wrap,
+                styled.line_height,
                 element.style.text_align,
             );
             builders[region_index].logical_runs.push(SelectionRun {
