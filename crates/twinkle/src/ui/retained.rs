@@ -415,14 +415,21 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
         style_measure ^ content_measure.finish()
     };
     paint.add_formatted(format_args!(
-        "{:?}{:?}{:?}{:?}{:?}{:?}{:?}",
+        "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}",
         element.style.background,
         element.style.border,
+        element.style.border_width,
         element.style.foreground,
         element.style.box_shadow,
+        element.style.backdrop_blur,
         element.style.corner_radius,
         element.style.top_corner_radius,
-        element.style.interaction_paints
+        element.style.interaction_paints,
+        element.style.text_align,
+        element.style.css_paint,
+        element.style.editing_parts,
+        element.style.editing_menu,
+        element.style.focus_background_tint,
     ));
 
     let mut interaction = CompactHasher::default();
@@ -1125,6 +1132,48 @@ mod tests {
             check(format_args!("{text:?}{text}{:?}", Some(&text)));
         }
     }
+
+    #[test]
+    fn paint_signature_covers_style_inputs_consumed_by_emission() {
+        let base = Element::<()>::flex(super::super::Axis::Vertical);
+        let baseline = signatures(&base).paint;
+        let assert_changes = |element: Element<()>| {
+            assert_ne!(
+                signatures(&element).paint,
+                baseline,
+                "paint-affecting style mutation must invalidate paint reuse"
+            );
+        };
+
+        let mut element = base.clone();
+        element.style.border_width = 4.0;
+        assert_changes(element);
+
+        let mut element = base.clone();
+        element.style.backdrop_blur = Some(8.0);
+        assert_changes(element);
+
+        let mut element = base.clone();
+        element.style.text_align = super::super::TextAlign::Center;
+        assert_changes(element);
+
+        let mut element = base.clone();
+        element.style.css_paint = true;
+        assert_changes(element);
+
+        let mut element = base.clone();
+        element.style.focus_background_tint = Some(0xff12_3456);
+        assert_changes(element);
+
+        let mut element = base.clone();
+        element.style.editing_parts =
+            Some(Box::new([super::super::DropdownPartStyle::default(); 2]));
+        assert_changes(element);
+
+        let mut element = base;
+        element.style.editing_menu = Some(Box::default());
+        assert_changes(element);
+    }
     use crate::{
         Column, Component, ComponentBuilderExt, CustomPaint, FrameRequest, Grid, Rect, Row,
         StyledText, StyledTextSpan, Text, TextUnderlineStyle, Track, UiFrame, UiStateStore,
@@ -1601,6 +1650,60 @@ mod tests {
         assert_eq!(next.resolved_layout(), cold.resolved_layout());
         assert_eq!(next.commands(), cold.commands());
         assert_eq!(next.semantic_nodes(), cold.semantic_nodes());
+    }
+
+    #[test]
+    fn border_width_change_invalidates_paint_and_matches_cold_frame() {
+        let bounds = Rect::new(0.0, 0.0, 160.0, 80.0);
+        let view = |border_width| {
+            Column::<()>::new()
+                .id("panel")
+                .width(120.0)
+                .height(48.0)
+                .into_element()
+                .background(0xff22_3344)
+                .border(0xffaa_bbcc, border_width)
+        };
+        let mut state = UiStateStore::default();
+        let first = UiFrame::resolve(view(1.0), FrameRequest::new(bounds, &mut state));
+        let next =
+            UiFrame::resolve_against(view(6.0), FrameRequest::new(bounds, &mut state), &first);
+        assert!(next.resource_diagnostics().paint_nodes_executed > 0);
+
+        let mut cold_state = UiStateStore::default();
+        let cold = UiFrame::resolve(view(6.0), FrameRequest::new(bounds, &mut cold_state));
+        assert_frame_oracle(&next, &cold);
+        assert_ne!(first.commands(), next.commands());
+    }
+
+    #[test]
+    fn backdrop_blur_change_invalidates_paint_and_matches_cold_frame() {
+        let bounds = Rect::new(0.0, 0.0, 160.0, 80.0);
+        let view = |blur: Option<f32>| {
+            let panel = Column::<()>::new()
+                .id("panel")
+                .width(120.0)
+                .height(48.0)
+                .into_element()
+                .background(0xff22_3344);
+            match blur {
+                Some(radius) => panel.backdrop_blur(radius),
+                None => panel,
+            }
+        };
+        let mut state = UiStateStore::default();
+        let first = UiFrame::resolve(view(None), FrameRequest::new(bounds, &mut state));
+        let next = UiFrame::resolve_against(
+            view(Some(8.0)),
+            FrameRequest::new(bounds, &mut state),
+            &first,
+        );
+        assert!(next.resource_diagnostics().paint_nodes_executed > 0);
+
+        let mut cold_state = UiStateStore::default();
+        let cold = UiFrame::resolve(view(Some(8.0)), FrameRequest::new(bounds, &mut cold_state));
+        assert_frame_oracle(&next, &cold);
+        assert_ne!(first.commands(), next.commands());
     }
 
     #[test]
