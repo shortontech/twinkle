@@ -1426,6 +1426,7 @@ impl TransientStateJournal {
             let child_id = resolved_child_id(id, child, index);
             self.detach_effective_tree(child, &child_id, derive_patches);
         }
+        let had_staged_style = self.styles.contains_key(id);
         if let Some(canonical) = self.styles.get_mut(id) {
             std::mem::swap(canonical, &mut element.style);
         }
@@ -1445,7 +1446,7 @@ impl TransientStateJournal {
             self.kinds.remove(id);
         }
         let effective_style = self.styles.get(id).unwrap_or(&element.style);
-        if derive_patches {
+        if derive_patches && had_staged_style {
             if let Some(patch) = TransientStylePatch::between(&element.style, effective_style) {
                 self.style_patches.insert(id.clone(), patch);
             } else {
@@ -1458,6 +1459,14 @@ impl TransientStateJournal {
             effective_style,
             effective_kind,
         );
+        if self
+            .style_patches
+            .get(id)
+            .is_some_and(|patch| patch.width.is_some() || patch.height.is_some())
+        {
+            use super::super::retained::DirtyPhases;
+            dirty.insert(DirtyPhases::MEASURE);
+        }
         if self.vertical_scroll_offsets.contains_key(id) {
             use super::super::retained::DirtyPhases;
             dirty.insert(
@@ -1505,7 +1514,7 @@ pub(super) fn apply_transient_state_staged<Message>(
     state: &mut UiStateStore,
     overlay: &mut TransientStateJournal,
 ) {
-    capture_transient_state(element, id, state, None, false, false, overlay);
+    capture_transient_state(element, id, state, None, false, 1.0, overlay);
     apply_transient_state_with_parent(element, id, state, None, Some(overlay));
 }
 
@@ -1515,7 +1524,7 @@ fn capture_transient_state<Message>(
     state: &mut UiStateStore,
     parent_interaction: Option<usize>,
     inherited_text_paint: bool,
-    inherited_geometry: bool,
+    inherited_geometry_scale: f32,
     overlay: &mut TransientStateJournal,
 ) {
     synchronize_text_editor_state(element, id, state);
@@ -1570,10 +1579,30 @@ fn capture_transient_state<Message>(
         };
     let dropdown_height_changes =
         matches!(element.kind, Kind::Dropdown(_)) && !element.style.css_paint;
-    let style_can_change = interaction_index.is_some()
+    let interaction_style_changes = interaction_index.is_some_and(|index| {
+        let paint = element
+            .style
+            .interaction_paints
+            .as_ref()
+            .map_or(InteractionPaint::default(), |paints| paints[index]);
+        paint != InteractionPaint::default()
+            || index == 0 && element.style.hover_background.is_some()
+            || index == 1 && element.style.pressed_background.is_some()
+            || index == 2
+                && (element.style.focus_background.is_some() || element.style.automatic_focus_tint)
+    });
+    if inherited_geometry_scale.to_bits() != 1.0f32.to_bits() {
+        let patch = overlay.style_patches.entry(id.clone()).or_default();
+        if let Length::Px(width) = element.style.width {
+            patch.width = Some(Length::Px(width * inherited_geometry_scale));
+        }
+        if let Length::Px(height) = element.style.height {
+            patch.height = Some(Length::Px(height * inherited_geometry_scale));
+        }
+    }
+    let style_can_change = interaction_style_changes
         || scope_background_active
         || inherited_text_paint
-        || inherited_geometry
         || scroll_style_changes
         || dropdown_height_changes;
     if style_can_change {
@@ -1632,16 +1661,48 @@ fn capture_transient_state<Message>(
         }
     }
     let child_text_paint = inherited_text_paint || interaction_index.is_some();
-    let child_geometry = inherited_geometry || element.style.proximity_magnification.is_some();
+    let magnified_child = element.style.proximity_magnification.and_then(|_| {
+        let hovered = state.hovered()?.as_str();
+        element
+            .children
+            .iter()
+            .enumerate()
+            .find_map(|(index, child)| {
+                let child_id = resolved_child_id(id, child, index);
+                (hovered == child_id.as_str()
+                    || hovered.starts_with(&format!("{}/", child_id.as_str())))
+                .then_some(index)
+            })
+    });
     for (index, child) in element.children.iter_mut().enumerate() {
         let child_id = resolved_child_id(id, child, index);
+        let local_scale = element
+            .style
+            .proximity_magnification
+            .map_or(1.0, |magnification| {
+                let target = magnified_child.map_or(1.0, |hovered| {
+                    let pointer_index = hovered as f32 + state.hover_fraction() - 0.5;
+                    let distance = (index as f32 - pointer_index).abs();
+                    if distance > magnification.radius as f32 + 0.5 {
+                        1.0
+                    } else {
+                        let influence = 1.0 - distance / (magnification.radius as f32 + 1.0);
+                        1.0 + (magnification.maximum_scale - 1.0) * influence
+                    }
+                });
+                state.animate_geometry_scale(
+                    child_id.clone(),
+                    target,
+                    element.style.transition_duration_ms,
+                )
+            });
         capture_transient_state(
             child,
             &child_id,
             state,
             interaction_index,
             child_text_paint,
-            child_geometry,
+            inherited_geometry_scale * local_scale,
             overlay,
         );
     }
@@ -2084,7 +2145,8 @@ fn apply_transient_state_with_parent<Message>(
             element.style.scroll_offset_x = scroll_offset_x.max(0.0);
         }
     }
-    let magnified_child = element.style.proximity_magnification.and_then(|_| {
+    let magnified_child = compact_overlay.is_none().then(|| ()).and_then(|_| {
+        element.style.proximity_magnification?;
         let hovered = state.hovered()?.as_str();
         element
             .children
@@ -2105,7 +2167,9 @@ fn apply_transient_state_with_parent<Message>(
             || id.scoped(format!("#{index}")),
             |child_id| id.scoped(child_id.as_str()),
         );
-        if let Some(magnification) = element.style.proximity_magnification {
+        if compact_overlay.is_none()
+            && let Some(magnification) = element.style.proximity_magnification
+        {
             let target = magnified_child.map_or(1.0, |hovered| {
                 let pointer_index = hovered as f32 + state.hover_fraction() - 0.5;
                 let distance = (index as f32 - pointer_index).abs();
