@@ -112,7 +112,7 @@ pub(super) fn layout_element<Message: Clone>(
         hit_stack: None,
         interaction,
         auto_focus: element.style.auto_focus,
-        navigation_scope: element.navigation_scope.clone(),
+        navigation_scope: element.navigation_scope.as_deref().cloned(),
         virtual_navigation: element.virtual_navigation.clone(),
         adjustment_step: element.adjustment_step,
         controller_value: match &element.kind {

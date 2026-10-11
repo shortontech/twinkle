@@ -1646,6 +1646,24 @@ fn ordinary_dropdown_accounts_for_only_its_compact_kind_sidecar() {
 }
 
 #[test]
+fn navigation_scope_storage_is_counted_only_when_present() {
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        Container::<TestMessage>::new()
+            .navigation_scope(super::super::NavigationScope::group())
+            .child(Container::new()),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+
+    assert_eq!(resources.declaration_navigation_sidecar_count, 1);
+    assert_eq!(
+        resources.declaration_navigation_sidecar_bytes,
+        std::mem::size_of::<super::super::NavigationScope>()
+    );
+}
+
+#[test]
 fn dense_interactivity_allocates_one_event_sidecar_per_element_not_per_handler() {
     const BUTTONS: usize = 256;
     let mut root = Column::new();

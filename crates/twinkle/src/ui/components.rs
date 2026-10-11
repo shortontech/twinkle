@@ -1017,8 +1017,9 @@ pub struct FileGrid<Message = String> {
 impl<Message> FileGrid<Message> {
     pub fn columns(columns: usize) -> Self {
         let mut grid = Grid::fixed(columns);
-        grid.0.navigation_scope =
-            Some(crate::NavigationScope::group().traversal(crate::NavigationTraversal::Grid));
+        grid.0.navigation_scope = Some(Box::new(
+            crate::NavigationScope::group().traversal(crate::NavigationTraversal::Grid),
+        ));
         Self { grid }
     }
 
@@ -1027,8 +1028,9 @@ impl<Message> FileGrid<Message> {
             Track::px(minimum_width.max(1.0)),
             Track::fr(1.0),
         ));
-        grid.0.navigation_scope =
-            Some(crate::NavigationScope::group().traversal(crate::NavigationTraversal::Grid));
+        grid.0.navigation_scope = Some(Box::new(
+            crate::NavigationScope::group().traversal(crate::NavigationTraversal::Grid),
+        ));
         Self { grid }
     }
 
@@ -1082,14 +1084,15 @@ impl<Message> FileGrid<Message> {
     }
 
     pub fn scroll_owner(mut self, owner: impl Into<UiId>) -> Self {
-        self.grid.0.navigation_scope = Some(
+        self.grid.0.navigation_scope = Some(Box::new(
             self.grid
                 .0
                 .navigation_scope
                 .take()
+                .map(|scope| *scope)
                 .unwrap_or_else(crate::NavigationScope::group)
                 .scroll_owner(owner.into()),
-        );
+        ));
         self
     }
 }
@@ -1378,7 +1381,7 @@ pub struct StyledText<Message = String>(Element<Message>);
 impl<Message> StyledText<Message> {
     pub fn new(value: impl Into<String>, spans: Vec<StyledTextSpan>) -> Self {
         let value = value.into();
-        Self(Element {
+        let mut element = Element {
             kind: Kind::StyledText {
                 value: value.clone(),
                 spans,
@@ -1390,10 +1393,7 @@ impl<Message> StyledText<Message> {
             source: None,
             content_revision: None,
             virtual_navigation: None,
-            style: Style {
-                accessibility_label: Some(value),
-                ..Style::default()
-            },
+            style: Style::default(),
             events: None,
             message_mapper: None,
             seeded_value_mapper: None,
@@ -1406,7 +1406,9 @@ impl<Message> StyledText<Message> {
             children: Vec::new(),
             navigation_scope: None,
             adjustment_step: 0.05,
-        })
+        };
+        element.style.accessibility_label = Some(value);
+        Self(element)
     }
 
     pub fn inline_message(mut self, range: Range<usize>, message: Message) -> Self {
@@ -3937,9 +3939,9 @@ impl<Message> Dropdown<Message> {
             option_messages,
             inline_messages: Vec::new(),
             children: Vec::new(),
-            navigation_scope: Some(
+            navigation_scope: Some(Box::new(
                 crate::NavigationScope::group().traversal(crate::NavigationTraversal::Vertical),
-            ),
+            )),
             adjustment_step: 0.05,
         };
         element.style.height = Length::Px(42.0);
@@ -4139,7 +4141,7 @@ impl<Message: Clone> Menu<Message> {
             option_messages: items.into_iter().map(|item| item.message).collect(),
             inline_messages: Vec::new(),
             children: Vec::new(),
-            navigation_scope: Some(crate::NavigationScope::group()),
+            navigation_scope: Some(Box::new(crate::NavigationScope::group())),
             adjustment_step: 0.05,
         };
         element.style.height = Length::Px(30.0);

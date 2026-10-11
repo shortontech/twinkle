@@ -417,6 +417,15 @@ pub struct FrameResourceDiagnostics {
     pub declaration_kind_sidecar_count: usize,
     /// Inline payload bytes of the declaration kind sidecars counted above.
     pub declaration_kind_sidecar_bytes: usize,
+    /// Number of lazily allocated uncommon style records.
+    pub declaration_style_sidecar_count: usize,
+    /// Inline payload bytes of uncommon style records, excluding their nested
+    /// strings and boxed presentation arrays (which remain in the tree total).
+    pub declaration_style_sidecar_bytes: usize,
+    /// Number of separately allocated navigation-scope declarations.
+    pub declaration_navigation_sidecar_count: usize,
+    /// Inline payload bytes of navigation-scope declarations.
+    pub declaration_navigation_sidecar_bytes: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
     /// Retained reconciliation arena storage, including cached paint buffers.
@@ -3550,6 +3559,11 @@ impl<Message: Clone> UiFrame<Message> {
                 .events
                 .as_ref()
                 .map_or(0, |events| std::mem::size_of_val(events.as_ref()));
+            bytes += element.style.details().map_or(0, std::mem::size_of_val);
+            bytes += element
+                .navigation_scope
+                .as_ref()
+                .map_or(0, |scope| std::mem::size_of_val(scope.as_ref()));
             bytes += [
                 element.style.accessibility_label.as_ref(),
                 element.style.accessibility_description.as_ref(),
@@ -3689,6 +3703,32 @@ impl<Message: Clone> UiFrame<Message> {
         nested(root)
     }
 
+    fn declaration_style_sidecars(root: &Element<Message>) -> (usize, usize) {
+        fn nested<Message>(element: &Element<Message>) -> usize {
+            usize::from(element.style.details.is_some())
+                + element.children.iter().map(nested).sum::<usize>()
+        }
+
+        let count = nested(root);
+        (
+            count,
+            count.saturating_mul(std::mem::size_of::<StyleDetails>()),
+        )
+    }
+
+    fn declaration_navigation_sidecars(root: &Element<Message>) -> (usize, usize) {
+        fn nested<Message>(element: &Element<Message>) -> usize {
+            usize::from(element.navigation_scope.is_some())
+                + element.children.iter().map(nested).sum::<usize>()
+        }
+
+        let count = nested(root);
+        (
+            count,
+            count.saturating_mul(std::mem::size_of::<NavigationScope>()),
+        )
+    }
+
     // A retained paint refresh may grow output-vector capacity, but it does not
     // replace resolved child lists, accessibility strings, or retained arena
     // records. Their byte contributions remain owned by the current frame.
@@ -3737,6 +3777,14 @@ impl<Message: Clone> UiFrame<Message> {
             .declaration_root
             .as_ref()
             .map_or((0, 0), Self::declaration_kind_sidecars);
+        let (declaration_style_sidecar_count, declaration_style_sidecar_bytes) = self
+            .declaration_root
+            .as_ref()
+            .map_or((0, 0), Self::declaration_style_sidecars);
+        let (declaration_navigation_sidecar_count, declaration_navigation_sidecar_bytes) = self
+            .declaration_root
+            .as_ref()
+            .map_or((0, 0), Self::declaration_navigation_sidecars);
         let resolved_storage_bytes = self.resolved.nodes.capacity()
             * std::mem::size_of::<ResolvedNode>()
             + self
@@ -3846,6 +3894,10 @@ impl<Message: Clone> UiFrame<Message> {
             declaration_event_sidecar_bytes,
             declaration_kind_sidecar_count,
             declaration_kind_sidecar_bytes,
+            declaration_style_sidecar_count,
+            declaration_style_sidecar_bytes,
+            declaration_navigation_sidecar_count,
+            declaration_navigation_sidecar_bytes,
             resolved_storage_bytes,
             retained_arena_bytes,
             accessibility_storage_bytes,

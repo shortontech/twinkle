@@ -990,49 +990,23 @@ const fn is_prohibited_background(color: Color) -> bool {
     rgb == 0x000000 || rgb == 0xffffff
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
+/// Declarative layout and paint properties for an [`Element`].
+///
+/// Common properties remain inline and allocation-free. Less common properties
+/// are stored in a lazily allocated [`StyleDetails`] sidecar and remain
+/// readable and writable through `Style`'s deref implementation. As of the
+/// 0.2 representation boundary, downstream code should construct styles with
+/// [`Style::default`] and then assign fields (or use element builders) instead
+/// of using an exhaustive `Style { .. }` literal.
 pub struct Style {
     pub background: Option<Background>,
     pub border: Option<Color>,
     pub border_width: f32,
-    pub box_shadow: Option<BoxShadow>,
-    pub backdrop_blur: Option<f32>,
-    pub proximity_magnification: Option<ProximityMagnification>,
-    pub transition_duration_ms: f32,
     pub foreground: Option<Color>,
-    /// Semantic background applied while an interactive element is hovered.
-    pub interaction_paints: Option<Box<[InteractionPaint; 3]>>,
-    pub hover_background: Option<Background>,
-    /// Semantic background applied while an interactive element is pressed.
-    pub pressed_background: Option<Background>,
-    /// Explicit background for a focused control, used by declarative styles.
-    pub focus_background: Option<Background>,
-    /// Semantic hue/lightness cue applied to the child background for keyboard
-    /// or accessibility focus.
-    pub focus_background_tint: Option<Color>,
-    /// Presentation compilers may supply complete focus cues explicitly.
-    pub automatic_focus_tint: bool,
-    pub css_paint: bool,
-    /// Whether foreground, font size and line height inherit owner state paint.
-    pub inherited_state_text: [bool; 3],
-    /// Decorative compound parts follow owner state without becoming input targets.
-    pub parent_interaction: bool,
-    pub auto_focus: bool,
-    pub editing_parts: Option<Box<[DropdownPartStyle; 2]>>,
-    pub editing_menu: Option<Box<crate::OverlayMenuPresentation>>,
-    /// Semantic hue/lightness cue applied to the current controller target.
-    pub controller_focus_background_tint: Option<Color>,
-    /// Shared semantic scrollbar chrome for this element's viewport.
-    pub scrollbar_palette: crate::ScrollbarPalette,
-    /// Optional CSS track and thumb; native callers retain semantic defaults.
-    pub scrollbar_parts: Option<Box<[DropdownPartStyle; 2]>>,
-    /// Semantic background applied to a selected or entered controller scope.
-    pub controller_scope_background: Option<Background>,
     pub text_align: TextAlign,
     pub padding: Insets,
     pub gap: f32,
-    /// Child origin within an absolute `Layer` parent.
-    pub absolute_position: Option<Point>,
     pub width: Length,
     pub height: Length,
     pub min_width: f32,
@@ -1047,49 +1021,92 @@ pub struct Style {
     pub justify_content: Justify,
     pub overflow_x: Overflow,
     pub overflow_y: Overflow,
-    /// Keep a vertical scroll region pinned while the user remains at its end.
-    pub follow_scroll_end: bool,
-    pub accessibility_label: Option<String>,
-    pub accessibility_description: Option<String>,
-    /// Platform-neutral semantic role consumed by accessibility adapters.
-    pub accessibility_role: Option<String>,
-    pub accessibility_state: Option<String>,
-    /// Stable id of the surface controlled by this element, when applicable.
-    pub accessibility_controls: Option<UiId>,
-    pub accessibility_hidden: bool,
-    /// Explicit exemption for visual-only semantic content. A declared role
-    /// without a name is otherwise rejected from semantic/accessibility output.
-    pub semantic_decorative: bool,
-    pub semantic_role: Option<SemanticRole>,
-    #[doc(hidden)]
-    pub scroll_offset_x: f32,
-    #[doc(hidden)]
-    pub scroll_offset: f32,
     pub corner_radius: f32,
     pub top_corner_radius: f32,
-    #[doc(hidden)]
+    details: Option<Box<StyleDetails>>,
+}
+
+/// Lazily allocated storage for uncommon [`Style`] properties.
+///
+/// This type is public so existing direct field reads and writes continue to
+/// work through `Style`. It normally does not need to be constructed directly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StyleDetails {
+    pub box_shadow: Option<BoxShadow>,
+    pub backdrop_blur: Option<f32>,
+    pub proximity_magnification: Option<ProximityMagnification>,
+    pub transition_duration_ms: f32,
+    pub interaction_paints: Option<Box<[InteractionPaint; 3]>>,
+    pub hover_background: Option<Background>,
+    pub pressed_background: Option<Background>,
+    pub focus_background: Option<Background>,
+    pub focus_background_tint: Option<Color>,
+    pub automatic_focus_tint: bool,
+    pub css_paint: bool,
+    pub inherited_state_text: [bool; 3],
+    pub parent_interaction: bool,
+    pub auto_focus: bool,
+    pub editing_parts: Option<Box<[DropdownPartStyle; 2]>>,
+    pub editing_menu: Option<Box<crate::OverlayMenuPresentation>>,
+    pub controller_focus_background_tint: Option<Color>,
+    pub scrollbar_palette: crate::ScrollbarPalette,
+    pub scrollbar_parts: Option<Box<[DropdownPartStyle; 2]>>,
+    pub controller_scope_background: Option<Background>,
+    pub absolute_position: Option<Point>,
+    pub accessibility_label: Option<String>,
+    pub accessibility_description: Option<String>,
+    pub accessibility_role: Option<String>,
+    pub accessibility_state: Option<String>,
+    pub accessibility_controls: Option<UiId>,
+    pub accessibility_hidden: bool,
+    pub semantic_decorative: bool,
+    pub semantic_role: Option<SemanticRole>,
+    pub scroll_offset_x: f32,
+    pub scroll_offset: f32,
+    pub follow_scroll_end: bool,
     pub selection_region: bool,
-    #[doc(hidden)]
     pub selection_document: Option<Arc<SelectionDocument>>,
-    #[doc(hidden)]
     pub selectable: Option<bool>,
-    #[doc(hidden)]
     pub selection_run_id: Option<String>,
-    #[doc(hidden)]
     pub selection_boundary: TextBoundary,
 }
 
-impl Default for Style {
+impl PartialEq for Style {
+    fn eq(&self, other: &Self) -> bool {
+        self.background == other.background
+            && self.border == other.border
+            && self.border_width == other.border_width
+            && self.foreground == other.foreground
+            && self.text_align == other.text_align
+            && self.padding == other.padding
+            && self.gap == other.gap
+            && self.width == other.width
+            && self.height == other.height
+            && self.min_width == other.min_width
+            && self.min_height == other.min_height
+            && self.max_width == other.max_width
+            && self.max_height == other.max_height
+            && self.basis == other.basis
+            && self.grow == other.grow
+            && self.shrink == other.shrink
+            && self.align_self == other.align_self
+            && self.align_items == other.align_items
+            && self.justify_content == other.justify_content
+            && self.overflow_x == other.overflow_x
+            && self.overflow_y == other.overflow_y
+            && self.corner_radius == other.corner_radius
+            && self.top_corner_radius == other.top_corner_radius
+            && **self == **other
+    }
+}
+
+impl Default for StyleDetails {
     fn default() -> Self {
         Self {
-            background: None,
-            border: None,
-            border_width: 1.0,
             box_shadow: None,
             backdrop_blur: None,
             proximity_magnification: None,
             transition_duration_ms: 0.0,
-            foreground: None,
             interaction_paints: None,
             hover_background: None,
             pressed_background: None,
@@ -1106,10 +1123,65 @@ impl Default for Style {
             scrollbar_palette: crate::theme::FALLBACK_SCROLLBAR_PALETTE,
             scrollbar_parts: None,
             controller_scope_background: None,
+            absolute_position: None,
+            accessibility_label: None,
+            accessibility_description: None,
+            accessibility_role: None,
+            accessibility_state: None,
+            accessibility_controls: None,
+            accessibility_hidden: false,
+            semantic_decorative: false,
+            semantic_role: None,
+            scroll_offset_x: 0.0,
+            scroll_offset: 0.0,
+            follow_scroll_end: false,
+            selection_region: false,
+            selection_document: None,
+            selectable: None,
+            selection_run_id: None,
+            selection_boundary: TextBoundary::Inline,
+        }
+    }
+}
+
+impl Style {
+    fn details(&self) -> Option<&StyleDetails> {
+        self.details.as_deref()
+    }
+
+    fn details_mut(&mut self) -> &mut StyleDetails {
+        self.details
+            .get_or_insert_with(|| Box::new(StyleDetails::default()))
+    }
+}
+
+impl std::ops::Deref for Style {
+    type Target = StyleDetails;
+
+    fn deref(&self) -> &Self::Target {
+        static DEFAULT: std::sync::OnceLock<StyleDetails> = std::sync::OnceLock::new();
+        self.details
+            .as_deref()
+            .unwrap_or_else(|| DEFAULT.get_or_init(StyleDetails::default))
+    }
+}
+
+impl std::ops::DerefMut for Style {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.details_mut()
+    }
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            background: None,
+            border: None,
+            border_width: 1.0,
+            foreground: None,
             text_align: TextAlign::Start,
             padding: Insets::default(),
             gap: 0.0,
-            absolute_position: None,
             width: Length::Auto,
             height: Length::Auto,
             min_width: 0.0,
@@ -1124,24 +1196,9 @@ impl Default for Style {
             justify_content: Justify::Start,
             overflow_x: Overflow::Visible,
             overflow_y: Overflow::Visible,
-            follow_scroll_end: false,
-            accessibility_label: None,
-            accessibility_description: None,
-            accessibility_role: None,
-            accessibility_state: None,
-            accessibility_controls: None,
-            accessibility_hidden: false,
-            semantic_decorative: false,
-            semantic_role: None,
-            scroll_offset_x: 0.0,
-            scroll_offset: 0.0,
             corner_radius: 0.0,
             top_corner_radius: 0.0,
-            selection_region: false,
-            selection_document: None,
-            selectable: None,
-            selection_run_id: None,
-            selection_boundary: TextBoundary::Inline,
+            details: None,
         }
     }
 }
@@ -1323,7 +1380,7 @@ pub struct Element<Message = String> {
     option_messages: Vec<Option<Message>>,
     inline_messages: Vec<(Range<usize>, Message)>,
     children: Vec<Element<Message>>,
-    navigation_scope: Option<NavigationScope>,
+    navigation_scope: Option<Box<NavigationScope>>,
     adjustment_step: f32,
 }
 
@@ -1639,7 +1696,7 @@ impl<Message> Element<Message> {
     }
 
     pub fn navigation_scope(mut self, scope: NavigationScope) -> Self {
-        self.navigation_scope = Some(scope);
+        self.navigation_scope = Some(Box::new(scope));
         self
     }
 
@@ -3362,8 +3419,9 @@ mod background_policy_tests {
     #[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
     fn common_declaration_record_sizes_stay_compact() {
         assert_eq!(std::mem::size_of::<Kind>(), 64);
-        assert_eq!(std::mem::size_of::<Element<usize>>(), 920);
-        assert_eq!(std::mem::size_of::<Style>(), 480);
+        assert_eq!(std::mem::size_of::<Element<usize>>(), 464);
+        assert_eq!(std::mem::size_of::<Style>(), 128);
+        assert_eq!(std::mem::size_of::<StyleDetails>(), 368);
         assert_eq!(std::mem::size_of::<DropdownKind>(), 88);
         assert_eq!(std::mem::size_of::<DropdownDetails>(), 96);
     }
@@ -3380,5 +3438,25 @@ mod background_policy_tests {
                 .and_then(|details| details.input_value.as_deref()),
             Some("editable")
         );
+    }
+
+    #[test]
+    fn common_style_stays_inline_and_uncommon_style_is_lazy() {
+        let mut style = Style::default();
+        style.background = Some(Background::Solid(0x123456));
+        style.width = Length::Px(32.0);
+        assert!(style.details.is_none());
+
+        style.semantic_role = Some(SemanticRole::Button);
+        assert!(style.details.is_some());
+    }
+
+    #[test]
+    fn lazy_default_details_do_not_change_style_equality() {
+        let plain = Style::default();
+        let mut allocated = Style::default();
+        let _ = allocated.details_mut();
+
+        assert_eq!(plain, allocated);
     }
 }

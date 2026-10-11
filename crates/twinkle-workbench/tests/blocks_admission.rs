@@ -286,6 +286,7 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
     let workload_elapsed = workload_started.elapsed();
     let average_tick = workload_elapsed / MEASURED_ITERATIONS as u32;
     let ticks_per_second = MEASURED_ITERATIONS as f64 / workload_elapsed.as_secs_f64();
+    let resources = host.inspect().resources;
 
     let report = json!({
         "schema": 1,
@@ -306,6 +307,19 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
                 "paintFragmentsReused": samples.last_telemetry.paint_fragments_reused,
                 "semanticNodesRebuilt": samples.last_telemetry.semantic_nodes_rebuilt,
                 "semanticNodesReused": samples.last_telemetry.semantic_nodes_reused,
+            },
+            "lastFrameResources": {
+                "nodes": resources.node_count,
+                "declarationTreeBytes": resources.declaration_tree_bytes,
+                "declarationEventSidecars": resources.declaration_event_sidecar_count,
+                "declarationEventSidecarBytes": resources.declaration_event_sidecar_bytes,
+                "declarationKindSidecars": resources.declaration_kind_sidecar_count,
+                "declarationKindSidecarBytes": resources.declaration_kind_sidecar_bytes,
+                "declarationStyleSidecars": resources.declaration_style_sidecar_count,
+                "declarationStyleSidecarBytes": resources.declaration_style_sidecar_bytes,
+                "declarationNavigationSidecars": resources.declaration_navigation_sidecar_count,
+                "declarationNavigationSidecarBytes": resources.declaration_navigation_sidecar_bytes,
+                "estimatedOwnedBytes": resources.estimated_owned_bytes,
             },
         },
         "summary": {

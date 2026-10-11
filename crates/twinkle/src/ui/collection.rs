@@ -825,7 +825,7 @@ where
                     .semantic_role(SemanticRole::Grid)
             }
         };
-        element.navigation_scope = self.navigation_scope;
+        element.navigation_scope = self.navigation_scope.map(Box::new);
         element.style.controller_scope_background = self.controller_scope_background;
         if let Some(label) = self.accessibility_label {
             element = element.accessibility_label(label);
