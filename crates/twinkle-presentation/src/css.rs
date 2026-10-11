@@ -276,7 +276,8 @@ struct Rule {
 #[derive(Clone, Debug)]
 enum ParsedDeclaration {
     Custom(String, String),
-    Property(String, String),
+    DeferredProperty(String, String),
+    Typed(Declaration),
 }
 
 #[derive(Clone, Debug)]
@@ -318,6 +319,26 @@ enum Declaration {
 }
 
 impl Declaration {
+    fn allowed_in_interaction(&self) -> bool {
+        matches!(
+            self,
+            Self::Background(_)
+                | Self::Color(_)
+                | Self::Border(_, _)
+                | Self::BorderColor(_)
+                | Self::BorderWidth(_)
+                | Self::Radius(_)
+                | Self::FontSize(_)
+                | Self::LineHeight(_)
+                | Self::Width(_)
+                | Self::Height(_)
+        )
+    }
+
+    const fn is_window_offset(&self) -> bool {
+        matches!(self, Self::Bottom(_) | Self::Top(_))
+    }
+
     fn apply(&self, style: &mut ControlStyle) {
         match self {
             Self::Display(value) => style.display = Some(*value),
@@ -361,6 +382,51 @@ impl Declaration {
                 style.border_width = Some(*width);
                 style.border_color = Some(*color);
             }
+        }
+    }
+}
+
+impl ParsedDeclaration {
+    fn apply(&self, properties: &HashMap<String, String>, style: &mut ControlStyle) {
+        match self {
+            Self::Typed(declaration) => declaration.apply(style),
+            Self::DeferredProperty(name, value) => {
+                if let Ok(value) = resolve_value(value, properties, &mut HashSet::new())
+                    && let Ok(declaration) = declaration(name, &value)
+                {
+                    declaration.apply(style);
+                }
+            }
+            Self::Custom(..) => {}
+        }
+    }
+
+    fn allowed_in_interaction(&self) -> bool {
+        match self {
+            Self::Typed(declaration) => declaration.allowed_in_interaction(),
+            Self::DeferredProperty(name, _) => matches!(
+                name.as_str(),
+                "background"
+                    | "background-color"
+                    | "color"
+                    | "border"
+                    | "border-color"
+                    | "border-width"
+                    | "border-radius"
+                    | "font-size"
+                    | "line-height"
+                    | "width"
+                    | "height"
+            ),
+            Self::Custom(..) => false,
+        }
+    }
+
+    fn is_window_offset(&self) -> bool {
+        match self {
+            Self::Typed(declaration) => declaration.is_window_offset(),
+            Self::DeferredProperty(name, _) => name == "bottom" || name == "top",
+            Self::Custom(..) => false,
         }
     }
 }
@@ -580,6 +646,8 @@ pub(crate) fn color(source: &str) -> Result<u32, String> {
 }
 
 fn declaration(name: &str, value: &str) -> Result<Declaration, String> {
+    #[cfg(test)]
+    CSS_DECLARATION_PARSES.with(|count| count.set(count.get().saturating_add(1)));
     let value = value.trim();
     Ok(match name.to_ascii_lowercase().as_str() {
         "display" => Declaration::Display(match value {
@@ -881,13 +949,16 @@ impl<'i> QualifiedRuleParser<'i> for CssRuleParser {
                     "plugin CSS state selectors require an interactive control part",
                 ));
             }
-            if declarations.iter().any(|parsed| !matches!(parsed, ParsedDeclaration::Property(name, _) if matches!(name.as_str(), "background" | "background-color" | "color" | "border" | "border-color" | "border-width" | "border-radius" | "font-size" | "line-height" | "width" | "height"))) {
-                return Err(ParseError::custom("CSS interaction declarations require paint, typography, width, or height properties"));
+            if declarations
+                .iter()
+                .any(|parsed| !parsed.allowed_in_interaction())
+            {
+                return Err(ParseError::custom(
+                    "CSS interaction declarations require paint, typography, width, or height properties",
+                ));
             }
         }
-        if declarations
-            .iter()
-            .any(|declaration| matches!(declaration, ParsedDeclaration::Property(name, _) if name == "bottom" || name == "top"))
+        if declarations.iter().any(ParsedDeclaration::is_window_offset)
             && selectors
                 .iter()
                 .any(|selector| selector.kind.as_deref() != Some("window"))
@@ -935,7 +1006,13 @@ impl<'i> DeclarationParser<'i> for CssDeclarationParser {
             if !value.contains("var(") {
                 declaration(&name, &value).map_err(ParseError::custom)?;
             }
-            Ok(ParsedDeclaration::Property(name, value))
+            if value.contains("var(") {
+                Ok(ParsedDeclaration::DeferredProperty(name, value))
+            } else {
+                declaration(&name, &value)
+                    .map(ParsedDeclaration::Typed)
+                    .map_err(ParseError::custom)
+            }
         }
     }
 }
@@ -1179,6 +1256,7 @@ fn style_context_token(
 thread_local! {
     static CSS_KEY_SORTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static CSS_FULL_CONTEXT_HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CSS_DECLARATION_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 const INTERACTION_CACHE_ENTRIES: usize = 2048;
@@ -1398,7 +1476,8 @@ impl StyleSheet {
             for parsed in &rule.declarations {
                 let (name, value) = match parsed {
                     ParsedDeclaration::Custom(name, _) => (None, format!("var({name})")),
-                    ParsedDeclaration::Property(name, value) => (Some(name), value.clone()),
+                    ParsedDeclaration::DeferredProperty(name, value) => (Some(name), value.clone()),
+                    ParsedDeclaration::Typed(_) => continue,
                 };
                 match resolve_value(&value, &properties, &mut HashSet::new()) {
                     Ok(value) => {
@@ -1509,12 +1588,7 @@ impl StyleSheet {
                 .any(|selector| selector.matches(kind, id, class_name, None, ancestors))
             {
                 for parsed in &rule.declarations {
-                    if let ParsedDeclaration::Property(name, value) = parsed
-                        && let Ok(value) = resolve_value(value, &properties, &mut HashSet::new())
-                        && let Ok(declaration) = declaration(name, &value)
-                    {
-                        declaration.apply(&mut style);
-                    }
+                    parsed.apply(&properties, &mut style);
                 }
             }
         }
@@ -1591,12 +1665,7 @@ impl StyleSheet {
                     && selector.matches(kind, id, class_name, Some(state), ancestors)
             }) {
                 for parsed in &rule.declarations {
-                    if let ParsedDeclaration::Property(name, value) = parsed
-                        && let Ok(value) = resolve_value(value, properties, &mut HashSet::new())
-                        && let Ok(declaration) = declaration(name, &value)
-                    {
-                        declaration.apply(&mut style);
-                    }
+                    parsed.apply(properties, &mut style);
                 }
             }
         }
@@ -1685,11 +1754,16 @@ impl StyleSheet {
                 bytes += selector.classes.iter().map(String::capacity).sum::<usize>();
             }
             for declaration in &rule.declarations {
-                let (name, value) = match declaration {
+                match declaration {
                     ParsedDeclaration::Custom(name, value)
-                    | ParsedDeclaration::Property(name, value) => (name, value),
-                };
-                bytes += name.capacity() + value.capacity();
+                    | ParsedDeclaration::DeferredProperty(name, value) => {
+                        bytes += name.capacity() + value.capacity();
+                    }
+                    ParsedDeclaration::Typed(Declaration::GridColumns(tracks)) => {
+                        bytes += tracks.capacity() * std::mem::size_of::<Track>();
+                    }
+                    ParsedDeclaration::Typed(_) => {}
+                }
             }
         }
         bytes as u64
@@ -1698,6 +1772,40 @@ impl StyleSheet {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn static_declarations_are_typed_once_while_variables_remain_deferred() {
+        use super::*;
+
+        let css = StyleSheet::compile(
+            ":root { --space: 7px; } button { width: 40px; padding: var(--space); color: #123456; }",
+        )
+        .unwrap();
+        assert!(css.rules.iter().any(|rule| {
+            rule.declarations
+                .iter()
+                .any(|declaration| matches!(declaration, ParsedDeclaration::Typed(_)))
+        }));
+        assert!(css.rules.iter().any(|rule| {
+            rule.declarations.iter().any(|declaration| {
+                matches!(declaration, ParsedDeclaration::DeferredProperty(name, _) if name == "padding")
+            })
+        }));
+
+        CSS_DECLARATION_PARSES.with(|count| count.set(0));
+        let first = css.resolve("button", None, None);
+        let first_parses = CSS_DECLARATION_PARSES.with(std::cell::Cell::get);
+        assert_eq!(first.width, Some(Length::Px(40.0)));
+        assert_eq!(first.padding, Some(Insets::all(7.0)));
+        assert_eq!(first_parses, 1, "only the var()-dependent value reparses");
+
+        let _ = css.resolve("button", None, None);
+        assert_eq!(
+            CSS_DECLARATION_PARSES.with(std::cell::Cell::get),
+            first_parses,
+            "a stable cache hit parses no declarations"
+        );
+    }
+
     #[test]
     fn cached_styles_share_immutable_variables_without_sibling_leaks_or_retention() {
         use super::*;
