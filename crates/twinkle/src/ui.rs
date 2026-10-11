@@ -1023,6 +1023,8 @@ pub struct Style {
     pub overflow_y: Overflow,
     pub corner_radius: f32,
     pub top_corner_radius: f32,
+    pub css_paint: bool,
+    pub automatic_focus_tint: bool,
     details: Option<Box<StyleDetails>>,
 }
 
@@ -1041,8 +1043,6 @@ pub struct StyleDetails {
     pub pressed_background: Option<Background>,
     pub focus_background: Option<Background>,
     pub focus_background_tint: Option<Color>,
-    pub automatic_focus_tint: bool,
-    pub css_paint: bool,
     pub inherited_state_text: [bool; 3],
     pub parent_interaction: bool,
     pub auto_focus: bool,
@@ -1096,6 +1096,8 @@ impl PartialEq for Style {
             && self.overflow_y == other.overflow_y
             && self.corner_radius == other.corner_radius
             && self.top_corner_radius == other.top_corner_radius
+            && self.css_paint == other.css_paint
+            && self.automatic_focus_tint == other.automatic_focus_tint
             && **self == **other
     }
 }
@@ -1112,8 +1114,6 @@ impl Default for StyleDetails {
             pressed_background: None,
             focus_background: None,
             focus_background_tint: None,
-            automatic_focus_tint: true,
-            css_paint: false,
             inherited_state_text: [false; 3],
             parent_interaction: false,
             auto_focus: false,
@@ -1198,6 +1198,8 @@ impl Default for Style {
             overflow_y: Overflow::Visible,
             corner_radius: 0.0,
             top_corner_radius: 0.0,
+            css_paint: false,
+            automatic_focus_tint: true,
             details: None,
         }
     }
