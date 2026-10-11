@@ -24,19 +24,48 @@ pub(super) fn layout_element<Message: Clone>(
     inherited_foreground: Option<Color>,
     inherited_clip: Option<Rect>,
     tree: &mut UiFrame<Message>,
+    previous: Option<&UiFrame<Message>>,
 ) -> usize {
     let reusable = geometry_reuse_safe(element)
         .then(|| tree.reusable_geometry(id, bounds, inherited_clip))
         .flatten()
         .cloned();
+    if reusable
+        .as_ref()
+        .is_some_and(|geometry| geometry.allocated == bounds)
+        && !tree.diagnostics_enabled
+        && tree.retained_nodes.subtree_bulk_resolved_reuse_safe(id)
+        && tree.retained_nodes.subtree_is_clean(id)
+        && let Some(previous) = previous
+        && let Some(&old_start) = previous.resolved_indices.get(id)
+        && let Some(count) = tree.retained_nodes.subtree_node_count(id)
+        && count >= 4
+        && let Some(old_nodes) = previous.resolved.nodes.get(old_start..old_start + count)
+    {
+        let new_start = tree.resolved.nodes.len();
+        let delta = new_start as isize - old_start as isize;
+        tree.resolved
+            .nodes
+            .extend(old_nodes.iter().cloned().map(|mut node| {
+                if delta != 0 {
+                    for child in &mut node.children {
+                        *child = (*child as isize + delta) as usize;
+                    }
+                }
+                node
+            }));
+        tree.resolved_nodes_reused = tree.resolved_nodes_reused.saturating_add(count);
+        return new_start;
+    }
     let rect = bounds;
-    let cached_measurement = tree.retained_nodes.measured_for(id, bounds.size);
     let preferred = reusable.as_ref().map_or_else(
         || {
-            cached_measurement.unwrap_or_else(|| {
-                tree.nodes_measured = tree.nodes_measured.saturating_add(1);
-                measure_element(element, Constraints::loose(bounds.size))
-            })
+            tree.retained_nodes
+                .measured_for(id, bounds.size)
+                .unwrap_or_else(|| {
+                    tree.nodes_measured = tree.nodes_measured.saturating_add(1);
+                    measure_element(element, Constraints::loose(bounds.size))
+                })
         },
         |node| node.preferred,
     );
@@ -284,22 +313,22 @@ pub(super) fn layout_element<Message: Clone>(
     } else {
         inherited_clip
     };
-    if let Some(previous) = &reusable {
+    if let Some(previous_geometry) = &reusable {
         let translation = Point {
-            x: bounds.origin.x - previous.allocated.origin.x,
-            y: bounds.origin.y - previous.allocated.origin.y,
+            x: bounds.origin.x - previous_geometry.allocated.origin.x,
+            y: bounds.origin.y - previous_geometry.allocated.origin.y,
         };
         if matches!(element.kind, Kind::Grid { .. }) {
             tree.resolved.nodes[node_index]
                 .grid_tracks
-                .clone_from(&previous.grid_tracks);
+                .clone_from(&previous_geometry.grid_tracks);
             tree.grids.push(ResolvedGrid {
                 rect: rect.inset(element.style.padding),
-                columns: previous.grid_tracks.len().max(1),
+                columns: previous_geometry.grid_tracks.len().max(1),
             });
         }
         for (index, child) in element.children.iter().enumerate() {
-            let child_id = resolved_child_id(id, child, index);
+            let child_id = retained_child_id(tree, id, child, index);
             let Some(allocated) = tree
                 .retained_layout
                 .get(&child_id)
@@ -317,6 +346,7 @@ pub(super) fn layout_element<Message: Clone>(
                 foreground,
                 descendant_clip,
                 tree,
+                previous,
             ));
         }
         tree.resolved.nodes[node_index].children = child_indices;
@@ -341,13 +371,15 @@ pub(super) fn layout_element<Message: Clone>(
                     size.width.min((content.size.width - position.x).max(0.0)),
                     size.height.min((content.size.height - position.y).max(0.0)),
                 );
+                let child_id = retained_child_id(tree, id, child, index);
                 child_indices.push(layout_element(
                     child,
-                    &resolved_child_id(id, child, index),
+                    &child_id,
                     bounds,
                     foreground,
                     descendant_clip,
                     tree,
+                    previous,
                 ));
             }
         }
@@ -525,23 +557,27 @@ pub(super) fn layout_element<Message: Clone>(
                 descendant_clip
             };
             for (index, (child, bounds)) in element.children.iter().zip(child_bounds).enumerate() {
-                let child_id = resolved_child_id(id, child, index);
+                let child_id = retained_child_id(tree, id, child, index);
                 child_indices.push(layout_element(
-                    child, &child_id, bounds, foreground, child_clip, tree,
+                    child, &child_id, bounds, foreground, child_clip, tree, previous,
                 ));
             }
         }
         Kind::VerticalScroll { offset, .. } => {
             let requested_offset = *offset;
             let viewport = rect.inset(element.style.padding);
-            let initial_size = element.children.first().map(|child| {
-                measure_scroll_content(
-                    child,
-                    &resolved_child_id(id, child, 0),
-                    viewport.size.width,
-                    tree,
-                )
-            });
+            let scroll_child_id = element
+                .children
+                .first()
+                .map(|child| retained_child_id(tree, id, child, 0));
+            let initial_size =
+                element
+                    .children
+                    .first()
+                    .zip(scroll_child_id.as_ref())
+                    .map(|(child, child_id)| {
+                        measure_scroll_content(child, child_id, viewport.size.width, tree)
+                    });
             let reserves_scrollbar =
                 initial_size.is_some_and(|content| content.height > viewport.size.height + 0.01);
             let content_viewport = Rect::new(
@@ -574,7 +610,7 @@ pub(super) fn layout_element<Message: Clone>(
                 } else {
                     measure_scroll_content(
                         child,
-                        &resolved_child_id(id, child, 0),
+                        scroll_child_id.as_ref().expect("scroll child identity"),
                         content_viewport.size.width,
                         tree,
                     )
@@ -615,7 +651,7 @@ pub(super) fn layout_element<Message: Clone>(
                 }
                 child_indices.push(layout_element(
                     child,
-                    &resolved_child_id(id, child, 0),
+                    scroll_child_id.as_ref().expect("scroll child identity"),
                     Rect::new(
                         viewport.origin.x,
                         viewport.origin.y - offset,
@@ -625,6 +661,7 @@ pub(super) fn layout_element<Message: Clone>(
                     foreground,
                     Some(content_clip),
                     tree,
+                    previous,
                 ));
             }
         }
@@ -777,13 +814,15 @@ pub(super) fn layout_element<Message: Clone>(
                     Align::Baseline => (row_y + row_baseline - item_height * 0.8, item_height),
                     Align::Start => (row_y, item_height),
                 };
+                let child_id = retained_child_id(tree, id, child, index);
                 child_indices.push(layout_element(
                     child,
-                    &resolved_child_id(id, child, index),
+                    &child_id,
                     Rect::new(x, y, widths[column], height),
                     foreground,
                     descendant_clip,
                     tree,
+                    previous,
                 ));
             }
         }
@@ -797,7 +836,10 @@ fn geometry_reuse_safe<Message>(element: &Element<Message>) -> bool {
         || matches!(element.kind, Kind::Dropdown { .. })
         || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
         || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto);
-    !owns_auxiliary_layout_records && element.children.iter().all(geometry_reuse_safe)
+    // Reused geometry still recursively lays out every child. A descendant
+    // therefore recreates its own scroll/dropdown records when reached; only
+    // the current node must decline reuse when it owns auxiliary records.
+    !owns_auxiliary_layout_records
 }
 
 fn resolved_child_id<Message>(parent: &UiId, child: &Element<Message>, index: usize) -> UiId {
@@ -805,6 +847,17 @@ fn resolved_child_id<Message>(parent: &UiId, child: &Element<Message>, index: us
         || parent.scoped(format!("#{index}")),
         |id| parent.scoped(id.as_str()),
     )
+}
+
+fn retained_child_id<Message>(
+    tree: &UiFrame<Message>,
+    parent: &UiId,
+    child: &Element<Message>,
+    index: usize,
+) -> UiId {
+    tree.retained_nodes
+        .child_ui_id(parent, index)
+        .unwrap_or_else(|| resolved_child_id(parent, child, index))
 }
 
 fn mask_text(value: &str, mask: char) -> String {
@@ -844,12 +897,6 @@ fn apply_transient_state_with_parent<Message>(
     } else {
         direct_interaction
     };
-    let focus_foreground = element.style.foreground.or_else(|| {
-        element
-            .children
-            .iter()
-            .find_map(|child| focus_participating_foreground(child))
-    });
     let owns_state = element.style.parent_interaction
         || element.message.is_some()
         || element.navigation_scope.is_some()
@@ -861,6 +908,12 @@ fn apply_transient_state_with_parent<Message>(
             Kind::VerticalScroll { .. } | Kind::Dropdown { .. }
         );
     if owns_state {
+        let focus_foreground = element.style.foreground.or_else(|| {
+            element
+                .children
+                .iter()
+                .find_map(|child| focus_participating_foreground(child))
+        });
         let scope_background_active = state.window_focused()
             && state.input_modality() == InputModality::Controller
             && element.navigation_scope.is_some()

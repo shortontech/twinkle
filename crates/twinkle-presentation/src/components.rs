@@ -1,7 +1,7 @@
 //! Bounded JSX component tree and native Twinkle renderer.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -4894,7 +4894,7 @@ impl PanelNode {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NativeNodeId(String);
 
 impl NativeNodeId {
@@ -4922,6 +4922,7 @@ pub struct RetainedPanelTree {
     generation: u64,
     nodes: BTreeMap<NativeNodeId, String>,
     handler_slots: BTreeMap<HandlerSlotId, usize>,
+    view_ids: Arc<HashMap<NativeNodeId, String>>,
     sources: crate::virtual_source::VirtualSourceCatalog,
 }
 
@@ -5065,12 +5066,14 @@ impl RetainedPanelTree {
             Ok(())
         }
         index(source, &mut nodes, &mut handler_slots)?;
+        let view_ids = Arc::new(index_native_view_ids(source));
         Ok(Self {
             node,
             source: source.clone(),
             generation,
             nodes,
             handler_slots,
+            view_ids,
             sources,
         })
     }
@@ -5236,15 +5239,17 @@ impl RetainedPanelTree {
     /// to add otherwise-unnecessary `id` properties to every patched leaf.
     /// Structural and handler changes return `None` and require a full reconcile.
     pub fn changed_element_ids(&self, patch: &NativePatchEnvelope) -> Option<Vec<String>> {
-        let mut targets = std::collections::HashSet::with_capacity(patch.operations.len());
+        let mut ids = Vec::with_capacity(patch.operations.len());
         for operation in &patch.operations {
             let NativePatchOperation::SetPrimitive { target, .. } = operation else {
                 return None;
             };
-            targets.insert(target.as_str());
+            let id = self.view_ids.get(&NativeNodeId(target.clone()))?.clone();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
         }
-        let ids = find_source_node_paths(&self.source, &targets);
-        (ids.len() == targets.len()).then_some(ids)
+        Some(ids)
     }
 
     /// Apply a bounded native delta to clones of the accepted source and typed
@@ -5265,6 +5270,7 @@ impl RetainedPanelTree {
             self.sources.clone(),
             self.nodes.clone(),
             self.handler_slots.clone(),
+            Arc::clone(&self.view_ids),
             patch,
             manifest,
             expected_surface_id,
@@ -5294,6 +5300,7 @@ impl RetainedPanelTree {
             generation: _,
             nodes,
             handler_slots,
+            view_ids,
             sources,
         } = self;
         Self::apply_patch_parts(
@@ -5302,6 +5309,7 @@ impl RetainedPanelTree {
             sources,
             nodes,
             handler_slots,
+            view_ids,
             patch,
             manifest,
             expected_surface_id,
@@ -5318,6 +5326,7 @@ impl RetainedPanelTree {
         sources: crate::virtual_source::VirtualSourceCatalog,
         previous_nodes: BTreeMap<NativeNodeId, String>,
         previous_handler_slots: BTreeMap<HandlerSlotId, usize>,
+        previous_view_ids: Arc<HashMap<NativeNodeId, String>>,
         patch: &NativePatchEnvelope,
         manifest: &impl SurfaceBoundsProvider,
         expected_surface_id: Option<&str>,
@@ -5605,10 +5614,15 @@ impl RetainedPanelTree {
                     | NativePatchOperation::ReplaceSubtree { .. }
             )
         });
-        let (nodes, handler_slots) = if structural {
-            index_native_source_checked(&source, true)?
+        let (nodes, handler_slots, view_ids) = if structural {
+            let (nodes, handler_slots) = index_native_source_checked(&source, true)?;
+            (
+                nodes,
+                handler_slots,
+                Arc::new(index_native_view_ids(&source)),
+            )
         } else {
-            (previous_nodes, previous_handler_slots)
+            (previous_nodes, previous_handler_slots, previous_view_ids)
         };
         if let Some(surface_id) = expected_surface_id {
             let grant = manifest
@@ -5627,6 +5641,7 @@ impl RetainedPanelTree {
                 generation,
                 nodes,
                 handler_slots,
+                view_ids,
                 sources,
             },
             NativePatchApplyCounters {
@@ -5638,22 +5653,10 @@ impl RetainedPanelTree {
     }
 }
 
-fn find_source_node_paths(
-    source: &Value,
-    targets: &std::collections::HashSet<&str>,
-) -> Vec<String> {
-    fn visit(
-        source: &Value,
-        targets: &std::collections::HashSet<&str>,
-        id: &twinkle::UiId,
-        found: &mut Vec<String>,
-    ) {
-        if source
-            .get("__nativeId")
-            .and_then(Value::as_str)
-            .is_some_and(|target| targets.contains(target))
-        {
-            found.push(id.as_str().to_owned());
+fn index_native_view_ids(source: &Value) -> HashMap<NativeNodeId, String> {
+    fn visit(source: &Value, id: &twinkle::UiId, found: &mut HashMap<NativeNodeId, String>) {
+        if let Some(target) = source.get("__nativeId").and_then(Value::as_str) {
+            found.insert(NativeNodeId(target.to_owned()), id.as_str().to_owned());
         }
         if let Some(children) = source.get("children").and_then(Value::as_array) {
             for (index, child) in children.iter().enumerate() {
@@ -5661,19 +5664,19 @@ fn find_source_node_paths(
                     .get("id")
                     .and_then(Value::as_str)
                     .map_or_else(|| id.scoped(format!("#{index}")), |child| id.scoped(child));
-                visit(child, targets, &child_id, found);
+                visit(child, &child_id, found);
             }
         }
     }
 
-    let mut found = Vec::with_capacity(targets.len());
+    let mut found = HashMap::new();
     if let Some(roots) = source.as_array() {
         for root in roots {
             let id = root.get("id").and_then(Value::as_str).map_or_else(
                 || twinkle::UiId::from("root"),
                 |root| twinkle::UiId::from("root").scoped(root),
             );
-            visit(root, targets, &id, &mut found);
+            visit(root, &id, &mut found);
         }
         return found;
     }
@@ -5681,7 +5684,7 @@ fn find_source_node_paths(
         || twinkle::UiId::from("root"),
         |root| twinkle::UiId::from("root").scoped(root),
     );
-    visit(source, targets, &id, &mut found);
+    visit(source, &id, &mut found);
     found
 }
 

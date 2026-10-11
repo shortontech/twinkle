@@ -417,6 +417,8 @@ pub struct FrameResourceDiagnostics {
     pub scroll_content_measurements_reused: usize,
     /// Resolver nodes whose placement actually executed for this frame.
     pub nodes_placed: usize,
+    /// Complete resolved nodes copied from a proven-clean retained subtree.
+    pub resolved_nodes_reused: usize,
     pub paint_nodes_executed: usize,
     pub paint_nodes_reused: usize,
     pub interaction_nodes_executed: usize,
@@ -544,6 +546,7 @@ pub struct UiFrame<Message = String> {
     scroll_content_measurements: usize,
     scroll_content_measurements_reused: usize,
     nodes_placed: usize,
+    resolved_nodes_reused: usize,
     paint_nodes_executed: usize,
     paint_nodes_reused: usize,
     interaction_nodes_executed: usize,
@@ -610,6 +613,7 @@ impl<Message> Default for UiFrame<Message> {
             scroll_content_measurements: 0,
             scroll_content_measurements_reused: 0,
             nodes_placed: 0,
+            resolved_nodes_reused: 0,
             paint_nodes_executed: 0,
             paint_nodes_reused: 0,
             interaction_nodes_executed: 0,
@@ -1028,7 +1032,15 @@ impl<Message: Clone> UiFrame<Message> {
         );
         let content_id = overlay.as_ui_id().scoped("content");
         apply_transient_state(&mut content, &content_id, state);
-        let index = layout_element(&content, &content_id, content_rect, None, Some(rect), self);
+        let index = layout_element(
+            &content,
+            &content_id,
+            content_rect,
+            None,
+            Some(rect),
+            self,
+            None,
+        );
         self.resolved.nodes[parent].children.push(index);
         emit_element(&content, index, None, self, None, EmissionPhases::ALL);
         for node in &self.resolved.nodes[index..] {
@@ -1905,6 +1917,7 @@ impl<Message: Clone> UiFrame<Message> {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -1923,6 +1936,7 @@ impl<Message: Clone> UiFrame<Message> {
             Some(previous),
             None,
             None,
+            None,
         )
     }
 
@@ -1934,6 +1948,7 @@ impl<Message: Clone> UiFrame<Message> {
         previous: &mut Self,
     ) -> Self {
         let retained_nodes = std::mem::take(&mut previous.retained_nodes);
+        let retained_layout = std::mem::take(&mut previous.retained_layout);
         Self::layout_with_state_and_diagnostics_impl(
             root,
             request.viewport,
@@ -1941,6 +1956,7 @@ impl<Message: Clone> UiFrame<Message> {
             request.diagnostics == DiagnosticMode::Collect,
             Some(previous),
             Some(retained_nodes),
+            Some(retained_layout),
             None,
         )
     }
@@ -1954,6 +1970,7 @@ impl<Message: Clone> UiFrame<Message> {
         changed: &[UiId],
     ) -> Self {
         let retained_nodes = std::mem::take(&mut previous.retained_nodes);
+        let retained_layout = std::mem::take(&mut previous.retained_layout);
         Self::layout_with_state_and_diagnostics_impl(
             root,
             request.viewport,
@@ -1961,6 +1978,7 @@ impl<Message: Clone> UiFrame<Message> {
             request.diagnostics == DiagnosticMode::Collect,
             Some(previous),
             Some(retained_nodes),
+            Some(retained_layout),
             Some(changed),
         )
     }
@@ -1972,6 +1990,7 @@ impl<Message: Clone> UiFrame<Message> {
         diagnostics: bool,
         previous: Option<&Self>,
         retained_nodes: Option<super::retained::RetainedNodeArena>,
+        retained_layout: Option<HashMap<UiId, RetainedGeometry>>,
         changed_view_ids: Option<&[UiId]>,
     ) -> Self {
         let mut root = root.into_element();
@@ -1995,35 +2014,54 @@ impl<Message: Clone> UiFrame<Message> {
             retained_nodes: retained_nodes
                 .or_else(|| previous.map(|previous| previous.retained_nodes.clone()))
                 .unwrap_or_default(),
-            retained_layout: previous
-                .map(|previous| {
-                    previous
-                        .resolved
-                        .nodes
-                        .iter()
-                        .map(|node| {
-                            (
-                                node.id.clone(),
-                                RetainedGeometry {
-                                    preferred: node.preferred,
-                                    allocated: node.allocated,
-                                    clip: node.clip,
-                                    grid_tracks: node.grid_tracks.clone(),
-                                },
-                            )
-                        })
-                        .collect()
+            retained_layout: retained_layout
+                .or_else(|| {
+                    previous.map(|previous| {
+                        previous
+                            .resolved
+                            .nodes
+                            .iter()
+                            .map(|node| {
+                                (
+                                    node.id.clone(),
+                                    RetainedGeometry {
+                                        preferred: node.preferred,
+                                        allocated: node.allocated,
+                                        clip: node.clip,
+                                        grid_tracks: node.grid_tracks.clone(),
+                                    },
+                                )
+                            })
+                            .collect()
+                    })
                 })
                 .unwrap_or_default(),
-            semantic_parents: previous
-                .map(|previous| previous.semantic_parents.clone())
-                .unwrap_or_default(),
-            resolved_indices: previous
-                .map(|previous| previous.resolved_indices.clone())
-                .unwrap_or_default(),
-            navigation_owners: previous
-                .map(|previous| previous.navigation_owners.clone())
-                .unwrap_or_default(),
+            semantic_parents: Vec::with_capacity(
+                previous.map_or(0, |previous| previous.semantic_parents.len()),
+            ),
+            resolved_indices: HashMap::with_capacity(
+                previous.map_or(0, |previous| previous.resolved_indices.len()),
+            ),
+            navigation_owners: HashMap::with_capacity(
+                previous.map_or(0, |previous| previous.navigation_owners.len()),
+            ),
+            commands: Vec::with_capacity(previous.map_or(0, |previous| previous.commands.len())),
+            paint_fragments: Vec::with_capacity(
+                previous.map_or(0, |previous| previous.paint_fragments.len()),
+            ),
+            hits: Vec::with_capacity(previous.map_or(0, |previous| previous.hits.len())),
+            messages: Vec::with_capacity(previous.map_or(0, |previous| previous.messages.len())),
+            accessibility: Vec::with_capacity(
+                previous.map_or(0, |previous| previous.accessibility.len()),
+            ),
+            navigation_depths: Vec::with_capacity(
+                previous.map_or(0, |previous| previous.navigation_depths.len()),
+            ),
+            resolved: ResolvedLayout {
+                nodes: Vec::with_capacity(
+                    previous.map_or(0, |previous| previous.resolved.nodes.len()),
+                ),
+            },
             ..Self::default()
         };
         if let Some(changed) = changed_view_ids.filter(|changed| !changed.is_empty()) {
@@ -2031,7 +2069,7 @@ impl<Message: Clone> UiFrame<Message> {
         } else {
             tree.retained_nodes.reconcile(&root);
         }
-        layout_element(&root, &root_id, bounds, None, None, &mut tree);
+        layout_element(&root, &root_id, bounds, None, None, &mut tree, previous);
         let initial = tree
             .resolved
             .nodes
@@ -2100,8 +2138,26 @@ impl<Message: Clone> UiFrame<Message> {
         for node in tree.resolved.nodes() {
             tree.retained_nodes
                 .capture_layout(&node.id, node.preferred, node.allocated);
+            if let Some(geometry) = tree.retained_layout.get_mut(&node.id) {
+                geometry.preferred = node.preferred;
+                geometry.allocated = node.allocated;
+                geometry.clip = node.clip;
+                geometry.grid_tracks.clone_from(&node.grid_tracks);
+            } else {
+                tree.retained_layout.insert(
+                    node.id.clone(),
+                    RetainedGeometry {
+                        preferred: node.preferred,
+                        allocated: node.allocated,
+                        clip: node.clip,
+                        grid_tracks: node.grid_tracks.clone(),
+                    },
+                );
+            }
         }
-        tree.retained_layout.clear();
+        let live = &tree.resolved_indices;
+        tree.retained_layout.retain(|id, _| live.contains_key(id));
+        tree.retained_nodes.commit_frame();
         tree.release_build_scratch();
         tree
     }
@@ -2600,7 +2656,7 @@ impl<Message: Clone> UiFrame<Message> {
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
         );
-        layout_element(&root, &root_id, bounds, None, None, &mut tree);
+        layout_element(&root, &root_id, bounds, None, None, &mut tree, None);
         tree.selection_regions = collect_selection_regions(&root, &tree.resolved);
         tree.reset_emission();
         emit_element(&root, 0, None, &mut tree, None, EmissionPhases::ALL);
@@ -3511,6 +3567,7 @@ impl<Message: Clone> UiFrame<Message> {
             scroll_content_measurements: self.scroll_content_measurements,
             scroll_content_measurements_reused: self.scroll_content_measurements_reused,
             nodes_placed: self.nodes_placed,
+            resolved_nodes_reused: self.resolved_nodes_reused,
             paint_nodes_executed: self.paint_nodes_executed,
             paint_nodes_reused: self.paint_nodes_reused,
             interaction_nodes_executed: self.interaction_nodes_executed,
@@ -6801,7 +6858,9 @@ impl<Message: Clone> UiFrame<Message> {
     }
 
     fn emit_accessibility_geometry(&mut self, previous: Option<&Self>) {
-        self.semantic_parents = vec![None; self.resolved.nodes.len()];
+        self.semantic_parents.clear();
+        self.semantic_parents
+            .resize(self.resolved.nodes.len(), None);
         self.resolved_indices.clear();
         self.resolved_indices.reserve(self.resolved.nodes.len());
         self.navigation_owners.clear();

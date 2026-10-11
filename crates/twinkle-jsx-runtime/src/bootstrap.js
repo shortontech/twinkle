@@ -584,13 +584,33 @@ function __twinkleSetData(data) {
     __mountDataBase = null;
     __twinklePublishData(data);
 }
+function __twinkleDataEqual(previous, next) {
+    if (Object.is(previous, next)) return true;
+    if (previous === null || next === null || typeof previous !== 'object' || typeof next !== 'object')
+        return false;
+    const previousArray = Array.isArray(previous);
+    if (previousArray !== Array.isArray(next)) return false;
+    if (previousArray) {
+        if (previous.length !== next.length) return false;
+        for (let index = 0; index < previous.length; index++)
+            if (!__twinkleDataEqual(previous[index], next[index])) return false;
+        return true;
+    }
+    const previousKeys = Object.keys(previous);
+    const nextKeys = Object.keys(next);
+    if (previousKeys.length !== nextKeys.length) return false;
+    for (const key of previousKeys)
+        if (!Object.prototype.hasOwnProperty.call(next, key)
+            || !__twinkleDataEqual(previous[key], next[key])) return false;
+    return true;
+}
 function __twinklePublishData(data) {
     const changed = new Map();
     const fieldChanged = name => {
         if (!changed.has(name)) {
             const previous = name === '*' ? __twinkleData : __twinkleProjectionField(__twinkleData, name);
             const next = name === '*' ? data : __twinkleProjectionField(data, name);
-            changed.set(name, !Object.is(previous, next) && JSON.stringify(previous) !== JSON.stringify(next));
+            changed.set(name, !__twinkleDataEqual(previous, next));
         }
         return changed.get(name);
     };
@@ -1564,7 +1584,7 @@ function __twinkleRollbackRender() {
         __handlers = handlers;
         __previousHandlers = previousHandlers;
         __handlerSlots = handlerSlots;
-        __twinkleRestoreHooks(hooks, values, effectsLength);
+        __twinkleRestoreHooks(hooks, values, effectsLength, records);
         __componentRecords = records;
         __dirtyComponents = dirty;
         __pendingRender = null;
@@ -1572,7 +1592,7 @@ function __twinkleRollbackRender() {
     __twinkleRollbackEvent();
 }
 
-function __twinkleRestoreHooks(hooks, values, effectsLength) {
+function __twinkleRestoreHooks(hooks, values, effectsLength, records = null) {
     let componentIndex = 0;
     for (const slots of hooks.values()) {
         const oldValues = values[componentIndex++];
@@ -1581,6 +1601,8 @@ function __twinkleRestoreHooks(hooks, values, effectsLength) {
             else entry.value = oldValues[index];
         });
     }
+    if (records !== null)
+        for (const path of records.keys()) if (!hooks.has(path)) hooks.set(path, []);
     __componentHooks = hooks;
     __effects.length = effectsLength;
 }
@@ -1590,7 +1612,7 @@ function __twinkleRollbackEvent() {
     const {handlers, previousHandlers, hooks, records, values, effectsLength, effects, dirty} = __pendingEvent;
     __handlers = handlers;
     __previousHandlers = previousHandlers;
-    __twinkleRestoreHooks(hooks, values, effectsLength);
+    __twinkleRestoreHooks(hooks, values, effectsLength, records);
     __componentRecords = records;
     __effects = effects;
     __dirtyComponents = dirty;
@@ -1645,8 +1667,9 @@ function __twinkleRender(component = __twinkleActiveEntry(), patchOnly = false) 
     const profile=__twinkleProfile(),reconciliationStarted=Date.now();profile.renders++;
     const previousHandlers = __handlers;
     const olderHandlers = __previousHandlers;
-    const previousHooks = new Map(Array.from(__componentHooks, ([path, hooks]) => [path, hooks.slice()]));
-    const previousValues = Array.from(__componentHooks.values(), hooks => hooks.map(entry =>
+    const statefulHooks = Array.from(__componentHooks).filter(([, hooks]) => hooks.length);
+    const previousHooks = new Map(statefulHooks.map(([path, hooks]) => [path, hooks.slice()]));
+    const previousValues = statefulHooks.map(([, hooks]) => hooks.map(entry =>
         entry.kind === 'ref' ? entry.value.current : entry.value));
     const previousRecords = __componentRecords;
     __pendingRender = {handlers: previousHandlers, previousHandlers: olderHandlers, handlerSlots:new Map(__handlerSlots), hooks: previousHooks,

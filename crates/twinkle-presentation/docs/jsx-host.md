@@ -85,6 +85,13 @@ complete set to skip clean retained declaration branches during a pure applicati
 missing paths, structural patches, and batches mixed with input or geometry changes automatically
 fall back to conservative full reconciliation. The paths are derived from native tree position, so
 ordinary non-interactive leaves do not need artificial `id` properties for this optimization.
+Twinkle indexes both patch targets and native `UiId` paths when a tree is admitted; lookup does not
+rescan the source tree on every tick. After admission, an authoritative property patch reconciles
+only each changed node and its ancestry. Multi-node sibling subtrees whose layout, paint,
+interaction, and semantics are all proven clean can reuse their complete resolved-frame records;
+small leaves continue through the cheaper normal construction path. These are host optimizations,
+not extra package contracts: never omit a changed path, and do not manufacture IDs merely to make
+an update look local.
 
 The lifecycle distinction is:
 

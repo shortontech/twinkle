@@ -1880,6 +1880,7 @@ pub struct HostTelemetry {
     pub view_calls: usize,
     pub nodes_measured: usize,
     pub nodes_placed: usize,
+    pub resolved_nodes_reused: usize,
     pub paint_commands_emitted: usize,
     pub paint_fragments_rebuilt: usize,
     pub paint_fragments_reused: usize,
@@ -1990,6 +1991,10 @@ impl HostEventOutcome {
             .telemetry
             .nodes_placed
             .saturating_add(other.telemetry.nodes_placed);
+        self.telemetry.resolved_nodes_reused = self
+            .telemetry
+            .resolved_nodes_reused
+            .saturating_add(other.telemetry.resolved_nodes_reused);
         self.telemetry.paint_commands_emitted = self
             .telemetry
             .paint_commands_emitted
@@ -4187,6 +4192,10 @@ impl<A: Application> UiHost<A> {
             .telemetry
             .nodes_placed
             .saturating_add(resources.nodes_placed);
+        cancellation.telemetry.resolved_nodes_reused = cancellation
+            .telemetry
+            .resolved_nodes_reused
+            .saturating_add(resources.resolved_nodes_reused);
         cancellation.telemetry.paint_commands_emitted = cancellation
             .telemetry
             .paint_commands_emitted

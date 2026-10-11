@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use crate::{Rect, Size, UiId};
@@ -77,6 +77,9 @@ pub(crate) struct RetainedNode {
     children: Vec<RetainedNodeId>,
     subtree_dirty: DirtyPhases,
     subtree_nodes: usize,
+    /// Whether resolved records can be copied without recreating auxiliary
+    /// layout collections such as grids, scroll regions, or dropdown layers.
+    subtree_bulk_resolved_reuse_safe: bool,
     /// Recomputed bottom-up during reconciliation, before layout reuse queries.
     subtree_layout_clean: bool,
     pub(crate) phases: RetainedPhaseData,
@@ -121,8 +124,12 @@ pub(crate) struct RetainedNodeArena {
     next_id: u64,
     root: Option<RetainedNodeId>,
     nodes: HashMap<RetainedNodeId, RetainedNode>,
-    by_ui_id: BTreeMap<UiId, RetainedNodeId>,
+    // Identity lookup is on every retained layout/emission query. Ordering is
+    // never observed; hashing avoids paying tree-comparison cost for the full
+    // scoped UiId path several times per node and frame.
+    by_ui_id: HashMap<UiId, RetainedNodeId>,
     last: ReconcileStats,
+    pending_commit: Vec<RetainedNodeId>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -480,7 +487,61 @@ fn phase_matches(
                 .is_some_and(|(current, previous)| current == previous))
 }
 
+fn changed_phases(current: PhaseSignatures, previous: PhaseSignatures) -> DirtyPhases {
+    let mut dirty = DirtyPhases::default();
+    if !phase_matches(
+        current.measure,
+        previous.measure,
+        current.measure_content_sensitive,
+        previous.measure_content_sensitive,
+        current.content_revision,
+        previous.content_revision,
+    ) {
+        dirty.insert(DirtyPhases::MEASURE.union(DirtyPhases::PLACE));
+    }
+    if current.place != previous.place {
+        dirty.insert(DirtyPhases::PLACE);
+    }
+    if !phase_matches(
+        current.paint,
+        previous.paint,
+        current.paint_content_sensitive,
+        previous.paint_content_sensitive,
+        current.content_revision,
+        previous.content_revision,
+    ) {
+        dirty.insert(DirtyPhases::PAINT);
+    }
+    if !phase_matches(
+        current.interaction,
+        previous.interaction,
+        current.interaction_content_sensitive,
+        previous.interaction_content_sensitive,
+        current.content_revision,
+        previous.content_revision,
+    ) {
+        dirty.insert(DirtyPhases::INTERACTION);
+    }
+    if !phase_matches(
+        current.semantics,
+        previous.semantics,
+        current.semantics_content_sensitive,
+        previous.semantics_content_sensitive,
+        current.content_revision,
+        previous.content_revision,
+    ) {
+        dirty.insert(DirtyPhases::SEMANTICS);
+    }
+    dirty
+}
+
 impl RetainedNodeArena {
+    pub(crate) fn child_ui_id(&self, parent: &UiId, index: usize) -> Option<UiId> {
+        let parent = self.by_ui_id.get(parent)?;
+        let child = self.nodes.get(parent)?.children.get(index)?;
+        self.nodes.get(child).map(|node| node.ui_id.clone())
+    }
+
     pub(crate) fn phase_is_clean(&self, id: &UiId, phase: DirtyPhases) -> bool {
         self.by_ui_id
             .get(id)
@@ -493,6 +554,20 @@ impl RetainedNodeArena {
             return false;
         };
         !node.subtree_dirty.contains(phase)
+    }
+
+    pub(crate) fn subtree_is_clean(&self, id: &UiId) -> bool {
+        self.by_ui_id
+            .get(id)
+            .and_then(|node| self.nodes.get(node))
+            .is_some_and(|node| node.subtree_dirty.is_empty())
+    }
+
+    pub(crate) fn subtree_bulk_resolved_reuse_safe(&self, id: &UiId) -> bool {
+        self.by_ui_id
+            .get(id)
+            .and_then(|node| self.nodes.get(node))
+            .is_some_and(|node| node.subtree_bulk_resolved_reuse_safe)
     }
 
     pub(crate) fn subtree_node_count(&self, id: &UiId) -> Option<usize> {
@@ -542,7 +617,141 @@ impl RetainedNodeArena {
                 node = parent;
             }
         }
-        self.reconcile_impl(root, Some(&ancestry))
+        let Some(root_id) = self.root else {
+            return self.reconcile(root);
+        };
+        let root_ui_id = root.id.as_ref().map_or_else(
+            || UiId::from("root"),
+            |id| UiId::from("root").scoped(id.as_str()),
+        );
+        if !self.changed_shape_matches(root, root_id, &root_ui_id, &ancestry) {
+            return self.reconcile(root);
+        }
+        self.last = ReconcileStats::default();
+        self.pending_commit.clear();
+        self.reconcile_changed_node(root, root_id, &ancestry);
+        self.last.clone()
+    }
+
+    fn changed_shape_matches<Message>(
+        &self,
+        element: &Element<Message>,
+        id: RetainedNodeId,
+        ui_id: &UiId,
+        ancestry: &HashSet<RetainedNodeId>,
+    ) -> bool {
+        let Some(node) = self.nodes.get(&id) else {
+            return false;
+        };
+        if node.kind != kind_tag(&element.kind)
+            || node.ui_id != *ui_id
+            || node.children.len() != element.children.len()
+        {
+            return false;
+        }
+        for (index, (child, child_id)) in element.children.iter().zip(&node.children).enumerate() {
+            let identity = child
+                .id
+                .clone()
+                .map_or(ChildIdentity::Position(index), ChildIdentity::Key);
+            let child_ui_id = child.id.as_ref().map_or_else(
+                || ui_id.scoped(format!("#{index}")),
+                |id| ui_id.scoped(id.as_str()),
+            );
+            let Some(retained) = self.nodes.get(child_id) else {
+                return false;
+            };
+            if retained.parent != Some(id)
+                || retained.identity != identity
+                || retained.ui_id != child_ui_id
+                || retained.kind != kind_tag(&child.kind)
+            {
+                return false;
+            }
+            if ancestry.contains(child_id)
+                && !self.changed_shape_matches(child, *child_id, &child_ui_id, ancestry)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn reconcile_changed_node<Message>(
+        &mut self,
+        element: &Element<Message>,
+        id: RetainedNodeId,
+        ancestry: &HashSet<RetainedNodeId>,
+    ) {
+        self.last.visited += 1;
+        self.last.reused += 1;
+        let (previous, children) = {
+            let node = &self.nodes[&id];
+            (node.signatures, node.children.clone())
+        };
+        let current = signatures(element);
+        let mut dirty = changed_phases(current, previous);
+        for (child, child_id) in element.children.iter().zip(&children) {
+            if ancestry.contains(child_id) {
+                self.reconcile_changed_node(child, *child_id, ancestry);
+            }
+        }
+        let mut descendants = DirtyPhases::default();
+        for child in &children {
+            descendants.insert(self.nodes[child].subtree_dirty);
+        }
+        if descendants.contains(DirtyPhases::MEASURE) {
+            dirty.insert(
+                DirtyPhases::MEASURE
+                    .union(DirtyPhases::PLACE)
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        } else if descendants.contains(DirtyPhases::PLACE) {
+            dirty.insert(
+                DirtyPhases::PLACE
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        }
+        let subtree_dirty = dirty.union(descendants);
+        let children_layout_clean = children
+            .iter()
+            .all(|child| self.nodes[child].subtree_layout_clean);
+        let node = self.nodes.get_mut(&id).expect("validated retained node");
+        node.signatures = current;
+        node.dirty = dirty;
+        node.subtree_dirty = subtree_dirty;
+        node.subtree_layout_clean = children_layout_clean
+            && !dirty.contains(DirtyPhases::MEASURE)
+            && !dirty.contains(DirtyPhases::PLACE)
+            && node.phases.measured.is_some()
+            && node.phases.allocated.is_some();
+        node.invalidate_dirty_phases();
+        if subtree_dirty.is_empty() {
+            self.last.clean += 1;
+        } else {
+            self.pending_commit.push(id);
+        }
+    }
+
+    /// Mark the phases executed by a successfully published frame clean while
+    /// retaining their cached products for the next sparse reconciliation.
+    pub(crate) fn commit_frame(&mut self) {
+        for id in std::mem::take(&mut self.pending_commit) {
+            let children_layout_clean = self.nodes[&id]
+                .children
+                .iter()
+                .all(|child| self.nodes[child].subtree_layout_clean);
+            let node = self.nodes.get_mut(&id).expect("pending retained node");
+            node.dirty = DirtyPhases::default();
+            node.subtree_dirty = DirtyPhases::default();
+            node.subtree_layout_clean = children_layout_clean
+                && node.phases.measured.is_some()
+                && node.phases.allocated.is_some();
+        }
     }
 
     fn reconcile_impl<Message>(
@@ -554,6 +763,7 @@ impl RetainedNodeArena {
         let old_count = old_nodes.len();
         let old_root = self.root.take();
         self.last = ReconcileStats::default();
+        self.pending_commit.clear();
         if changed_ancestry.is_none() {
             self.by_ui_id.clear();
         }
@@ -613,50 +823,7 @@ impl RetainedNodeArena {
         let (id, mut phases, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
             consumed.insert(old.id);
             self.last.reused += 1;
-            let mut dirty = DirtyPhases::default();
-            if !phase_matches(
-                current.measure,
-                old.signatures.measure,
-                current.measure_content_sensitive,
-                old.signatures.measure_content_sensitive,
-                current.content_revision,
-                old.signatures.content_revision,
-            ) {
-                dirty.insert(DirtyPhases::MEASURE.union(DirtyPhases::PLACE));
-            }
-            if current.place != old.signatures.place {
-                dirty.insert(DirtyPhases::PLACE);
-            }
-            if !phase_matches(
-                current.paint,
-                old.signatures.paint,
-                current.paint_content_sensitive,
-                old.signatures.paint_content_sensitive,
-                current.content_revision,
-                old.signatures.content_revision,
-            ) {
-                dirty.insert(DirtyPhases::PAINT);
-            }
-            if !phase_matches(
-                current.interaction,
-                old.signatures.interaction,
-                current.interaction_content_sensitive,
-                old.signatures.interaction_content_sensitive,
-                current.content_revision,
-                old.signatures.content_revision,
-            ) {
-                dirty.insert(DirtyPhases::INTERACTION);
-            }
-            if !phase_matches(
-                current.semantics,
-                old.signatures.semantics,
-                current.semantics_content_sensitive,
-                old.signatures.semantics_content_sensitive,
-                current.content_revision,
-                old.signatures.content_revision,
-            ) {
-                dirty.insert(DirtyPhases::SEMANTICS);
-            }
+            let dirty = changed_phases(current, old.signatures);
             // The prior arena is already owned by this reconciliation. Move
             // retained resources instead of cloning buffers before invalidation.
             (old.id, std::mem::take(&mut old.phases), dirty)
@@ -758,6 +925,11 @@ impl RetainedNodeArena {
             .iter()
             .map(|child| self.nodes[child].subtree_nodes)
             .sum::<usize>();
+        let subtree_bulk_resolved_reuse_safe =
+            !matches!(kind, KindTag::Grid | KindTag::Scroll | KindTag::Dropdown)
+                && children
+                    .iter()
+                    .all(|child| self.nodes[child].subtree_bulk_resolved_reuse_safe);
         let subtree_layout_clean = children
             .iter()
             .all(|child| self.nodes[child].subtree_layout_clean)
@@ -777,10 +949,14 @@ impl RetainedNodeArena {
             children,
             subtree_dirty,
             subtree_nodes,
+            subtree_bulk_resolved_reuse_safe,
             subtree_layout_clean,
             phases,
         };
         node.invalidate_dirty_phases();
+        if !node.subtree_dirty.is_empty() {
+            self.pending_commit.push(id);
+        }
         if node.dirty.is_empty() {
             self.last.clean += 1;
         }
@@ -1140,6 +1316,38 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_leaf_changes_reconcile_only_their_ancestry() {
+        let view = |changed: bool| {
+            Column::<()>::new()
+                .children((0..200).map(|index| {
+                    Text::new(if changed && index == 137 { "B" } else { "A" })
+                        .id(format!("cell-{index}"))
+                        .content_revision(u64::from(changed && index == 137))
+                }))
+                .into_element()
+        };
+        let before = view(false);
+        let after = view(true);
+        let mut sparse = RetainedNodeArena::default();
+        sparse.reconcile(&before);
+        sparse.commit_frame();
+        let mut full = sparse.clone();
+
+        let target = UiId::from("root").scoped("cell-137");
+        let sparse_stats = sparse.reconcile_changed(&after, &[target]);
+        let full_stats = full.reconcile(&after);
+
+        assert_eq!(sparse_stats.visited, 2);
+        assert_eq!(full_stats.visited, 201);
+        for (id, sparse_node) in &sparse.nodes {
+            let full_node = &full.nodes[id];
+            assert_eq!(sparse_node.signatures, full_node.signatures);
+            assert_eq!(sparse_node.dirty, full_node.dirty);
+            assert_eq!(sparse_node.subtree_dirty, full_node.subtree_dirty);
+        }
+    }
+
+    #[test]
     fn reconciliation_moves_retained_buffers_instead_of_cloning_them() {
         let mut arena = RetainedNodeArena::default();
         let view = keyed_text("leaf", "same");
@@ -1393,6 +1601,40 @@ mod tests {
         assert_eq!(next.resolved_layout(), cold.resolved_layout());
         assert_eq!(next.commands(), cold.commands());
         assert_eq!(next.semantic_nodes(), cold.semantic_nodes());
+    }
+
+    #[test]
+    fn authoritative_change_bulk_reuses_clean_resolved_sibling_subtree() {
+        let bounds = Rect::new(0.0, 0.0, 400.0, 200.0);
+        let make_view = |changed: &str| {
+            Column::new()
+                .width(400.0)
+                .height(200.0)
+                .child(Text::<()>::new(changed).id("changed").height(24.0))
+                .child(Column::new().id("stable").children([
+                    keyed_text("one", "One"),
+                    keyed_text("two", "Two"),
+                    keyed_text("three", "Three"),
+                ]))
+                .into_element()
+        };
+        let mut state = UiStateStore::default();
+        let mut previous =
+            UiFrame::resolve(make_view("before"), FrameRequest::new(bounds, &mut state));
+        let next = UiFrame::resolve_against_reusing_changed(
+            make_view("after"),
+            FrameRequest::new(bounds, &mut state),
+            &mut previous,
+            &[UiId::from("root/changed")],
+        );
+        assert_eq!(next.resource_diagnostics().resolved_nodes_reused, 4);
+
+        let mut cold_state = UiStateStore::default();
+        let cold = UiFrame::resolve(
+            make_view("after"),
+            FrameRequest::new(bounds, &mut cold_state),
+        );
+        assert_frame_oracle(&next, &cold);
     }
 
     #[test]

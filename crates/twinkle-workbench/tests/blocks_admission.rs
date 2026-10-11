@@ -301,6 +301,7 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
             "lastFrameWork": {
                 "nodesMeasured": samples.last_telemetry.nodes_measured,
                 "nodesPlaced": samples.last_telemetry.nodes_placed,
+                "resolvedNodesReused": samples.last_telemetry.resolved_nodes_reused,
                 "paintFragmentsRebuilt": samples.last_telemetry.paint_fragments_rebuilt,
                 "paintFragmentsReused": samples.last_telemetry.paint_fragments_reused,
                 "semanticNodesRebuilt": samples.last_telemetry.semantic_nodes_rebuilt,
