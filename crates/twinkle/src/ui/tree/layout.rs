@@ -23,9 +23,12 @@ pub(super) fn layout_element<Message: Clone>(
     bounds: Rect,
     inherited_foreground: Option<Color>,
     inherited_clip: Option<Rect>,
+    overlay: Option<&TransientStateJournal>,
     tree: &mut UiFrame<Message>,
     previous: Option<&UiFrame<Message>>,
 ) -> usize {
+    let style = overlay.map_or(&element.style, |overlay| overlay.style(id, element));
+    let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(id, element));
     let reusable = geometry_reuse_safe(element)
         .then(|| tree.reusable_geometry(id, bounds, inherited_clip))
         .flatten()
@@ -64,7 +67,17 @@ pub(super) fn layout_element<Message: Clone>(
                 .measured_for(id, bounds.size)
                 .unwrap_or_else(|| {
                     tree.nodes_measured = tree.nodes_measured.saturating_add(1);
-                    measure_element(element, Constraints::loose(bounds.size))
+                    overlay.map_or_else(
+                        || measure_element(element, Constraints::loose(bounds.size)),
+                        |overlay| {
+                            measure_element_with_overlay(
+                                element,
+                                id,
+                                overlay,
+                                Constraints::loose(bounds.size),
+                            )
+                        },
+                    )
                 })
         },
         |node| node.preferred,
@@ -81,19 +94,18 @@ pub(super) fn layout_element<Message: Clone>(
         ..InteractionState::default()
     };
     let derived_accessible_name = derive_accessible_name(element);
-    let missing_accessible_name = element.style.semantic_role.is_some()
+    let missing_accessible_name = style.semantic_role.is_some()
         && derived_accessible_name.as_deref().is_none_or(str::is_empty)
-        && !element.style.semantic_decorative;
-    let semantic_role = (!missing_accessible_name && !element.style.semantic_decorative)
-        .then_some(element.style.semantic_role)
+        && !style.semantic_decorative;
+    let semantic_role = (!missing_accessible_name && !style.semantic_decorative)
+        .then_some(style.semantic_role)
         .flatten();
-    let semantic_hidden = element.style.accessibility_hidden
-        || element.style.semantic_decorative
-        || missing_accessible_name;
+    let semantic_hidden =
+        style.accessibility_hidden || style.semantic_decorative || missing_accessible_name;
     let semantic_actions = {
         let mut actions = Vec::new();
         if !missing_accessible_name {
-            if let Kind::Slider { value, .. } = &element.kind
+            if let Kind::Slider { value, .. } = kind
                 && (element.message_mapper.is_some() || element.seeded_value_mapper.is_some())
             {
                 if *value < 1.0 {
@@ -114,7 +126,7 @@ pub(super) fn layout_element<Message: Clone>(
         }
         actions
     };
-    let semantic_value = match &element.kind {
+    let semantic_value = match kind {
         Kind::Slider { value, .. } => Some(SemanticValueSnapshot::Number {
             value: f64::from(*value),
             minimum: 0.0,
@@ -139,38 +151,38 @@ pub(super) fn layout_element<Message: Clone>(
         _ => None,
     };
     tree.resolved.nodes.push(ResolvedNode {
-        component: element.kind.name(),
+        component: kind.name(),
         id: id.clone(),
         source: element.source,
         allocated: rect,
         padding_box: rect,
         border_box: rect,
-        content: rect.inset(element.style.padding),
+        content: rect.inset(style.padding),
         constraints: Constraints::new(
-            Size::new(element.style.min_width, element.style.min_height),
-            Size::new(element.style.max_width, element.style.max_height),
+            Size::new(style.min_width, style.min_height),
+            Size::new(style.max_width, style.max_height),
         ),
         preferred,
-        flex_basis: element.style.basis,
-        flex_grow: element.style.grow,
-        flex_shrink: element.style.shrink,
+        flex_basis: style.basis,
+        flex_grow: style.grow,
+        flex_shrink: style.shrink,
         clip: inherited_clip,
         interaction,
         children: Vec::new(),
         details: ResolvedNodeDetails::compact(ResolvedNodeDetails {
-            auto_focus: element.style.auto_focus,
+            auto_focus: style.auto_focus,
             navigation_scope: element.navigation_scope.as_deref().cloned(),
             virtual_navigation: element.virtual_navigation.clone(),
             adjustment_step: element.adjustment_step,
-            controller_value: match &element.kind {
+            controller_value: match kind {
                 Kind::Slider { value, .. } => Some(*value),
                 _ => None,
             },
             accessibility_label: derived_accessible_name,
-            accessibility_description: element.style.accessibility_description.clone(),
-            accessibility_role: element.style.accessibility_role.clone(),
-            accessibility_state: element.style.accessibility_state.clone(),
-            accessibility_controls: element.style.accessibility_controls.clone(),
+            accessibility_description: style.accessibility_description.clone(),
+            accessibility_role: style.accessibility_role.clone(),
+            accessibility_state: style.accessibility_state.clone(),
+            accessibility_controls: style.accessibility_controls.clone(),
             accessibility_hidden: semantic_hidden,
             semantic_role,
             semantic_actions,
@@ -192,18 +204,13 @@ pub(super) fn layout_element<Message: Clone>(
             "stable identity occurs more than once in this surface",
         );
     }
-    if element.style.min_width > element.style.max_width
-        || element.style.min_height > element.style.max_height
-    {
+    if style.min_width > style.max_width || style.min_height > style.max_height {
         tree.diagnostic(
             DiagnosticKind::ContradictoryConstraints,
             id,
             format!(
                 "min=({:.2},{:.2}) max=({:.2},{:.2})",
-                element.style.min_width,
-                element.style.min_height,
-                element.style.max_width,
-                element.style.max_height
+                style.min_width, style.min_height, style.max_width, style.max_height
             ),
         );
     }
@@ -220,8 +227,8 @@ pub(super) fn layout_element<Message: Clone>(
             format!("allocated rectangle is {rect:?}"),
         );
     }
-    if matches!(element.style.width, Length::Percent(_)) && !rect.size.width.is_finite()
-        || matches!(element.style.height, Length::Percent(_)) && !rect.size.height.is_finite()
+    if matches!(style.width, Length::Percent(_)) && !rect.size.width.is_finite()
+        || matches!(style.height, Length::Percent(_)) && !rect.size.height.is_finite()
     {
         tree.diagnostic(
             DiagnosticKind::IndefinitePercentage,
@@ -245,7 +252,7 @@ pub(super) fn layout_element<Message: Clone>(
     // not layout inputs. Avoid a second shaping pass for every text node on
     // ordinary production frames where diagnostics were not requested.
     if tree.diagnostics_enabled {
-        let unconstrained_content = match &element.kind {
+        let unconstrained_content = match kind {
             Kind::Text {
                 value,
                 scale,
@@ -289,8 +296,7 @@ pub(super) fn layout_element<Message: Clone>(
                 ),
             );
         }
-        if matches!(&element.kind, Kind::Image { image, .. } if image.width() == 0 || image.height() == 0)
-        {
+        if matches!(kind, Kind::Image { image, .. } if image.width() == 0 || image.height() == 0) {
             tree.diagnostic(
                 DiagnosticKind::MissingAsset,
                 id,
@@ -299,9 +305,9 @@ pub(super) fn layout_element<Message: Clone>(
         }
     }
     let mut child_indices = Vec::new();
-    let foreground = element.style.foreground.or(inherited_foreground);
-    let clips_descendants = element.style.overflow_x != Overflow::Visible
-        || element.style.overflow_y != Overflow::Visible;
+    let foreground = style.foreground.or(inherited_foreground);
+    let clips_descendants =
+        style.overflow_x != Overflow::Visible || style.overflow_y != Overflow::Visible;
     let descendant_clip = if clips_descendants {
         Some(inherited_clip.map_or(rect, |parent| {
             intersection(parent, rect).unwrap_or_else(|| {
@@ -321,12 +327,12 @@ pub(super) fn layout_element<Message: Clone>(
             x: bounds.origin.x - previous_geometry.allocated.origin.x,
             y: bounds.origin.y - previous_geometry.allocated.origin.y,
         };
-        if matches!(element.kind, Kind::Grid { .. }) {
+        if matches!(kind, Kind::Grid { .. }) {
             tree.resolved.nodes[node_index]
                 .grid_tracks
                 .clone_from(&previous_geometry.grid_tracks);
             tree.grids.push(ResolvedGrid {
-                rect: rect.inset(element.style.padding),
+                rect: rect.inset(style.padding),
                 columns: previous_geometry.grid_tracks.len().max(1),
             });
         }
@@ -348,6 +354,7 @@ pub(super) fn layout_element<Message: Clone>(
                 allocated,
                 foreground,
                 descendant_clip,
+                overlay,
                 tree,
                 previous,
             ));
@@ -355,7 +362,7 @@ pub(super) fn layout_element<Message: Clone>(
         tree.resolved.nodes[node_index].children = child_indices;
         return node_index;
     }
-    match &element.kind {
+    match kind {
         Kind::Text { .. }
         | Kind::StyledText(_)
         | Kind::CustomPaint { .. }
@@ -364,10 +371,18 @@ pub(super) fn layout_element<Message: Clone>(
         | Kind::Slider { .. }
         | Kind::Dropdown(_) => {}
         Kind::Layer => {
-            let content = rect.inset(element.style.padding);
+            let content = rect.inset(style.padding);
             for (index, child) in element.children.iter().enumerate() {
-                let position = child.style.absolute_position.unwrap_or_default();
-                let size = measure_element(child, Constraints::loose(content.size));
+                let child_context = overlay.map(|overlay| (id, overlay));
+                let position = effective_child_style(child, child_context, index)
+                    .absolute_position
+                    .unwrap_or_default();
+                let size = measure_child_effective(
+                    child,
+                    child_context,
+                    index,
+                    Constraints::loose(content.size),
+                );
                 let bounds = Rect::new(
                     content.origin.x + position.x,
                     content.origin.y + position.y,
@@ -381,37 +396,41 @@ pub(super) fn layout_element<Message: Clone>(
                     bounds,
                     foreground,
                     descendant_clip,
+                    overlay,
                     tree,
                     previous,
                 ));
             }
         }
         Kind::Flex(axis) => {
-            let scroll_rect = rect.inset(element.style.padding);
+            let scroll_rect = rect.inset(style.padding);
             let scrollable_y = *axis == Axis::Vertical
-                && matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto);
+                && matches!(style.overflow_y, Overflow::Scroll | Overflow::Auto);
             let scrollable_x = *axis == Axis::Horizontal
-                && matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto);
+                && matches!(style.overflow_x, Overflow::Scroll | Overflow::Auto);
             let intrinsic_content_width = if scrollable_x {
                 element
                     .children
                     .iter()
-                    .map(|child| {
-                        measure_element(
+                    .enumerate()
+                    .map(|(index, child)| {
+                        measure_child_effective(
                             child,
+                            overlay.map(|overlay| (id, overlay)),
+                            index,
                             Constraints::loose(Size::new(f32::INFINITY, scroll_rect.size.height)),
                         )
                         .width
                     })
                     .sum::<f32>()
-                    + element.style.gap * element.children.len().saturating_sub(1) as f32
+                    + style.gap * element.children.len().saturating_sub(1) as f32
             } else {
                 scroll_rect.size.width
             };
-            let horizontal_scrollbar_gutter = match element.style.overflow_x {
-                Overflow::Scroll => scrollbar::scrollbar_gutter(&element.style),
+            let horizontal_scrollbar_gutter = match style.overflow_x {
+                Overflow::Scroll => scrollbar::scrollbar_gutter(&style),
                 Overflow::Auto if intrinsic_content_width > scroll_rect.size.width + 0.01 => {
-                    scrollbar::scrollbar_gutter(&element.style)
+                    scrollbar::scrollbar_gutter(&style)
                 }
                 _ => 0.0,
             }
@@ -425,12 +444,19 @@ pub(super) fn layout_element<Message: Clone>(
             let minimum_total = element
                 .children
                 .iter()
-                .map(|child| match axis {
-                    Axis::Horizontal => child.style.min_width,
-                    Axis::Vertical => child.style.min_height,
+                .enumerate()
+                .map(|(index, child)| match axis {
+                    Axis::Horizontal => {
+                        effective_child_style(child, overlay.map(|overlay| (id, overlay)), index)
+                            .min_width
+                    }
+                    Axis::Vertical => {
+                        effective_child_style(child, overlay.map(|overlay| (id, overlay)), index)
+                            .min_height
+                    }
                 })
                 .sum::<f32>()
-                + element.style.gap * element.children.len().saturating_sub(1) as f32;
+                + style.gap * element.children.len().saturating_sub(1) as f32;
             let available = match axis {
                 Axis::Horizontal => content.size.width,
                 Axis::Vertical => content.size.height,
@@ -446,15 +472,18 @@ pub(super) fn layout_element<Message: Clone>(
                 element
                     .children
                     .iter()
-                    .map(|child| {
-                        measure_element(
+                    .enumerate()
+                    .map(|(index, child)| {
+                        measure_child_effective(
                             child,
+                            overlay.map(|overlay| (id, overlay)),
+                            index,
                             Constraints::loose(Size::new(content.size.width, f32::INFINITY)),
                         )
                         .height
                     })
                     .sum::<f32>()
-                    + element.style.gap * element.children.len().saturating_sub(1) as f32
+                    + style.gap * element.children.len().saturating_sub(1) as f32
             } else {
                 content.size.height
             };
@@ -464,32 +493,30 @@ pub(super) fn layout_element<Message: Clone>(
             );
             let maximum_offset_x = (content_extent.width - content.size.width).max(0.0);
             let scroll_offset_x = if scrollable_x {
-                element.style.scroll_offset_x.clamp(0.0, maximum_offset_x)
+                style.scroll_offset_x.clamp(0.0, maximum_offset_x)
             } else {
                 0.0
             };
-            if scrollable_x
-                && (element.style.scroll_offset_x - scroll_offset_x).abs() > f32::EPSILON
-            {
+            if scrollable_x && (style.scroll_offset_x - scroll_offset_x).abs() > f32::EPSILON {
                 tree.diagnostic(
                     DiagnosticKind::ScrollOffsetClamped,
                     id,
                     format!(
                         "horizontal offset {:.2} clamped to {:.2}",
-                        element.style.scroll_offset_x, scroll_offset_x
+                        style.scroll_offset_x, scroll_offset_x
                     ),
                 );
             }
             let maximum_offset = (content_extent.height - content.size.height).max(0.0);
             let scroll_offset = if scrollable_y {
-                let clamped = element.style.scroll_offset.clamp(0.0, maximum_offset);
-                if (element.style.scroll_offset - clamped).abs() > f32::EPSILON {
+                let clamped = style.scroll_offset.clamp(0.0, maximum_offset);
+                if (style.scroll_offset - clamped).abs() > f32::EPSILON {
                     tree.diagnostic(
                         DiagnosticKind::ScrollOffsetClamped,
                         id,
                         format!(
                             "offset {:.2} clamped to {:.2}",
-                            element.style.scroll_offset, clamped
+                            style.scroll_offset, clamped
                         ),
                     );
                 }
@@ -509,8 +536,8 @@ pub(super) fn layout_element<Message: Clone>(
                     rect: scroll_rect,
                     clip: descendant_clip.unwrap_or(scroll_rect),
                     extent,
-                    scrollbar: element.style.scrollbar_palette,
-                    parts: element.style.scrollbar_parts.clone(),
+                    scrollbar: style.scrollbar_palette,
+                    parts: style.scrollbar_parts.clone(),
                 });
                 clamped
             } else {
@@ -533,8 +560,8 @@ pub(super) fn layout_element<Message: Clone>(
                     rect: scroll_rect,
                     clip: descendant_clip.unwrap_or(scroll_rect),
                     extent,
-                    scrollbar: element.style.scrollbar_palette,
-                    parts: element.style.scrollbar_parts.clone(),
+                    scrollbar: style.scrollbar_palette,
+                    parts: style.scrollbar_parts.clone(),
                 });
             }
             let layout_content = Rect::new(
@@ -546,9 +573,9 @@ pub(super) fn layout_element<Message: Clone>(
             let child_bounds = flex_bounds(
                 layout_content,
                 *axis,
-                element.style.gap,
-                element.style.align_items,
-                element.style.justify_content,
+                style.gap,
+                style.align_items,
+                style.justify_content,
                 &element.children,
             );
             let child_clip = if scrollable_x || scrollable_y {
@@ -562,13 +589,13 @@ pub(super) fn layout_element<Message: Clone>(
             for (index, (child, bounds)) in element.children.iter().zip(child_bounds).enumerate() {
                 let child_id = retained_child_id(tree, id, child, index);
                 child_indices.push(layout_element(
-                    child, &child_id, bounds, foreground, child_clip, tree, previous,
+                    child, &child_id, bounds, foreground, child_clip, overlay, tree, previous,
                 ));
             }
         }
         Kind::VerticalScroll { offset, .. } => {
             let requested_offset = *offset;
-            let viewport = rect.inset(element.style.padding);
+            let viewport = rect.inset(style.padding);
             let scroll_child_id = element
                 .children
                 .first()
@@ -588,7 +615,7 @@ pub(super) fn layout_element<Message: Clone>(
                 viewport.origin.y,
                 (viewport.size.width
                     - if reserves_scrollbar {
-                        scrollbar::scrollbar_gutter(&element.style)
+                        scrollbar::scrollbar_gutter(&style)
                     } else {
                         0.0
                     })
@@ -648,8 +675,8 @@ pub(super) fn layout_element<Message: Clone>(
                         rect: viewport,
                         clip: viewport_clip,
                         extent,
-                        scrollbar: element.style.scrollbar_palette,
-                        parts: element.style.scrollbar_parts.clone(),
+                        scrollbar: style.scrollbar_palette,
+                        parts: style.scrollbar_parts.clone(),
                     });
                 }
                 child_indices.push(layout_element(
@@ -663,16 +690,17 @@ pub(super) fn layout_element<Message: Clone>(
                     ),
                     foreground,
                     Some(content_clip),
+                    overlay,
                     tree,
                     previous,
                 ));
             }
         }
         Kind::Grid { columns } => {
-            let scroll_rect = rect.inset(element.style.padding);
+            let scroll_rect = rect.inset(style.padding);
             let horizontal_scrollbar_gutter =
-                if matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto) {
-                    scrollbar::scrollbar_gutter(&element.style).min(scroll_rect.size.height)
+                if matches!(style.overflow_x, Overflow::Scroll | Overflow::Auto) {
+                    scrollbar::scrollbar_gutter(&style).min(scroll_rect.size.height)
                 } else {
                     0.0
                 };
@@ -685,12 +713,20 @@ pub(super) fn layout_element<Message: Clone>(
             let contributions = element
                 .children
                 .iter()
-                .map(|child| measure_element(child, Constraints::loose(content.size)))
+                .enumerate()
+                .map(|(index, child)| {
+                    measure_child_effective(
+                        child,
+                        overlay.map(|overlay| (id, overlay)),
+                        index,
+                        Constraints::loose(content.size),
+                    )
+                })
                 .collect::<Vec<_>>();
             let widths = resolve_grid_columns(
                 columns,
                 content.size.width,
-                element.style.gap,
+                style.gap,
                 &contributions,
                 element.children.len(),
             );
@@ -700,8 +736,10 @@ pub(super) fn layout_element<Message: Clone>(
                 .iter()
                 .enumerate()
                 .map(|(index, child)| {
-                    measure_element(
+                    measure_child_effective(
                         child,
+                        overlay.map(|overlay| (id, overlay)),
+                        index,
                         Constraints::loose(Size::new(
                             widths[index % column_count],
                             content.size.height,
@@ -725,23 +763,20 @@ pub(super) fn layout_element<Message: Clone>(
                         .fold(0.0, f32::max)
                 })
                 .collect::<Vec<_>>();
-            let track_width = widths.iter().sum::<f32>()
-                + element.style.gap * widths.len().saturating_sub(1) as f32;
+            let track_width =
+                widths.iter().sum::<f32>() + style.gap * widths.len().saturating_sub(1) as f32;
             let (leading, extra_gap) = justify_offsets(
                 (content.size.width - track_width).max(0.0),
                 widths.len(),
-                element.style.justify_content,
+                style.justify_content,
             );
             let content_extent = Size::new(
                 track_width.max(content.size.width),
-                (row_heights.iter().sum::<f32>()
-                    + element.style.gap * rows.saturating_sub(1) as f32)
+                (row_heights.iter().sum::<f32>() + style.gap * rows.saturating_sub(1) as f32)
                     .max(content.size.height),
             );
-            let scrollable_x =
-                matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto);
-            let scrollable_y =
-                matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto);
+            let scrollable_x = matches!(style.overflow_x, Overflow::Scroll | Overflow::Auto);
+            let scrollable_y = matches!(style.overflow_y, Overflow::Scroll | Overflow::Auto);
             let offset_x = if scrollable_x {
                 element
                     .style
@@ -758,15 +793,15 @@ pub(super) fn layout_element<Message: Clone>(
             } else {
                 0.0
             };
-            if scrollable_x && (offset_x - element.style.scroll_offset_x).abs() > f32::EPSILON
-                || scrollable_y && (offset_y - element.style.scroll_offset).abs() > f32::EPSILON
+            if scrollable_x && (offset_x - style.scroll_offset_x).abs() > f32::EPSILON
+                || scrollable_y && (offset_y - style.scroll_offset).abs() > f32::EPSILON
             {
                 tree.diagnostic(
                     DiagnosticKind::ScrollOffsetClamped,
                     id,
                     format!(
                         "grid offset ({:.2},{:.2}) clamped to ({offset_x:.2},{offset_y:.2})",
-                        element.style.scroll_offset_x, element.style.scroll_offset
+                        style.scroll_offset_x, style.scroll_offset
                     ),
                 );
             }
@@ -786,8 +821,8 @@ pub(super) fn layout_element<Message: Clone>(
                     rect: scroll_rect,
                     clip: descendant_clip.unwrap_or(scroll_rect),
                     extent,
-                    scrollbar: element.style.scrollbar_palette,
-                    parts: element.style.scrollbar_parts.clone(),
+                    scrollbar: style.scrollbar_palette,
+                    parts: style.scrollbar_parts.clone(),
                 });
             }
             for (index, child) in element.children.iter().enumerate() {
@@ -796,11 +831,14 @@ pub(super) fn layout_element<Message: Clone>(
                 let x = content.origin.x - offset_x
                     + leading
                     + widths[..column].iter().sum::<f32>()
-                    + (element.style.gap + extra_gap) * column as f32;
+                    + (style.gap + extra_gap) * column as f32;
                 let row_y = content.origin.y - offset_y
                     + row_heights[..row].iter().sum::<f32>()
-                    + element.style.gap * row as f32;
-                let alignment = child.style.align_self.unwrap_or(element.style.align_items);
+                    + style.gap * row as f32;
+                let alignment =
+                    effective_child_style(child, overlay.map(|overlay| (id, overlay)), index)
+                        .align_self
+                        .unwrap_or(style.align_items);
                 let item_height = measured[index].height.min(row_heights[row]);
                 let row_baseline = if alignment == Align::Baseline {
                     measured[row * column_count..measured.len().min((row + 1) * column_count)]
@@ -824,6 +862,7 @@ pub(super) fn layout_element<Message: Clone>(
                     Rect::new(x, y, widths[column], height),
                     foreground,
                     descendant_clip,
+                    overlay,
                     tree,
                     previous,
                 ));
@@ -845,7 +884,11 @@ fn geometry_reuse_safe<Message>(element: &Element<Message>) -> bool {
     !owns_auxiliary_layout_records
 }
 
-fn resolved_child_id<Message>(parent: &UiId, child: &Element<Message>, index: usize) -> UiId {
+pub(super) fn resolved_child_id<Message>(
+    parent: &UiId,
+    child: &Element<Message>,
+    index: usize,
+) -> UiId {
     child.id.as_ref().map_or_else(
         || parent.scoped(format!("#{index}")),
         |id| parent.scoped(id.as_str()),
@@ -960,7 +1003,6 @@ impl TransientStateJournal {
         compact_kind_capacity(&mut element.kind);
     }
 
-    #[cfg(test)]
     pub(super) fn style<'a, Message>(
         &'a self,
         id: &UiId,
@@ -969,7 +1011,6 @@ impl TransientStateJournal {
         self.styles.get(id).unwrap_or(&element.style)
     }
 
-    #[cfg(test)]
     pub(super) fn kind<'a, Message>(
         &'a self,
         id: &UiId,

@@ -1281,6 +1281,7 @@ impl<Message: Clone> UiFrame<Message> {
             content_rect,
             None,
             Some(rect),
+            None,
             self,
             None,
         );
@@ -2266,8 +2267,17 @@ impl<Message: Clone> UiFrame<Message> {
         }
         tree.retained_nodes
             .invalidate_transient_overlay(transient_overlay.affected_phases());
+        layout_element(
+            &root,
+            &root_id,
+            bounds,
+            None,
+            None,
+            Some(&transient_overlay),
+            &mut tree,
+            previous,
+        );
         transient_overlay.attach_effective(&mut root, &root_id);
-        layout_element(&root, &root_id, bounds, None, None, &mut tree, previous);
         let initial = tree
             .resolved
             .nodes
@@ -2861,7 +2871,7 @@ impl<Message: Clone> UiFrame<Message> {
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
         );
-        layout_element(&root, &root_id, bounds, None, None, &mut tree, None);
+        layout_element(&root, &root_id, bounds, None, None, None, &mut tree, None);
         tree.selection_regions = collect_selection_regions(&root, &tree.resolved);
         tree.reset_emission();
         emit_element(&root, 0, None, &mut tree, None, EmissionPhases::ALL);
@@ -7883,6 +7893,54 @@ pub(super) fn measure_element<Message>(
     element: &Element<Message>,
     constraints: Constraints,
 ) -> Size {
+    measure_element_effective(element, None, constraints)
+}
+
+fn measure_element_with_overlay<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    overlay: &TransientStateJournal,
+    constraints: Constraints,
+) -> Size {
+    measure_element_effective(element, Some((id, overlay)), constraints)
+}
+
+fn measure_child_effective<Message>(
+    child: &Element<Message>,
+    parent: Option<(&UiId, &TransientStateJournal)>,
+    index: usize,
+    constraints: Constraints,
+) -> Size {
+    match parent {
+        Some((parent_id, overlay)) => {
+            let child_id = layout::resolved_child_id(parent_id, child, index);
+            measure_element_effective(child, Some((&child_id, overlay)), constraints)
+        }
+        None => measure_element_effective(child, None, constraints),
+    }
+}
+
+fn effective_child_style<'a, Message>(
+    child: &'a Element<Message>,
+    parent: Option<(&UiId, &'a TransientStateJournal)>,
+    index: usize,
+) -> &'a Style {
+    match parent {
+        Some((parent_id, overlay)) => {
+            let child_id = layout::resolved_child_id(parent_id, child, index);
+            overlay.style(&child_id, child)
+        }
+        None => &child.style,
+    }
+}
+
+fn measure_element_effective<Message>(
+    element: &Element<Message>,
+    context: Option<(&UiId, &TransientStateJournal)>,
+    constraints: Constraints,
+) -> Size {
+    let style = context.map_or(&element.style, |(id, overlay)| overlay.style(id, element));
+    let kind = context.map_or(&element.kind, |(id, overlay)| overlay.kind(id, element));
     // A definite box does not depend on its children's intrinsic size. Grid
     // and flex measurement can visit a subtree repeatedly before placement;
     // stop here rather than shaping its labels on every such visit.
@@ -7894,24 +7952,24 @@ pub(super) fn measure_element<Message>(
         _ => None,
     };
     if let (Some(width), Some(height)) = (
-        definite(element.style.width, constraints.max.width),
-        definite(element.style.height, constraints.max.height),
+        definite(style.width, constraints.max.width),
+        definite(style.height, constraints.max.height),
     ) {
-        let min_width = element.style.min_width.max(0.0);
-        let min_height = element.style.min_height.max(0.0);
+        let min_width = style.min_width.max(0.0);
+        let min_height = style.min_height.max(0.0);
         return constraints.constrain(Size::new(
-            width.clamp(min_width, element.style.max_width.max(min_width)),
-            height.clamp(min_height, element.style.max_height.max(min_height)),
+            width.clamp(min_width, style.max_width.max(min_width)),
+            height.clamp(min_height, style.max_height.max(min_height)),
         ));
     }
-    let horizontal_padding = element.style.padding.width();
-    let vertical_padding = element.style.padding.height();
+    let horizontal_padding = style.padding.width();
+    let vertical_padding = style.padding.height();
     let child_max = Size::new(
         (constraints.max.width - horizontal_padding).max(0.0),
         (constraints.max.height - vertical_padding).max(0.0),
     );
     let child_constraints = Constraints::loose(child_max);
-    let content = match &element.kind {
+    let content = match kind {
         Kind::CustomPaint { .. } | Kind::CustomPaintCommands { .. } => Size::default(),
         Kind::Text {
             value,
@@ -7944,10 +8002,7 @@ pub(super) fn measure_element<Message>(
             } else {
                 Size::new(image.width() as f32, image.height() as f32)
             };
-            match (
-                explicit_px(element.style.width),
-                explicit_px(element.style.height),
-            ) {
+            match (explicit_px(style.width), explicit_px(style.height)) {
                 (Some(width), None) if intrinsic.width > 0.0 => {
                     Size::new(width, width * intrinsic.height / intrinsic.width)
                 }
@@ -7960,7 +8015,7 @@ pub(super) fn measure_element<Message>(
         Kind::Slider {
             presentation: Some(parts),
             ..
-        } if element.style.css_paint => Size::new(
+        } if style.css_paint => Size::new(
             parts
                 .iter()
                 .map(|part| part.width + part.margin.width())
@@ -8051,9 +8106,12 @@ pub(super) fn measure_element<Message>(
         Kind::Layer => element
             .children
             .iter()
-            .map(|child| {
-                let size = measure_element(child, child_constraints);
-                let position = child.style.absolute_position.unwrap_or_default();
+            .enumerate()
+            .map(|(index, child)| {
+                let size = measure_child_effective(child, context, index, child_constraints);
+                let position = effective_child_style(child, context, index)
+                    .absolute_position
+                    .unwrap_or_default();
                 Size::new(position.x + size.width, position.y + size.height)
             })
             .fold(Size::default(), |measured, child| {
@@ -8066,48 +8124,54 @@ pub(super) fn measure_element<Message>(
             let sizes = element
                 .children
                 .iter()
-                .map(|child| {
+                .enumerate()
+                .map(|(index, child)| {
                     let max = match axis {
                         Axis::Horizontal => Size::new(f32::INFINITY, child_max.height),
                         Axis::Vertical => Size::new(child_max.width, f32::INFINITY),
                     };
-                    measure_element(child, Constraints::loose(max))
+                    measure_child_effective(child, context, index, Constraints::loose(max))
                 })
                 .collect::<Vec<_>>();
-            let gap = element.style.gap.max(0.0) * element.children.len().saturating_sub(1) as f32;
+            let gap = style.gap.max(0.0) * element.children.len().saturating_sub(1) as f32;
             match axis {
                 Axis::Horizontal if child_max.width.is_finite() => {
                     let items = element
                         .children
                         .iter()
+                        .enumerate()
                         .zip(&sizes)
-                        .map(|(child, measured)| {
-                            let preferred = child.style.basis.resolve(
+                        .map(|((index, child), measured)| {
+                            let child_style = effective_child_style(child, context, index);
+                            let preferred = child_style.basis.resolve(
                                 child_max.width,
-                                child.style.width.resolve(child_max.width, measured.width),
+                                child_style.width.resolve(child_max.width, measured.width),
                             );
                             FlexItem::flex(
                                 preferred,
-                                child.style.min_width.max(0.0),
-                                child.style.max_width.max(child.style.min_width.max(0.0)),
-                                child.style.grow,
-                                child.style.shrink,
+                                child_style.min_width.max(0.0),
+                                child_style.max_width.max(child_style.min_width.max(0.0)),
+                                child_style.grow,
+                                child_style.shrink,
                             )
                         })
                         .collect::<Vec<_>>();
                     let rects = layout_flex(
                         Rect::new(0.0, 0.0, child_max.width, 0.0),
                         Axis::Horizontal,
-                        element.style.gap.max(0.0),
+                        style.gap.max(0.0),
                         &items,
                     );
                     let height = element
                         .children
                         .iter()
+                        .enumerate()
                         .zip(&rects)
-                        .map(|(child, rect)| {
-                            measure_element(
+                        .map(|((index, child), rect)| {
+                            measure_child_effective(
                                 child,
+                                context,
+                                index,
                                 Constraints::loose(Size::new(rect.size.width, f32::INFINITY)),
                             )
                             .height
@@ -8132,12 +8196,15 @@ pub(super) fn measure_element<Message>(
             let contributions = element
                 .children
                 .iter()
-                .map(|child| measure_element(child, child_constraints))
+                .enumerate()
+                .map(|(index, child)| {
+                    measure_child_effective(child, context, index, child_constraints)
+                })
                 .collect::<Vec<_>>();
             let widths = resolve_grid_columns(
                 columns,
                 child_max.width,
-                element.style.gap,
+                style.gap,
                 &contributions,
                 element.children.len(),
             );
@@ -8147,8 +8214,10 @@ pub(super) fn measure_element<Message>(
                 .iter()
                 .enumerate()
                 .map(|(index, child)| {
-                    measure_element(
+                    measure_child_effective(
                         child,
+                        context,
+                        index,
                         Constraints::loose(Size::new(widths[index % columns], child_max.height)),
                     )
                 })
@@ -8163,23 +8232,24 @@ pub(super) fn measure_element<Message>(
                 })
                 .collect::<Vec<_>>();
             Size::new(
-                widths.iter().sum::<f32>()
-                    + element.style.gap * widths.len().saturating_sub(1) as f32,
-                row_heights.iter().sum::<f32>() + element.style.gap * rows.saturating_sub(1) as f32,
+                widths.iter().sum::<f32>() + style.gap * widths.len().saturating_sub(1) as f32,
+                row_heights.iter().sum::<f32>() + style.gap * rows.saturating_sub(1) as f32,
             )
         }
         Kind::VerticalScroll { .. } => element
             .children
             .first()
             .map(|child| {
-                measure_element(
+                measure_child_effective(
                     child,
+                    context,
+                    0,
                     Constraints::loose(Size::new(child_max.width, f32::INFINITY)),
                 )
             })
             .unwrap_or_default(),
     };
-    let intrinsic_width = match (&element.kind, element.style.width) {
+    let intrinsic_width = match (kind, style.width) {
         (
             Kind::Text {
                 value, scale, bold, ..
@@ -8205,10 +8275,10 @@ pub(super) fn measure_element<Message>(
         }
         _ => content.width + horizontal_padding,
     };
-    let horizontal_scrollbar_gutter = match element.style.overflow_x {
-        Overflow::Scroll => scrollbar::scrollbar_gutter(&element.style),
+    let horizontal_scrollbar_gutter = match style.overflow_x {
+        Overflow::Scroll => scrollbar::scrollbar_gutter(style),
         Overflow::Auto if content.width > child_max.width + 0.01 => {
-            scrollbar::scrollbar_gutter(&element.style)
+            scrollbar::scrollbar_gutter(style)
         }
         _ => 0.0,
     };
@@ -8216,17 +8286,13 @@ pub(super) fn measure_element<Message>(
         intrinsic_width,
         content.height + vertical_padding + horizontal_scrollbar_gutter,
     );
-    let min_width = element.style.min_width.max(0.0);
-    let min_height = element.style.min_height.max(0.0);
-    let max_width = element.style.max_width.max(min_width);
-    let max_height = element.style.max_height.max(min_height);
+    let min_width = style.min_width.max(0.0);
+    let min_height = style.min_height.max(0.0);
+    let max_width = style.max_width.max(min_width);
+    let max_height = style.max_height.max(min_height);
     let resolved = Size::new(
-        element
-            .style
-            .width
-            .resolve(constraints.max.width, intrinsic.width),
-        element
-            .style
+        style.width.resolve(constraints.max.width, intrinsic.width),
+        style
             .height
             .resolve(constraints.max.height, intrinsic.height),
     );
