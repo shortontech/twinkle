@@ -399,6 +399,28 @@ pub struct FrameResourceDiagnostics {
     /// strings. Message payloads and shared image pixels belong to their model
     /// or resource cache and are intentionally not guessed here.
     pub estimated_retained_bytes: usize,
+    /// Owned declaration-tree storage, including inline elements and known
+    /// nested vectors, strings, and boxed style/kind payloads. Shared images,
+    /// selection documents, `UiId` backing strings, and nested message-owned
+    /// allocations are excluded.
+    pub declaration_tree_bytes: usize,
+    /// Resolved-node/vector storage and owned child/grid-track buffers.
+    pub resolved_storage_bytes: usize,
+    /// Retained reconciliation arena storage, including cached paint buffers.
+    pub retained_arena_bytes: usize,
+    /// Accessibility records and their directly owned strings/action buffers.
+    pub accessibility_storage_bytes: usize,
+    /// Paint command, fragment, overlay, and damage-vector storage.
+    pub paint_storage_bytes: usize,
+    /// Hit, message, text-input, selection, and scroll-region vector storage.
+    pub interaction_storage_bytes: usize,
+    /// Lower-bound inline entry storage for frame-owned maps and sets plus
+    /// directly owned value buffers. Hash-table control bytes and shared
+    /// `UiId` allocations are excluded.
+    pub index_storage_bytes: usize,
+    /// Expanded owned-storage estimate formed from the categorized fields.
+    /// This retains explicit exclusions and is not allocator-exact RSS/PSS.
+    pub estimated_owned_bytes: usize,
     pub retained_build_scratch_bytes: usize,
     /// Stable native nodes retained across declarative frame reconciliation.
     pub retained_node_count: usize,
@@ -3501,6 +3523,99 @@ impl<Message: Clone> UiFrame<Message> {
         }
     }
 
+    fn declaration_storage_bytes(root: &Element<Message>) -> usize {
+        fn nested<Message>(element: &Element<Message>) -> usize {
+            let mut bytes = element.children.capacity() * std::mem::size_of::<Element<Message>>()
+                + element.option_messages.capacity() * std::mem::size_of::<Option<Message>>()
+                + element.inline_messages.capacity()
+                    * std::mem::size_of::<(std::ops::Range<usize>, Message)>();
+            bytes += [
+                element.style.accessibility_label.as_ref(),
+                element.style.accessibility_description.as_ref(),
+                element.style.accessibility_role.as_ref(),
+                element.style.accessibility_state.as_ref(),
+                element.style.selection_run_id.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(String::capacity)
+            .sum::<usize>();
+            bytes += element
+                .style
+                .interaction_paints
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()));
+            bytes += element
+                .style
+                .editing_parts
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()));
+            bytes += element
+                .style
+                .editing_menu
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()));
+            bytes += element
+                .style
+                .scrollbar_parts
+                .as_ref()
+                .map_or(0, |value| std::mem::size_of_val(value.as_ref()));
+            bytes += match &element.kind {
+                Kind::Grid {
+                    columns: GridColumnSpec::Tracks(tracks),
+                } => tracks.capacity() * std::mem::size_of::<Track>(),
+                Kind::CustomPaintCommands { commands } => {
+                    commands.capacity() * std::mem::size_of::<PaintCommand>()
+                }
+                Kind::Text {
+                    value,
+                    input_value,
+                    input_placeholder,
+                    ..
+                } => {
+                    value.capacity()
+                        + input_value.as_ref().map_or(0, String::capacity)
+                        + input_placeholder.as_ref().map_or(0, String::capacity)
+                }
+                Kind::StyledText { value, spans, .. } => {
+                    value.capacity() + spans.capacity() * std::mem::size_of::<StyledTextSpan>()
+                }
+                Kind::Slider { presentation, .. } => presentation
+                    .as_ref()
+                    .map_or(0, |value| std::mem::size_of_val(value.as_ref())),
+                Kind::Dropdown {
+                    selected,
+                    options,
+                    presentation,
+                    option_presentations,
+                    resolved_options,
+                    option_icons,
+                    ..
+                } => {
+                    selected.capacity()
+                        + options.capacity() * std::mem::size_of::<String>()
+                        + options.iter().map(String::capacity).sum::<usize>()
+                        + presentation
+                            .as_ref()
+                            .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
+                        + option_presentations.capacity() * std::mem::size_of::<DropdownPartStyle>()
+                        + resolved_options.capacity() * std::mem::size_of::<DropdownPartStyle>()
+                        + option_icons.capacity()
+                            * std::mem::size_of::<Option<(u16, std::sync::Arc<RgbaImage>, u64)>>()
+                }
+                Kind::Flex(_)
+                | Kind::Layer
+                | Kind::VerticalScroll { .. }
+                | Kind::Grid { .. }
+                | Kind::CustomPaint { .. }
+                | Kind::Image { .. } => 0,
+            };
+            bytes + element.children.iter().map(nested).sum::<usize>()
+        }
+
+        std::mem::size_of::<Element<Message>>() + nested(root)
+    }
+
     // A retained paint refresh may grow output-vector capacity, but it does not
     // replace resolved child lists, accessibility strings, or retained arena
     // records. Their byte contributions remain owned by the current frame.
@@ -3537,12 +3652,101 @@ impl<Message: Clone> UiFrame<Message> {
                     + node.state.as_ref().map_or(0, String::capacity)
             })
             .sum::<usize>();
+        let declaration_tree_bytes = self
+            .declaration_root
+            .as_ref()
+            .map_or(0, Self::declaration_storage_bytes);
+        let resolved_storage_bytes = self.resolved.nodes.capacity()
+            * std::mem::size_of::<ResolvedNode>()
+            + self
+                .resolved
+                .nodes
+                .iter()
+                .map(|node| {
+                    node.children.capacity() * std::mem::size_of::<usize>()
+                        + node.grid_tracks.capacity() * std::mem::size_of::<f32>()
+                        + node.semantic_actions.capacity() * std::mem::size_of::<ActionKind>()
+                        + node
+                            .accessibility_label
+                            .as_ref()
+                            .map_or(0, String::capacity)
+                        + node
+                            .accessibility_description
+                            .as_ref()
+                            .map_or(0, String::capacity)
+                        + node.accessibility_role.as_ref().map_or(0, String::capacity)
+                        + node
+                            .accessibility_state
+                            .as_ref()
+                            .map_or(0, String::capacity)
+                })
+                .sum::<usize>()
+            + self.grids.capacity() * std::mem::size_of::<ResolvedGrid>();
+        let retained_arena_bytes = self.retained_nodes.estimated_bytes();
+        let accessibility_storage_bytes = self.accessibility.capacity()
+            * std::mem::size_of::<AccessibilityNode>()
+            + accessibility_strings
+            + self
+                .accessibility
+                .iter()
+                .map(|node| node.actions.capacity() * std::mem::size_of::<ActionKind>())
+                .sum::<usize>();
+        let paint_storage_bytes = self.commands.capacity() * std::mem::size_of::<PaintCommand>()
+            + self.paint_fragments.capacity() * std::mem::size_of::<PaintFragment>()
+            + self
+                .paint_damage
+                .as_ref()
+                .map_or(0, |damage| damage.capacity() * std::mem::size_of::<Rect>());
+        let interaction_storage_bytes = self.hits.capacity()
+            * std::mem::size_of::<HitRegion<Message>>()
+            + self.messages.capacity() * std::mem::size_of::<MessageRegion<Message>>()
+            + self.context_messages.capacity() * std::mem::size_of::<MessageRegion<Message>>()
+            + self.focus_messages.capacity()
+                * std::mem::size_of::<(UiId, Option<Message>, Option<Message>)>()
+            + self.text_inputs.capacity() * std::mem::size_of::<TextInputRegion<Message>>()
+            + self.text_commands.capacity() * std::mem::size_of::<TextCommandRegion>()
+            + self.selection_regions.capacity() * std::mem::size_of::<SelectionRegionLayout>()
+            + self.scrolls.capacity() * std::mem::size_of::<ScrollRegion<Message>>();
+        let index_storage_bytes = self.retained_layout.capacity()
+            * std::mem::size_of::<(UiId, RetainedGeometry)>()
+            + self
+                .retained_layout
+                .values()
+                .map(|geometry| geometry.grid_tracks.capacity() * std::mem::size_of::<f32>())
+                .sum::<usize>()
+            + self.message_indices.capacity() * std::mem::size_of::<(UiId, Vec<usize>)>()
+            + self
+                .message_indices
+                .values()
+                .map(|indices| indices.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>()
+            + self.accessibility_indices.capacity() * std::mem::size_of::<(UiId, usize)>()
+            + self.semantic_role_name_index.capacity()
+                * std::mem::size_of::<((SemanticRole, String), Vec<usize>)>()
+            + self
+                .semantic_role_name_index
+                .iter()
+                .map(|((_, name), indices)| {
+                    name.capacity() + indices.capacity() * std::mem::size_of::<usize>()
+                })
+                .sum::<usize>()
+            + self.resolved_indices.capacity() * std::mem::size_of::<(UiId, usize)>()
+            + self.navigation_owners.capacity() * std::mem::size_of::<(UiId, UiId)>()
+            + self.navigation_depths.capacity() * std::mem::size_of::<usize>();
         let retained_build_scratch_bytes = self.overlay_commands.capacity()
             * std::mem::size_of::<PaintCommand>()
             + self.overlay_hits.capacity() * std::mem::size_of::<HitRegion<Message>>()
             + self.selection_paints.capacity() * std::mem::size_of::<(usize, Vec<Rect>)>()
             + self.diagnostic_keys.capacity() * std::mem::size_of::<(DiagnosticKind, UiId)>()
             + self.seen_ids.capacity() * std::mem::size_of::<UiId>();
+        let estimated_owned_bytes = declaration_tree_bytes
+            + resolved_storage_bytes
+            + retained_arena_bytes
+            + accessibility_storage_bytes
+            + paint_storage_bytes
+            + interaction_storage_bytes
+            + index_storage_bytes
+            + retained_build_scratch_bytes;
         let retained = self.retained_nodes.last();
         FrameResourceDiagnostics {
             node_count: self.resolved.nodes.len(),
@@ -3555,6 +3759,14 @@ impl<Message: Clone> UiFrame<Message> {
                 + node_children
                 + accessibility_strings
                 + self.retained_nodes.estimated_bytes(),
+            declaration_tree_bytes,
+            resolved_storage_bytes,
+            retained_arena_bytes,
+            accessibility_storage_bytes,
+            paint_storage_bytes,
+            interaction_storage_bytes,
+            index_storage_bytes,
+            estimated_owned_bytes,
             retained_build_scratch_bytes,
             retained_node_count: self.retained_nodes.node_count(),
             retained_nodes_reused: retained.reused,
