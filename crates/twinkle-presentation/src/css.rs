@@ -119,7 +119,11 @@ pub struct ControlStyle {
     // and inherited text context. Never mutate a cached parent's variable map.
     pub(crate) custom_properties: Arc<HashMap<String, String>>,
     pub(crate) ancestors: Arc<Vec<(String, Option<String>, Option<String>)>>,
+    pub(crate) context_token: StyleContextToken,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(crate) struct StyleContextToken(u64);
 
 #[derive(Clone, Debug)]
 struct Selector {
@@ -1049,16 +1053,17 @@ struct StyleCacheKey {
     ancestors: Vec<(String, Option<String>, Option<String>)>,
 }
 
-#[derive(Hash)]
 struct StyleCacheLookup<'a> {
     kind: &'a str,
     id: Option<&'a str>,
     classes: Option<&'a str>,
-    inherited: Vec<(&'a str, &'a str)>,
+    inherited: &'a HashMap<String, String>,
     ancestors: &'a [(String, Option<String>, Option<String>)],
+    context_token: StyleContextToken,
 }
 
 impl<'a> StyleCacheLookup<'a> {
+    #[cfg(test)]
     fn new(
         kind: &'a str,
         id: Option<&'a str>,
@@ -1066,23 +1071,34 @@ impl<'a> StyleCacheLookup<'a> {
         properties: &'a HashMap<String, String>,
         ancestors: &'a [(String, Option<String>, Option<String>)],
     ) -> Self {
-        let mut inherited = properties
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect::<Vec<_>>();
-        inherited.sort_unstable();
+        Self::with_context(kind, id, classes, properties, ancestors, None)
+    }
+
+    fn with_context(
+        kind: &'a str,
+        id: Option<&'a str>,
+        classes: Option<&'a str>,
+        properties: &'a HashMap<String, String>,
+        ancestors: &'a [(String, Option<String>, Option<String>)],
+        context_token: Option<StyleContextToken>,
+    ) -> Self {
         Self {
             kind,
             id,
             classes,
-            inherited,
+            inherited: properties,
             ancestors,
+            context_token: context_token
+                .unwrap_or_else(|| style_context_token(properties, ancestors)),
         }
     }
 
     fn fingerprint(&self) -> u64 {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut hash);
+        self.kind.hash(&mut hash);
+        self.id.hash(&mut hash);
+        self.classes.hash(&mut hash);
+        self.context_token.hash(&mut hash);
         hash.finish()
     }
 
@@ -1091,11 +1107,7 @@ impl<'a> StyleCacheLookup<'a> {
             kind: self.kind.into(),
             id: self.id.map(str::to_owned),
             classes: self.classes.map(str::to_owned),
-            inherited: self
-                .inherited
-                .iter()
-                .map(|(k, v)| ((*k).into(), (*v).into()))
-                .collect(),
+            inherited: sorted_properties(self.inherited),
             ancestors: self.ancestors.to_vec(),
         }
     }
@@ -1107,11 +1119,11 @@ impl StyleCacheKey {
             && self.id.as_deref() == lookup.id
             && self.classes.as_deref() == lookup.classes
             && self.ancestors.as_slice() == lookup.ancestors
+            && self.inherited.len() == lookup.inherited.len()
             && self
                 .inherited
                 .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .eq(lookup.inherited.iter().copied())
+                .all(|(key, value)| lookup.inherited.get(key) == Some(value))
     }
 
     fn retained_bytes(&self) -> usize {
@@ -1137,6 +1149,36 @@ impl StyleCacheKey {
                 })
                 .sum::<usize>()
     }
+}
+
+fn sorted_properties(properties: &HashMap<String, String>) -> Vec<(String, String)> {
+    #[cfg(test)]
+    CSS_KEY_SORTS.with(|count| count.set(count.get().saturating_add(1)));
+    let mut inherited = properties
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    inherited.sort_unstable();
+    inherited
+}
+
+fn style_context_token(
+    properties: &HashMap<String, String>,
+    ancestors: &[(String, Option<String>, Option<String>)],
+) -> StyleContextToken {
+    #[cfg(test)]
+    CSS_FULL_CONTEXT_HASHES.with(|count| count.set(count.get().saturating_add(1)));
+    let inherited = sorted_properties(properties);
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    inherited.hash(&mut hash);
+    ancestors.hash(&mut hash);
+    StyleContextToken(hash.finish())
+}
+
+#[cfg(test)]
+thread_local! {
+    static CSS_KEY_SORTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CSS_FULL_CONTEXT_HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 const INTERACTION_CACHE_ENTRIES: usize = 2048;
@@ -1400,7 +1442,26 @@ impl StyleSheet {
         inherited: &HashMap<String, String>,
         ancestors: &[(String, Option<String>, Option<String>)],
     ) -> ControlStyle {
-        let lookup = StyleCacheLookup::new(kind, id, class_name, inherited, ancestors);
+        self.resolve_with_context(kind, id, class_name, inherited, ancestors, None)
+    }
+
+    pub(crate) fn resolve_with_context(
+        &self,
+        kind: &str,
+        id: Option<&str>,
+        class_name: Option<&str>,
+        inherited: &HashMap<String, String>,
+        ancestors: &[(String, Option<String>, Option<String>)],
+        context_token: Option<StyleContextToken>,
+    ) -> ControlStyle {
+        let lookup = StyleCacheLookup::with_context(
+            kind,
+            id,
+            class_name,
+            inherited,
+            ancestors,
+            context_token,
+        );
         let fingerprint = lookup.fingerprint();
         if let Some((key, style)) = self.resolved.borrow().get(&fingerprint)
             && key.matches(&lookup)
@@ -1466,6 +1527,7 @@ impl StyleSheet {
             })
             .collect::<HashMap<_, _>>()
             .into();
+        style.context_token = style_context_token(&style.custom_properties, &style.ancestors);
         let mut cache = self.resolved.borrow_mut();
         if cache.len() >= 256 {
             cache.clear();
@@ -1483,10 +1545,32 @@ impl StyleSheet {
         properties: &HashMap<String, String>,
         ancestors: &[(String, Option<String>, Option<String>)],
     ) -> twinkle::InteractionPaint {
+        self.resolve_interaction_paint_with_context(
+            kind, id, class_name, state, properties, ancestors, None,
+        )
+    }
+
+    pub(crate) fn resolve_interaction_paint_with_context(
+        &self,
+        kind: &str,
+        id: Option<&str>,
+        class_name: Option<&str>,
+        state: InteractionState,
+        properties: &HashMap<String, String>,
+        ancestors: &[(String, Option<String>, Option<String>)],
+        context_token: Option<StyleContextToken>,
+    ) -> twinkle::InteractionPaint {
         if self.interaction_rules[state.index()].is_empty() {
             return twinkle::InteractionPaint::default();
         }
-        let lookup = StyleCacheLookup::new(kind, id, class_name, properties, ancestors);
+        let lookup = StyleCacheLookup::with_context(
+            kind,
+            id,
+            class_name,
+            properties,
+            ancestors,
+            context_token,
+        );
         let fingerprint = (lookup.fingerprint(), state);
         if let Some((key, paint)) = self.interactions.borrow().entries.get(&fingerprint)
             && key.matches(&lookup)
@@ -1707,6 +1791,73 @@ mod tests {
         let second = StyleCacheLookup::new("button", Some("id"), Some("class"), &reverse, &[]);
         assert_eq!(first.fingerprint(), second.fingerprint());
         assert!(first.to_owned().matches(&second));
+    }
+
+    #[test]
+    fn inherited_context_token_avoids_stable_hit_sort_and_ancestor_rehash() {
+        CSS_KEY_SORTS.with(|count| count.set(0));
+        CSS_FULL_CONTEXT_HASHES.with(|count| count.set(0));
+        let css = StyleSheet::compile(
+            ":root { --ink: #123456; } .parent button { color: var(--ink); } button:hover { background: var(--ink); }",
+        )
+        .unwrap();
+        let parent = css.resolve("div", None, Some("parent"));
+        let first = css.resolve_with_context(
+            "button",
+            Some("save"),
+            None,
+            &parent.custom_properties,
+            &parent.ancestors,
+            Some(parent.context_token),
+        );
+        let before = (
+            CSS_KEY_SORTS.with(std::cell::Cell::get),
+            CSS_FULL_CONTEXT_HASHES.with(std::cell::Cell::get),
+        );
+        let second = css.resolve_with_context(
+            "button",
+            Some("save"),
+            None,
+            &parent.custom_properties,
+            &parent.ancestors,
+            Some(parent.context_token),
+        );
+        let after = (
+            CSS_KEY_SORTS.with(std::cell::Cell::get),
+            CSS_FULL_CONTEXT_HASHES.with(std::cell::Cell::get),
+        );
+
+        assert_eq!(second, first);
+        assert_eq!(after, before);
+
+        let first_paint = css.resolve_interaction_paint_with_context(
+            "button",
+            Some("save"),
+            None,
+            InteractionState::Hover,
+            &parent.custom_properties,
+            &parent.ancestors,
+            Some(parent.context_token),
+        );
+        let before = (
+            CSS_KEY_SORTS.with(std::cell::Cell::get),
+            CSS_FULL_CONTEXT_HASHES.with(std::cell::Cell::get),
+        );
+        let second_paint = css.resolve_interaction_paint_with_context(
+            "button",
+            Some("save"),
+            None,
+            InteractionState::Hover,
+            &parent.custom_properties,
+            &parent.ancestors,
+            Some(parent.context_token),
+        );
+        let after = (
+            CSS_KEY_SORTS.with(std::cell::Cell::get),
+            CSS_FULL_CONTEXT_HASHES.with(std::cell::Cell::get),
+        );
+        assert_eq!(second_paint, first_paint);
+        assert_eq!(after, before);
     }
 
     #[test]

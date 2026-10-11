@@ -646,13 +646,14 @@ fn interaction_paints(
         InteractionState::Focus,
     ]
     .map(|state| {
-        stylesheet.resolve_interaction_paint(
+        stylesheet.resolve_interaction_paint_with_context(
             kind,
             Some(id),
             class_name,
             state,
             &style.custom_properties,
             &style.ancestors[..style.ancestors.len().saturating_sub(1)],
+            Some(style.context_token),
         )
     })
 }
@@ -672,13 +673,14 @@ fn apply_control_interactions<Message>(
             InteractionState::Focus,
         ]
         .map(|state| {
-            stylesheet.resolve_interaction_paint(
+            stylesheet.resolve_interaction_paint_with_context(
                 kind,
                 Some(id),
                 class_name,
                 state,
                 &style.custom_properties,
                 &style.ancestors[..style.ancestors.len().saturating_sub(1)],
+                Some(style.context_token),
             )
         }),
     );
@@ -808,6 +810,7 @@ struct InheritedTextStyle {
     text_align: Option<twinkle::TextAlign>,
     custom_properties: Arc<std::collections::HashMap<String, String>>,
     ancestors: Arc<Vec<(String, Option<String>, Option<String>)>>,
+    context_token: Option<crate::css::StyleContextToken>,
 }
 
 impl InheritedTextStyle {
@@ -819,6 +822,7 @@ impl InheritedTextStyle {
             text_align: style.text_align.or(self.text_align),
             custom_properties: style.custom_properties.clone(),
             ancestors: style.ancestors.clone(),
+            context_token: Some(style.context_token),
         }
     }
 
@@ -842,12 +846,13 @@ impl InheritedTextStyle {
         id: Option<&str>,
         class_name: Option<&str>,
     ) -> ControlStyle {
-        stylesheet.resolve_with_ancestors(
+        stylesheet.resolve_with_context(
             kind,
             id,
             class_name,
             &self.custom_properties,
             &self.ancestors,
+            self.context_token,
         )
     }
 }
@@ -2959,13 +2964,14 @@ impl PanelNode {
             InteractionState::Focus,
         ]
         .map(|state| {
-            stylesheet.resolve_interaction_paint(
+            stylesheet.resolve_interaction_paint_with_context(
                 "menu-item",
                 Some(id),
                 Some(&classes),
                 state,
                 &style.custom_properties,
                 &inherited.ancestors,
+                Some(style.context_token),
             )
         });
         let mut shortcut_part = dropdown_part(&shortcut);
@@ -3200,7 +3206,7 @@ impl PanelNode {
                 crate::css::InteractionState::Focus,
             ]
             .map(|state| {
-                stylesheet.resolve_interaction_paint(
+                stylesheet.resolve_interaction_paint_with_context(
                     kind,
                     Some(target_id),
                     control
@@ -3210,6 +3216,7 @@ impl PanelNode {
                     state,
                     &control.custom_properties,
                     &control.ancestors[..control.ancestors.len().saturating_sub(1)],
+                    Some(control.context_token),
                 )
             });
             part
@@ -4400,13 +4407,14 @@ impl PanelNode {
                     InteractionState::Focus,
                 ]
                 .map(|state| {
-                    stylesheet.resolve_interaction_paint(
+                    stylesheet.resolve_interaction_paint_with_context(
                         "text-field",
                         Some(id),
                         class_name.as_deref(),
                         state,
                         &style.custom_properties,
                         &style.ancestors[..style.ancestors.len().saturating_sub(1)],
+                        Some(style.context_token),
                     )
                 });
                 let parts = inherited.extend(&style);
@@ -4476,13 +4484,14 @@ impl PanelNode {
                         InteractionState::Focus,
                     ]
                     .map(|state| {
-                        stylesheet.resolve_interaction_paint(
+                        stylesheet.resolve_interaction_paint_with_context(
                             "text-field-menu-item",
                             Some(id),
                             Some(&classes),
                             state,
                             &item.custom_properties,
                             &menu_inherited.ancestors,
+                            Some(item.context_token),
                         )
                     });
                     let mut shortcut_part = dropdown_part(&shortcut);
