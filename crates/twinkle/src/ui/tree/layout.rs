@@ -140,16 +140,24 @@ pub(super) fn layout_element<Message: Clone>(
             details: Some(details),
             ..
         } if details.input_value.is_some() && details.input_mask.is_some() => {
+            let input_value = overlay.map_or(details.input_value.as_deref(), |overlay| {
+                overlay.text_input_value(id, details.input_value.as_deref())
+            });
             Some(SemanticValueSnapshot::ProtectedText {
-                character_count: details.input_value.as_ref().unwrap().chars().count(),
+                character_count: input_value.unwrap_or_default().chars().count(),
             })
         }
         Kind::Text {
             details: Some(details),
             ..
-        } if details.input_value.is_some() => Some(SemanticValueSnapshot::Text(
-            details.input_value.as_ref().unwrap().clone(),
-        )),
+        } if details.input_value.is_some() => {
+            let input_value = overlay.map_or(details.input_value.as_deref(), |overlay| {
+                overlay.text_input_value(id, details.input_value.as_deref())
+            });
+            Some(SemanticValueSnapshot::Text(
+                input_value.unwrap_or_default().to_owned(),
+            ))
+        }
         Kind::Dropdown(dropdown) => Some(SemanticValueSnapshot::Text(dropdown.selected.clone())),
         _ => None,
     };
@@ -265,6 +273,7 @@ pub(super) fn layout_element<Message: Clone>(
                 max_lines,
                 ..
             } => {
+                let value = overlay.map_or(value.as_str(), |overlay| overlay.text_value(id, value));
                 tree.diagnostic_text_measurements =
                     tree.diagnostic_text_measurements.saturating_add(1);
                 Some(measure_text(
@@ -956,6 +965,106 @@ fn text_projection_needed<Message>(
     editor.text() != initial || !editor.preedit().is_empty() || editor.selection().is_some()
 }
 
+fn project_text_state<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &mut UiStateStore,
+) -> Option<TransientTextPatch> {
+    let Kind::Text {
+        value,
+        scale,
+        bold,
+        line_height,
+        details,
+        ..
+    } = &element.kind
+    else {
+        return None;
+    };
+    let details = details.as_deref();
+    let initial = details
+        .and_then(|details| details.input_value.as_ref())
+        .cloned()
+        .unwrap_or_else(|| value.clone());
+    let focused = state.focused() == Some(id);
+    let caret_visible = state.caret_visible();
+    let editor = state.editor(id.clone(), &initial);
+    if editor.text() != initial {
+        editor.set_text(initial);
+    }
+    let input_mask = details.and_then(|details| details.input_mask);
+    let retention = input_mask.map_or(TextRetention::Public, TextRetention::Masked);
+    let selection_x = focused
+        .then(|| editor.selection())
+        .flatten()
+        .map(|selection| {
+            let width = |end| {
+                let visible = input_mask.map_or_else(
+                    || editor.text()[..end].to_owned(),
+                    |mask| mask_text(&editor.text()[..end], mask),
+                );
+                measure_text_with_retention(
+                    &visible,
+                    *scale,
+                    *bold,
+                    false,
+                    None,
+                    Some(1),
+                    f32::INFINITY,
+                    retention,
+                )
+                .width
+            };
+            (width(selection.start), width(selection.end))
+        });
+    let caret_position = (focused && caret_visible).then(|| {
+        let prefix = input_mask.map_or_else(
+            || editor.display_caret_prefix(),
+            |mask| mask_text(&editor.display_caret_prefix(), mask),
+        );
+        let (line_index, line) =
+            prefix
+                .rsplit_once('\n')
+                .map_or((0, prefix.as_str()), |(before, line)| {
+                    (
+                        before.bytes().filter(|byte| *byte == b'\n').count() + 1,
+                        line,
+                    )
+                });
+        let x = measure_text_with_retention(
+            line,
+            *scale,
+            *bold,
+            false,
+            None,
+            Some(1),
+            f32::INFINITY,
+            retention,
+        )
+        .width;
+        let height = line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3);
+        Point {
+            x,
+            y: line_index as f32 * height,
+        }
+    });
+    let projected_value = if editor.text().is_empty() && editor.preedit().is_empty() {
+        details
+            .and_then(|details| details.input_placeholder.clone())
+            .unwrap_or_default()
+    } else if let Some(mask) = input_mask {
+        mask_text(&editor.display_text_with_caret(""), mask)
+    } else {
+        editor.display_text_with_caret("")
+    };
+    Some(TransientTextPatch {
+        value: projected_value,
+        input_value: editor.text().to_owned(),
+        selection_x,
+        caret_position,
+    })
+}
+
 fn synchronize_text_editor_state<Message>(
     element: &Element<Message>,
     id: &UiId,
@@ -1332,6 +1441,7 @@ pub(super) struct TransientStateJournal {
     kinds: std::collections::HashMap<UiId, Kind>,
     vertical_scroll_offsets: std::collections::HashMap<UiId, f32>,
     dropdown_expanded: std::collections::HashMap<UiId, bool>,
+    text_patches: std::collections::HashMap<UiId, TransientTextPatch>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1341,13 +1451,24 @@ pub(super) struct TransientStateJournal {
     kind_clone_allocations: usize,
 }
 
+#[derive(Debug)]
+struct TransientTextPatch {
+    value: String,
+    input_value: String,
+    selection_x: Option<(f32, f32)>,
+    caret_position: Option<Point>,
+}
+
 impl TransientStateJournal {
     pub(super) fn style_count(&self) -> usize {
         self.style_patches.len()
     }
 
     pub(super) fn kind_count(&self) -> usize {
-        self.kinds.len() + self.vertical_scroll_offsets.len() + self.dropdown_expanded.len()
+        self.kinds.len()
+            + self.vertical_scroll_offsets.len()
+            + self.dropdown_expanded.len()
+            + self.text_patches.len()
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
@@ -1380,10 +1501,16 @@ impl TransientStateJournal {
             + self.kinds.capacity() * std::mem::size_of::<(UiId, Kind)>()
             + self.vertical_scroll_offsets.capacity() * std::mem::size_of::<(UiId, f32)>()
             + self.dropdown_expanded.capacity() * std::mem::size_of::<(UiId, bool)>()
+            + self.text_patches.capacity() * std::mem::size_of::<(UiId, TransientTextPatch)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
             + self.kinds.values().map(kind_owned_bytes).sum::<usize>()
+            + self
+                .text_patches
+                .values()
+                .map(|patch| patch.value.capacity() + patch.input_value.capacity())
+                .sum::<usize>()
     }
 
     pub(super) fn table_allocations(&self) -> usize {
@@ -1392,6 +1519,7 @@ impl TransientStateJournal {
             + usize::from(self.kinds.capacity() != 0)
             + usize::from(self.vertical_scroll_offsets.capacity() != 0)
             + usize::from(self.dropdown_expanded.capacity() != 0)
+            + usize::from(self.text_patches.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
 
@@ -1496,6 +1624,30 @@ impl TransientStateJournal {
                     .union(DirtyPhases::SEMANTICS),
             );
         }
+        if let Some(patch) = self.text_patches.get(id)
+            && let Kind::Text { value, details, .. } = &element.kind
+        {
+            use super::super::retained::DirtyPhases;
+            let canonical_details = details.as_deref();
+            if patch.value != *value {
+                dirty.insert(
+                    DirtyPhases::MEASURE
+                        .union(DirtyPhases::PLACE)
+                        .union(DirtyPhases::PAINT),
+                );
+            }
+            if canonical_details.and_then(|details| details.input_value.as_deref())
+                != Some(patch.input_value.as_str())
+            {
+                dirty.insert(DirtyPhases::INTERACTION.union(DirtyPhases::SEMANTICS));
+            }
+            if canonical_details.and_then(|details| details.selection_x) != patch.selection_x
+                || canonical_details.and_then(|details| details.caret_position)
+                    != patch.caret_position
+            {
+                dirty.insert(DirtyPhases::PAINT);
+            }
+        }
         if dirty == super::super::retained::DirtyPhases::default() {
             self.phases.remove(id);
         } else {
@@ -1529,6 +1681,42 @@ impl TransientStateJournal {
 
     pub(super) fn dropdown_expanded(&self, id: &UiId, canonical: bool) -> bool {
         self.dropdown_expanded.get(id).copied().unwrap_or(canonical)
+    }
+
+    pub(super) fn text_value<'a>(&'a self, id: &UiId, canonical: &'a str) -> &'a str {
+        self.text_patches
+            .get(id)
+            .map_or(canonical, |patch| patch.value.as_str())
+    }
+
+    pub(super) fn text_input_value<'a>(
+        &'a self,
+        id: &UiId,
+        canonical: Option<&'a str>,
+    ) -> Option<&'a str> {
+        self.text_patches
+            .get(id)
+            .map_or(canonical, |patch| Some(patch.input_value.as_str()))
+    }
+
+    pub(super) fn text_selection_x(
+        &self,
+        id: &UiId,
+        canonical: Option<(f32, f32)>,
+    ) -> Option<(f32, f32)> {
+        self.text_patches
+            .get(id)
+            .map_or(canonical, |patch| patch.selection_x)
+    }
+
+    pub(super) fn text_caret_position(&self, id: &UiId, canonical: Option<Point>) -> Option<Point> {
+        self.text_patches
+            .get(id)
+            .map_or(canonical, |patch| patch.caret_position)
+    }
+
+    fn has_direct_text_patch(&self, id: &UiId) -> bool {
+        self.text_patches.contains_key(id)
     }
 
     fn has_direct_dropdown_patch(&self, id: &UiId) -> bool {
@@ -1717,6 +1905,11 @@ fn capture_transient_state<Message>(
         }
     }
     let text_projection_changes = text_projection_needed(element, id, state);
+    if text_projection_changes && let Some(patch) = project_text_state(element, id, state) {
+        overlay.text_patches.insert(id.clone(), patch);
+    } else {
+        overlay.text_patches.remove(id);
+    }
     let dropdown_projection_changes =
         !direct_dropdown && dropdown_projection_needed(element, id, state, interaction_index);
     let vertical_scroll_projection_changes = vertical_scroll_projection_needed(element, id, state);
@@ -1729,8 +1922,7 @@ fn capture_transient_state<Message>(
     } else {
         overlay.vertical_scroll_offsets.remove(id);
     }
-    if text_projection_changes
-        || dropdown_projection_changes
+    if dropdown_projection_changes
         || matches!(
             element.kind,
             Kind::Slider {
@@ -2144,6 +2336,7 @@ fn apply_transient_state_with_parent<Message>(
             _ => {}
         }
         if text_projection_needed(element, id, state)
+            && !compact_overlay.is_some_and(|overlay| overlay.has_direct_text_patch(id))
             && let Kind::Text {
                 value,
                 scale,

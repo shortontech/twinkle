@@ -496,9 +496,15 @@ pub(super) fn emit_element<Message: Clone>(
             ..
         } = kind
     {
-        let input_value = details
+        let canonical_input_value = details
             .as_ref()
-            .and_then(|details| details.input_value.as_ref());
+            .and_then(|details| details.input_value.as_deref());
+        let input_value = overlay.map_or(canonical_input_value, |overlay| {
+            overlay.text_input_value(&node.id, canonical_input_value)
+        });
+        let value = overlay.map_or(value.as_str(), |overlay| {
+            overlay.text_value(&node.id, value)
+        });
         let secure = details
             .as_ref()
             .is_some_and(|details| details.input_mask.is_some());
@@ -508,7 +514,7 @@ pub(super) fn emit_element<Message: Clone>(
             scale: *scale,
             bold: *bold,
             line_height: line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
-            initial: input_value.cloned().unwrap_or_else(|| value.clone()),
+            initial: input_value.unwrap_or(value).to_owned(),
             map: map.clone(),
             secure,
             context_menu_presentation: style.editing_menu.clone(),
@@ -580,7 +586,9 @@ pub(super) fn emit_element<Message: Clone>(
             details: Some(details),
             ..
         } = kind
-        && let Some((start, end)) = details.selection_x
+        && let Some((start, end)) = overlay.map_or(details.selection_x, |overlay| {
+            overlay.text_selection_x(&node.id, details.selection_x)
+        })
     {
         let color = element
             .style
@@ -620,7 +628,9 @@ pub(super) fn emit_element<Message: Clone>(
             details: Some(details),
             ..
         } = kind
-        && let Some(caret_position) = details.caret_position
+        && let Some(caret_position) = overlay.map_or(details.caret_position, |overlay| {
+            overlay.text_caret_position(&node.id, details.caret_position)
+        })
     {
         let parts = style.editing_parts.as_ref();
         let color = parts.map_or_else(
@@ -692,6 +702,9 @@ pub(super) fn emit_element<Message: Clone>(
             if !phases.paint {
                 return;
             }
+            let value = overlay.map_or(value.as_str(), |overlay| {
+                overlay.text_value(&node.id, value)
+            });
             let text = text_for_bounds(value, *scale, *bold, *ellipsis, text_rect.size.width);
             if let Some((color, width)) = details.as_ref().and_then(|details| details.outline) {
                 for (x, y) in [

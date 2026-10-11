@@ -8049,15 +8049,20 @@ fn measure_element_effective<Message>(
             line_height,
             max_lines,
             ..
-        } => measure_text(
-            value,
-            *scale,
-            *bold,
-            *wrap,
-            *line_height,
-            max_lines.map(std::num::NonZeroUsize::get),
-            child_max.width,
-        ),
+        } => {
+            let value = context.map_or(value.as_str(), |(id, overlay)| {
+                overlay.text_value(id, value)
+            });
+            measure_text(
+                value,
+                *scale,
+                *bold,
+                *wrap,
+                *line_height,
+                max_lines.map(std::num::NonZeroUsize::get),
+                child_max.width,
+            )
+        }
         Kind::StyledText(styled) => measure_styled_text(
             &styled.value,
             &styled.spans,
@@ -8329,6 +8334,9 @@ fn measure_element_effective<Message>(
             },
             Length::MinContent,
         ) => {
+            let value = context.map_or(value.as_str(), |(id, overlay)| {
+                overlay.text_value(id, value)
+            });
             value
                 .split_whitespace()
                 .map(|word| {
@@ -8343,6 +8351,9 @@ fn measure_element_effective<Message>(
             },
             Length::MaxContent,
         ) => {
+            let value = context.map_or(value.as_str(), |(id, overlay)| {
+                overlay.text_value(id, value)
+            });
             measure_text(value, *scale, *bold, false, None, Some(1), f32::INFINITY).width
                 + horizontal_padding
         }

@@ -1431,7 +1431,9 @@ fn transparent_focused_editor_does_not_clone_an_unchanged_style() {
     assert_eq!(resources.transient_style_clone_bytes, 0);
     assert_eq!(resources.transient_style_clone_allocations, 0);
     assert_eq!(resources.transient_style_overlay_count, 0);
-    assert!(resources.transient_kind_clone_bytes > 0);
+    assert_eq!(resources.transient_kind_clone_bytes, 0);
+    assert_eq!(resources.transient_kind_clone_allocations, 0);
+    assert_eq!(resources.transient_kind_overlay_count, 1);
 }
 
 #[test]
