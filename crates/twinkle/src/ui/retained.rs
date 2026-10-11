@@ -174,17 +174,20 @@ enum KindTag {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct PhaseSignatures {
-    measure: u64,
-    place: u64,
-    paint: u64,
-    interaction: u64,
-    semantics: u64,
+    measure: PhaseFingerprint,
+    place: PhaseFingerprint,
+    paint: PhaseFingerprint,
+    interaction: PhaseFingerprint,
+    semantics: PhaseFingerprint,
     content_revision: Option<u64>,
     measure_content_sensitive: bool,
     paint_content_sensitive: bool,
     interaction_content_sensitive: bool,
     semantics_content_sensitive: bool,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PhaseFingerprint(u64);
 
 #[derive(Default)]
 struct CompactHasher(std::collections::hash_map::DefaultHasher);
@@ -194,8 +197,8 @@ impl CompactHasher {
         value.hash(&mut self.0);
     }
 
-    fn finish(self) -> u64 {
-        self.0.finish()
+    fn finish(self) -> PhaseFingerprint {
+        PhaseFingerprint(self.0.finish())
     }
 }
 
@@ -304,7 +307,7 @@ fn grid_columns(hasher: &mut CompactHasher, columns: &GridColumnSpec) {
     }
 }
 
-fn hash_layout_style(style: &Style) -> (u64, u64) {
+fn hash_layout_style(style: &Style) -> (PhaseFingerprint, PhaseFingerprint) {
     let mut measure = CompactHasher::default();
     for value in [
         style.padding.top,
@@ -536,7 +539,7 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
         measure_content_sensitive = false;
         style_measure
     } else {
-        style_measure ^ content_measure.finish()
+        PhaseFingerprint(style_measure.0 ^ content_measure.finish().0)
     };
     paint.add(&element.style.background);
     paint.add(&element.style.border);
@@ -1180,8 +1183,8 @@ fn exact_phase_matches<Message>(
 }
 
 fn phase_matches(
-    current_metadata: u64,
-    previous_metadata: u64,
+    current_metadata: PhaseFingerprint,
+    previous_metadata: PhaseFingerprint,
     exact_metadata_equal: bool,
     current_sensitive: bool,
     previous_sensitive: bool,

@@ -1130,6 +1130,9 @@ struct StyleCacheKey {
     ancestors: Vec<(String, Option<String>, Option<String>)>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct StyleCacheFingerprint(u64);
+
 struct StyleCacheLookup<'a> {
     kind: &'a str,
     id: Option<&'a str>,
@@ -1170,13 +1173,13 @@ impl<'a> StyleCacheLookup<'a> {
         }
     }
 
-    fn fingerprint(&self) -> u64 {
+    fn fingerprint(&self) -> StyleCacheFingerprint {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         self.kind.hash(&mut hash);
         self.id.hash(&mut hash);
         self.classes.hash(&mut hash);
         self.context_token.hash(&mut hash);
-        hash.finish()
+        StyleCacheFingerprint(hash.finish())
     }
 
     fn to_owned(&self) -> StyleCacheKey {
@@ -1266,7 +1269,10 @@ const INTERACTION_CACHE_BYTES: usize = 2 * 1024 * 1024;
 struct InteractionCache {
     // A fingerprint selects a candidate, never authorizes reuse by itself.
     // Collisions replace the candidate after exact input comparison.
-    entries: HashMap<(u64, InteractionState), (StyleCacheKey, twinkle::InteractionPaint)>,
+    entries: HashMap<
+        (StyleCacheFingerprint, InteractionState),
+        (StyleCacheKey, twinkle::InteractionPaint),
+    >,
     bytes: usize,
 }
 
@@ -1278,7 +1284,7 @@ pub struct StyleSheet {
     uses_palette: bool,
     host_properties: HashMap<String, String>,
     reading_direction: ReadingDirection,
-    resolved: RefCell<HashMap<u64, (StyleCacheKey, ControlStyle)>>,
+    resolved: RefCell<HashMap<StyleCacheFingerprint, (StyleCacheKey, ControlStyle)>>,
     interaction_rules: [Vec<usize>; 3],
     interactions: RefCell<InteractionCache>,
     #[cfg(test)]

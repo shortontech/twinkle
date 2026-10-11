@@ -30,14 +30,17 @@ pub struct UiId(Arc<UiIdData>);
 
 struct UiIdData {
     value: String,
-    fingerprint: u64,
+    fingerprint: StableIdFingerprint,
 }
 
-fn ui_id_fingerprint(value: &str) -> u64 {
+#[derive(Clone, Copy)]
+struct StableIdFingerprint(u64);
+
+fn ui_id_fingerprint(value: &str) -> StableIdFingerprint {
     static RANDOM_STATE: OnceLock<RandomState> = OnceLock::new();
     let mut hasher = RANDOM_STATE.get_or_init(RandomState::new).build_hasher();
     value.hash(&mut hasher);
-    hasher.finish()
+    StableIdFingerprint(hasher.finish())
 }
 
 impl UiId {
@@ -99,7 +102,7 @@ impl Ord for UiId {
 
 impl Hash for UiId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.0.fingerprint);
+        state.write_u64(self.0.fingerprint.0);
     }
 }
 
