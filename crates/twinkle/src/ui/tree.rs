@@ -563,6 +563,16 @@ pub struct FrameResourceDiagnostics {
     /// whole-payload transient journal entries. Hash-table allocations are
     /// reported separately below.
     pub transient_whole_payload_clone_allocations: usize,
+    /// Portion of `transient_whole_payload_clone_bytes` attributable to
+    /// complete `Style` payload clones.
+    pub transient_style_clone_bytes: usize,
+    /// Nested allocations attributable to complete `Style` payload clones.
+    pub transient_style_clone_allocations: usize,
+    /// Portion of `transient_whole_payload_clone_bytes` attributable to
+    /// complete `Kind` payload clones.
+    pub transient_kind_clone_bytes: usize,
+    /// Nested allocations attributable to complete `Kind` payload clones.
+    pub transient_kind_clone_allocations: usize,
     /// Peak inline hash-table and retained payload storage of the transient
     /// journal before it is dropped at publication.
     pub transient_overlay_storage_bytes: usize,
@@ -776,6 +786,10 @@ pub struct UiFrame<Message = String> {
     transient_kind_overlay_count: usize,
     transient_whole_payload_clone_bytes: usize,
     transient_whole_payload_clone_allocations: usize,
+    transient_style_clone_bytes: usize,
+    transient_style_clone_allocations: usize,
+    transient_kind_clone_bytes: usize,
+    transient_kind_clone_allocations: usize,
     transient_overlay_storage_bytes: usize,
     transient_overlay_table_allocations: usize,
     overlap_previous_owned_bytes: usize,
@@ -852,6 +866,10 @@ impl<Message> Default for UiFrame<Message> {
             transient_kind_overlay_count: 0,
             transient_whole_payload_clone_bytes: 0,
             transient_whole_payload_clone_allocations: 0,
+            transient_style_clone_bytes: 0,
+            transient_style_clone_allocations: 0,
+            transient_kind_clone_bytes: 0,
+            transient_kind_clone_allocations: 0,
             transient_overlay_storage_bytes: 0,
             transient_overlay_table_allocations: 0,
             overlap_previous_owned_bytes: 0,
@@ -2402,6 +2420,10 @@ impl<Message: Clone> UiFrame<Message> {
         tree.transient_whole_payload_clone_bytes = transient_overlay.whole_payload_clone_bytes();
         tree.transient_whole_payload_clone_allocations =
             transient_overlay.whole_payload_clone_allocations();
+        tree.transient_style_clone_bytes = transient_overlay.style_clone_bytes();
+        tree.transient_style_clone_allocations = transient_overlay.style_clone_allocations();
+        tree.transient_kind_clone_bytes = transient_overlay.kind_clone_bytes();
+        tree.transient_kind_clone_allocations = transient_overlay.kind_clone_allocations();
         tree.transient_overlay_storage_bytes = transient_overlay.storage_bytes();
         tree.transient_overlay_table_allocations = transient_overlay.table_allocations();
         tree.declaration_root = Some(root);
@@ -4320,6 +4342,10 @@ impl<Message: Clone> UiFrame<Message> {
             transient_whole_payload_clone_bytes: self.transient_whole_payload_clone_bytes,
             transient_whole_payload_clone_allocations: self
                 .transient_whole_payload_clone_allocations,
+            transient_style_clone_bytes: self.transient_style_clone_bytes,
+            transient_style_clone_allocations: self.transient_style_clone_allocations,
+            transient_kind_clone_bytes: self.transient_kind_clone_bytes,
+            transient_kind_clone_allocations: self.transient_kind_clone_allocations,
             transient_overlay_storage_bytes: self.transient_overlay_storage_bytes,
             transient_overlay_table_allocations: self.transient_overlay_table_allocations,
             resolved_storage_bytes,

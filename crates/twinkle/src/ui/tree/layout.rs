@@ -954,6 +954,36 @@ fn text_projection_needed<Message>(
     editor.text() != initial || !editor.preedit().is_empty() || editor.selection().is_some()
 }
 
+fn dropdown_projection_needed<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &UiStateStore,
+    interaction_index: Option<usize>,
+) -> bool {
+    let Kind::Dropdown(dropdown) = &element.kind else {
+        return false;
+    };
+    let retained = state.state(id);
+    let generation_opens = retained.map_or(dropdown.open_generation != 0, |transient| {
+        transient.dropdown_open_generation != dropdown.open_generation
+    });
+    let expanded = generation_opens || retained.is_some_and(|transient| transient.dropdown_open);
+    if expanded != dropdown.expanded {
+        return true;
+    }
+    if dropdown.presentation.is_none() {
+        return false;
+    }
+    interaction_index.is_some()
+        || (0..dropdown.options.len()).any(|index| {
+            let option = id.scoped(format!("option-{index}"));
+            state.pressed() == Some(&option)
+                || state.hovered() == Some(&option)
+                || state.focused() == Some(&option)
+                || state.navigation().controller_selected() == Some(&option)
+        })
+}
+
 pub(super) fn apply_transient_state<Message>(
     element: &mut Element<Message>,
     id: &UiId,
@@ -1263,6 +1293,10 @@ pub(super) struct TransientStateJournal {
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
+    style_clone_bytes: usize,
+    style_clone_allocations: usize,
+    kind_clone_bytes: usize,
+    kind_clone_allocations: usize,
 }
 
 impl TransientStateJournal {
@@ -1280,6 +1314,22 @@ impl TransientStateJournal {
 
     pub(super) fn whole_payload_clone_allocations(&self) -> usize {
         self.whole_payload_clone_allocations
+    }
+
+    pub(super) fn style_clone_bytes(&self) -> usize {
+        self.style_clone_bytes
+    }
+
+    pub(super) fn style_clone_allocations(&self) -> usize {
+        self.style_clone_allocations
+    }
+
+    pub(super) fn kind_clone_bytes(&self) -> usize {
+        self.kind_clone_bytes
+    }
+
+    pub(super) fn kind_clone_allocations(&self) -> usize {
+        self.kind_clone_allocations
     }
 
     pub(super) fn storage_bytes(&self) -> usize {
@@ -1486,15 +1536,18 @@ fn capture_transient_state<Message>(
             overlay.whole_payload_clone_allocations = overlay
                 .whole_payload_clone_allocations
                 .saturating_add(allocations);
+            overlay.style_clone_bytes = overlay.style_clone_bytes.saturating_add(bytes);
+            overlay.style_clone_allocations =
+                overlay.style_clone_allocations.saturating_add(allocations);
             overlay.styles.insert(id.clone(), original);
         }
     }
     let text_projection_changes = text_projection_needed(element, id, state);
+    let dropdown_projection_changes =
+        dropdown_projection_needed(element, id, state, interaction_index);
     if text_projection_changes
-        || matches!(
-            element.kind,
-            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
-        ) && owns_state
+        || matches!(element.kind, Kind::VerticalScroll { .. }) && owns_state
+        || dropdown_projection_changes
         || matches!(
             element.kind,
             Kind::Slider {
@@ -1513,6 +1566,9 @@ fn capture_transient_state<Message>(
             overlay.whole_payload_clone_allocations = overlay
                 .whole_payload_clone_allocations
                 .saturating_add(allocations);
+            overlay.kind_clone_bytes = overlay.kind_clone_bytes.saturating_add(bytes);
+            overlay.kind_clone_allocations =
+                overlay.kind_clone_allocations.saturating_add(allocations);
             overlay.kinds.insert(id.clone(), original);
         }
     }
@@ -1790,6 +1846,14 @@ fn apply_transient_state_with_parent<Message>(
             }
             Kind::Dropdown(dropdown) => {
                 dropdown.expanded = dropdown_open;
+                let resolve_presentation = interaction_index.is_some()
+                    || (0..dropdown.options.len()).any(|index| {
+                        let option = id.scoped(format!("option-{index}"));
+                        state.pressed() == Some(&option)
+                            || state.hovered() == Some(&option)
+                            || state.focused() == Some(&option)
+                            || state.navigation().controller_selected() == Some(&option)
+                    });
                 let owner_paint = interaction_index
                     .map(|index| {
                         element
@@ -1799,7 +1863,7 @@ fn apply_transient_state_with_parent<Message>(
                             .map_or(InteractionPaint::default(), |paints| paints[index])
                     })
                     .unwrap_or_default();
-                if let Some(parts) = dropdown.presentation.as_mut() {
+                if resolve_presentation && let Some(parts) = dropdown.presentation.as_mut() {
                     for part in parts.iter_mut() {
                         *part = part.inherited_paint(owner_paint);
                     }

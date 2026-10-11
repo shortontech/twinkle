@@ -1192,6 +1192,14 @@ fn transient_overlay_restores_canonical_declaration_before_publication() {
     assert!(resources.transient_style_overlay_count > 0);
     assert!(resources.transient_whole_payload_clone_bytes >= std::mem::size_of::<Style>());
     assert!(resources.transient_whole_payload_clone_allocations > 0);
+    assert_eq!(
+        resources.transient_whole_payload_clone_bytes,
+        resources.transient_style_clone_bytes + resources.transient_kind_clone_bytes
+    );
+    assert_eq!(
+        resources.transient_whole_payload_clone_allocations,
+        resources.transient_style_clone_allocations + resources.transient_kind_clone_allocations
+    );
     assert!(resources.transient_overlay_storage_bytes > 0);
     assert!(resources.transient_overlay_table_allocations > 0);
 }
