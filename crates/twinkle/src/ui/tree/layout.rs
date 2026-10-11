@@ -1348,6 +1348,83 @@ impl TransientStylePatch {
         };
         (patch != Self::default()).then_some(patch)
     }
+
+    fn merge(&mut self, newer: Self) {
+        if newer.background.is_some() {
+            self.background = newer.background;
+        }
+        if newer.border.is_some() {
+            self.border = newer.border;
+        }
+        if newer.border_width.is_some() {
+            self.border_width = newer.border_width;
+        }
+        if newer.foreground.is_some() {
+            self.foreground = newer.foreground;
+        }
+        if newer.corner_radius.is_some() {
+            self.corner_radius = newer.corner_radius;
+        }
+        if newer.width.is_some() {
+            self.width = newer.width;
+        }
+        if newer.height.is_some() {
+            self.height = newer.height;
+        }
+        if newer.scroll_offset_x.is_some() {
+            self.scroll_offset_x = newer.scroll_offset_x;
+        }
+        if newer.scroll_offset.is_some() {
+            self.scroll_offset = newer.scroll_offset;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TransientStyleValues {
+    background: Option<Background>,
+    border: Option<Color>,
+    border_width: f32,
+    foreground: Option<Color>,
+    corner_radius: f32,
+    width: Length,
+    height: Length,
+    scroll_offset_x: f32,
+    scroll_offset: f32,
+}
+
+impl TransientStyleValues {
+    fn canonical(style: &Style) -> Self {
+        Self {
+            background: style.background,
+            border: style.border,
+            border_width: style.border_width,
+            foreground: style.foreground,
+            corner_radius: style.corner_radius,
+            width: style.width,
+            height: style.height,
+            scroll_offset_x: style.scroll_offset_x,
+            scroll_offset: style.scroll_offset,
+        }
+    }
+
+    fn patch(self, style: &Style) -> Option<TransientStylePatch> {
+        let patch = TransientStylePatch {
+            background: (style.background != self.background).then_some(self.background),
+            border: (style.border != self.border).then_some(self.border),
+            border_width: (style.border_width != self.border_width).then_some(self.border_width),
+            foreground: (style.foreground != self.foreground).then_some(self.foreground),
+            corner_radius: (style.corner_radius != self.corner_radius)
+                .then_some(self.corner_radius),
+            width: (style.width != self.width).then_some(self.width),
+            height: (style.height != self.height).then_some(self.height),
+            scroll_offset_x: (style.scroll_offset_x.to_bits() != self.scroll_offset_x.to_bits())
+                .then_some(self.scroll_offset_x),
+            scroll_offset: (style.scroll_offset.to_bits() != self.scroll_offset.to_bits())
+                .then_some(self.scroll_offset),
+        };
+        (patch != TransientStylePatch::default()).then_some(patch)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1723,12 +1800,8 @@ impl TransientStateJournal {
         self.dropdown_expanded.contains_key(id)
     }
 
-    fn has_direct_background_patch(&self, id: &UiId) -> bool {
-        self.styles.get(id).is_none()
-            && self
-                .style_patches
-                .get(id)
-                .is_some_and(|patch| patch.background.is_some())
+    fn has_direct_style_patch(&self, id: &UiId) -> bool {
+        self.styles.get(id).is_none() && self.style_patches.contains_key(id)
     }
 }
 
@@ -1740,6 +1813,147 @@ pub(super) fn apply_transient_state_staged<Message>(
 ) {
     capture_transient_state(element, id, state, None, false, 1.0, overlay);
     apply_transient_state_with_parent(element, id, state, None, Some(overlay));
+}
+
+fn local_transient_style_patch<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &UiStateStore,
+    direct_interaction: Option<usize>,
+    interaction_index: Option<usize>,
+    scope_background_active: bool,
+) -> Option<TransientStylePatch> {
+    let owns_state = element.style.parent_interaction
+        || element.primary_message().is_some()
+        || element.navigation_scope.is_some()
+        || element.text_mapper.is_some()
+        || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
+        || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
+        || matches!(
+            element.kind,
+            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
+        );
+    if !owns_state {
+        return None;
+    }
+    let mut effective = TransientStyleValues::canonical(&element.style);
+    if scope_background_active && let Some(background) = element.style.controller_scope_background {
+        effective.background = Some(background);
+    }
+    if direct_interaction == Some(1) {
+        if let Some(background) = element.style.pressed_background {
+            effective.background = Some(background);
+        }
+    } else if direct_interaction == Some(0)
+        && let Some(background) = element.style.hover_background
+    {
+        effective.background = Some(background);
+    }
+    let exact_focus_background =
+        (!scope_background_active && state.window_focused() && direct_interaction == Some(2))
+            .then_some(element.style.focus_background)
+            .flatten();
+    if let Some(background) = exact_focus_background {
+        effective.background = Some(background);
+    }
+    if let Some(index) = interaction_index {
+        let paint = element
+            .style
+            .interaction_paints
+            .as_ref()
+            .map_or(InteractionPaint::default(), |paints| paints[index]);
+        if let Some(color) = paint.background {
+            effective.background = (color != 0).then_some(Background::Solid(color));
+        }
+        if let Some(color) = paint.border_color {
+            effective.border = (color != 0).then_some(color);
+        }
+        if let Some(width) = paint.border_width {
+            effective.border_width = width;
+        }
+        if let Some(radius) = paint.radius {
+            effective.corner_radius = radius;
+        }
+        if let Some(width) = paint.width {
+            effective.width = width;
+        }
+        if let Some(height) = paint.height {
+            effective.height = height;
+        }
+        if let Some(color) = paint.foreground {
+            effective.foreground = Some(color);
+        }
+    }
+    let transparent_editor = element.text_mapper.is_some()
+        && matches!(element.kind, Kind::Text { .. })
+        && element.style.background.is_none();
+    let css_dropdown =
+        matches!(&element.kind, Kind::Dropdown(dropdown) if dropdown.presentation.is_some());
+    let active_focus_tint = if scope_background_active
+        || exact_focus_background.is_some()
+        || css_dropdown
+        || !element.style.automatic_focus_tint
+    {
+        None
+    } else if state.window_focused() && state.navigation().controller_selected() == Some(id) {
+        element
+            .style
+            .controller_focus_background_tint
+            .or(element.style.focus_background_tint)
+            .or(Some(crate::theme::FALLBACK_CONTROLLER_FOCUS_CUE))
+    } else if state.window_focused()
+        && state.focused() == Some(id)
+        && matches!(
+            state.input_modality(),
+            InputModality::Keyboard | InputModality::Accessibility
+        )
+    {
+        element
+            .style
+            .focus_background_tint
+            .or_else(|| (!transparent_editor).then_some(crate::theme::FALLBACK_KEYBOARD_FOCUS_CUE))
+    } else {
+        None
+    };
+    if let Some(tint) = active_focus_tint {
+        let focus_foreground = element.style.foreground.or_else(|| {
+            element
+                .children
+                .iter()
+                .find_map(|child| focus_participating_foreground(child))
+        });
+        let transform = |color| {
+            focus_foreground.map_or_else(
+                || crate::focused_surface(color, tint),
+                |foreground| crate::focused_surface_with_foreground(color, tint, foreground),
+            )
+        };
+        effective.background = Some(match effective.background {
+            Some(Background::Solid(color)) => Background::Solid(transform(color)),
+            Some(Background::LinearGradient(mut gradient)) => {
+                gradient.start = transform(gradient.start);
+                gradient.end = transform(gradient.end);
+                Background::LinearGradient(gradient)
+            }
+            None => Background::Solid(transform(crate::theme::FALLBACK_FOCUS_SURFACE)),
+        });
+    }
+    if matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto) {
+        let retained = state.state(id);
+        let scroll_at_end = retained.is_none_or(|state| state.scroll_at_end);
+        effective.scroll_offset = if element.style.follow_scroll_end && scroll_at_end {
+            f32::MAX
+        } else {
+            retained.map_or(0.0, |state| state.scroll_offset).max(0.0)
+        };
+    }
+    if matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto) {
+        effective.scroll_offset_x = state
+            .state(id)
+            .map_or(0.0, |state| state.scroll_offset_x)
+            .max(0.0);
+    }
+    effective.patch(&element.style)
 }
 
 fn capture_transient_state<Message>(
@@ -1779,28 +1993,6 @@ fn capture_transient_state<Message>(
                 .is_some_and(|scope| scope.pane)
                 && state.navigation().controller_pane() == Some(id)))
         && element.style.controller_scope_background.is_some();
-    let retained_state = state.state(id);
-    let scroll_style_changes =
-        if matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto) {
-            let scroll_at_end = retained_state.is_none_or(|state| state.scroll_at_end);
-            let offset = retained_state.map_or(0.0, |state| state.scroll_offset);
-            let effective = if element.style.follow_scroll_end && scroll_at_end {
-                f32::MAX
-            } else {
-                offset.max(0.0)
-            };
-            effective.to_bits() != element.style.scroll_offset.to_bits()
-        } else {
-            false
-        } || if matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto) {
-            retained_state
-                .map_or(0.0, |state| state.scroll_offset_x)
-                .max(0.0)
-                .to_bits()
-                != element.style.scroll_offset_x.to_bits()
-        } else {
-            false
-        };
     let direct_dropdown_supported =
         matches!(&element.kind, Kind::Dropdown(dropdown) if dropdown.presentation.is_none());
     let direct_dropdown = if let Kind::Dropdown(dropdown) = &element.kind
@@ -1835,45 +2027,6 @@ fn capture_transient_state<Message>(
     let dropdown_height_changes = matches!(element.kind, Kind::Dropdown(_))
         && !element.style.css_paint
         && !direct_dropdown_supported;
-    let direct_hover_patch = direct_interaction == Some(0)
-        && element.style.hover_background.is_some()
-        && element
-            .style
-            .interaction_paints
-            .as_ref()
-            .is_none_or(|paints| paints[0] == InteractionPaint::default());
-    if direct_hover_patch {
-        overlay
-            .style_patches
-            .entry(id.clone())
-            .or_default()
-            .background = Some(element.style.hover_background);
-    }
-    let transparent_editor_focus = direct_interaction == Some(2)
-        && element.text_mapper.is_some()
-        && matches!(element.kind, Kind::Text { .. })
-        && element.style.background.is_none()
-        && element.style.focus_background.is_none()
-        && element
-            .style
-            .interaction_paints
-            .as_ref()
-            .is_none_or(|paints| paints[2] == InteractionPaint::default());
-    let interaction_style_changes = !direct_hover_patch
-        && !transparent_editor_focus
-        && interaction_index.is_some_and(|index| {
-            let paint = element
-                .style
-                .interaction_paints
-                .as_ref()
-                .map_or(InteractionPaint::default(), |paints| paints[index]);
-            paint != InteractionPaint::default()
-                || index == 0 && element.style.hover_background.is_some()
-                || index == 1 && element.style.pressed_background.is_some()
-                || index == 2
-                    && (element.style.focus_background.is_some()
-                        || element.style.automatic_focus_tint)
-        });
     if inherited_geometry_scale.to_bits() != 1.0f32.to_bits() {
         let patch = overlay.style_patches.entry(id.clone()).or_default();
         if let Length::Px(width) = element.style.width {
@@ -1883,11 +2036,35 @@ fn capture_transient_state<Message>(
             patch.height = Some(Length::Px(height * inherited_geometry_scale));
         }
     }
-    let style_can_change = interaction_style_changes
-        || scope_background_active
-        || inherited_text_paint
-        || scroll_style_changes
-        || dropdown_height_changes;
+    if let Some(local_patch) = local_transient_style_patch(
+        element,
+        id,
+        state,
+        direct_interaction,
+        interaction_index,
+        scope_background_active,
+    ) {
+        overlay
+            .style_patches
+            .entry(id.clone())
+            .or_default()
+            .merge(local_patch);
+    }
+    if direct_dropdown
+        && !element.style.css_paint
+        && let Kind::Dropdown(dropdown) = &element.kind
+    {
+        let expanded = overlay.dropdown_expanded(id, dropdown.expanded);
+        overlay.style_patches.entry(id.clone()).or_default().height =
+            Some(Length::Px(if dropdown.overlay {
+                30.0
+            } else if expanded {
+                42.0 + dropdown.options.len() as f32 * 36.0
+            } else {
+                42.0
+            }));
+    }
+    let style_can_change = inherited_text_paint || dropdown_height_changes;
     if style_can_change {
         if !overlay.styles.contains_key(id) {
             let original = std::mem::take(&mut element.style);
@@ -2002,6 +2179,8 @@ fn apply_transient_state_with_parent<Message>(
     parent_interaction: Option<usize>,
     compact_overlay: Option<&TransientStateJournal>,
 ) {
+    let direct_style_patch =
+        compact_overlay.is_some_and(|overlay| overlay.has_direct_style_patch(id));
     let direct_interaction = if state.pressed() == Some(id) {
         Some(1)
     } else if state.window_focused()
@@ -2046,7 +2225,8 @@ fn apply_transient_state_with_parent<Message>(
                     .is_some_and(|scope| scope.pane)
                     && state.navigation().controller_pane() == Some(id)))
             && element.style.controller_scope_background.is_some();
-        if scope_background_active
+        if !direct_style_patch
+            && scope_background_active
             && let Some(background) = element.style.controller_scope_background
         {
             element.style.background = Some(background);
@@ -2063,13 +2243,13 @@ fn apply_transient_state_with_parent<Message>(
         {
             state.navigation_mut().set_controller_pane(Some(id.clone()));
         }
-        if state.pressed() == Some(id) {
+        if !direct_style_patch && state.pressed() == Some(id) {
             if let Some(background) = element.style.pressed_background {
                 element.style.background = Some(background);
             }
-        } else if state.hovered() == Some(id)
+        } else if !direct_style_patch
+            && state.hovered() == Some(id)
             && let Some(background) = element.style.hover_background
-            && !compact_overlay.is_some_and(|overlay| overlay.has_direct_background_patch(id))
         {
             element.style.background = Some(background);
         }
@@ -2080,7 +2260,7 @@ fn apply_transient_state_with_parent<Message>(
                 || state.navigation().controller_selected() == Some(id)))
         .then_some(element.style.focus_background)
         .flatten();
-        if let Some(background) = exact_focus_background {
+        if !direct_style_patch && let Some(background) = exact_focus_background {
             element.style.background = Some(background);
         }
         if let Some(index) = interaction_index {
@@ -2089,31 +2269,33 @@ fn apply_transient_state_with_parent<Message>(
                 .interaction_paints
                 .as_ref()
                 .map_or(InteractionPaint::default(), |paints| paints[index]);
-            if let Some(color) = paint.background {
+            if !direct_style_patch && let Some(color) = paint.background {
                 element.style.background = (color != 0).then_some(Background::Solid(color));
             }
-            if let Some(color) = paint.border_color {
+            if !direct_style_patch && let Some(color) = paint.border_color {
                 element.style.border = (color != 0).then_some(color);
             }
-            if let Some(width) = paint.border_width {
+            if !direct_style_patch && let Some(width) = paint.border_width {
                 element.style.border_width = width;
             }
-            if let Some(radius) = paint.radius {
+            if !direct_style_patch && let Some(radius) = paint.radius {
                 element.style.corner_radius = radius;
             }
-            if let Some(width) = paint.width {
+            if !direct_style_patch && let Some(width) = paint.width {
                 element.style.width = width;
             }
-            if let Some(height) = paint.height {
+            if !direct_style_patch && let Some(height) = paint.height {
                 element.style.height = height;
             }
             fn text_paint<Message>(
                 element: &mut Element<Message>,
                 paint: InteractionPaint,
                 owner: bool,
+                mutate_owner_style: bool,
             ) {
                 if let Some(color) = paint.foreground
                     && (owner || element.style.inherited_state_text[0])
+                    && (!owner || mutate_owner_style)
                 {
                     element.style.foreground = Some(color);
                 }
@@ -2133,10 +2315,10 @@ fn apply_transient_state_with_parent<Message>(
                     }
                 }
                 for child in &mut element.children {
-                    text_paint(child, paint, false);
+                    text_paint(child, paint, false, true);
                 }
             }
-            text_paint(element, paint, true);
+            text_paint(element, paint, true, !direct_style_patch);
         }
         // A transparent editor already exposes keyboard focus through its caret.
         // Filling its entire text node with the generic fallback tint makes a
@@ -2173,7 +2355,7 @@ fn apply_transient_state_with_parent<Message>(
                 None
             }
         };
-        if let Some(tint) = active_focus_tint {
+        if !direct_style_patch && let Some(tint) = active_focus_tint {
             let transform = |color| {
                 focus_foreground.map_or_else(
                     || crate::focused_surface(color, tint),
@@ -2321,7 +2503,7 @@ fn apply_transient_state_with_parent<Message>(
                             0.0
                         }
                 });
-                if !element.style.css_paint {
+                if !direct_style_patch && !element.style.css_paint {
                     element.style.height = Length::Px(height.unwrap_or({
                         if dropdown.overlay {
                             30.0
@@ -2426,14 +2608,18 @@ fn apply_transient_state_with_parent<Message>(
                 editor.display_text_with_caret("")
             };
         }
-        if matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto) {
+        if !direct_style_patch
+            && matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
+        {
             element.style.scroll_offset = if element.style.follow_scroll_end && scroll_at_end {
                 f32::MAX
             } else {
                 scroll_offset.max(0.0)
             };
         }
-        if matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto) {
+        if !direct_style_patch
+            && matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
+        {
             element.style.scroll_offset_x = scroll_offset_x.max(0.0);
         }
     }

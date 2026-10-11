@@ -1205,6 +1205,64 @@ fn transient_overlay_preserves_canonical_declaration_during_publication() {
 }
 
 #[test]
+fn pressed_interaction_paint_uses_a_compact_style_patch() {
+    let mut state = UiStateStore::default();
+    state.set_pressed(Some(UiId::from("root/button")));
+    let declaration = Container::<TestMessage>::new()
+        .id("button")
+        .message(TestMessage::Named("activate"))
+        .background(0x112233)
+        .interaction_paints([
+            InteractionPaint::default(),
+            InteractionPaint {
+                background: Some(0x445566),
+                foreground: Some(0xf0f0f0),
+                border_color: Some(0x778899),
+                border_width: Some(3.0),
+                radius: Some(8.0),
+                width: Some(Length::Px(140.0)),
+                height: Some(Length::Px(44.0)),
+                ..InteractionPaint::default()
+            },
+            InteractionPaint::default(),
+        ])
+        .into_element();
+    let canonical_style = declaration.style.clone();
+    let frame = UiFrame::resolve(
+        declaration,
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+
+    assert!(frame.commands().iter().any(|command| matches!(
+        command,
+        PaintCommand::RoundedFill {
+            color: 0x445566,
+            ..
+        }
+    )));
+    assert!(frame.commands().iter().any(|command| matches!(
+        command,
+        PaintCommand::RoundedFill {
+            color: 0x778899,
+            radius,
+            ..
+        } if *radius == 8.0
+    )));
+    assert_eq!(
+        frame
+            .declaration_root
+            .as_ref()
+            .expect("canonical declaration retained")
+            .style,
+        canonical_style
+    );
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_style_clone_bytes, 0);
+    assert_eq!(resources.transient_style_clone_allocations, 0);
+    assert_eq!(resources.transient_style_overlay_count, 1);
+}
+
+#[test]
 fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
     assert!(
         std::mem::size_of::<layout::TransientStylePatch>() < std::mem::size_of::<Style>(),
@@ -1337,6 +1395,34 @@ fn active_transient_overlay_paths_report_clone_and_storage_costs() {
                 .background(0x112233)
                 .hover_background(0x445566),
             FrameRequest::new(bounds, &mut hover_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut pressed_state = UiStateStore::default();
+    pressed_state.set_pressed(Some(UiId::from("root/button")));
+    report(
+        "pressed-interaction-paint",
+        UiFrame::resolve(
+            Container::new()
+                .id("button")
+                .message(TestMessage::Named("activate"))
+                .background(0x112233)
+                .interaction_paints([
+                    InteractionPaint::default(),
+                    InteractionPaint {
+                        background: Some(0x445566),
+                        foreground: Some(0xf0f0f0),
+                        border_color: Some(0x778899),
+                        border_width: Some(3.0),
+                        radius: Some(8.0),
+                        width: Some(Length::Px(180.0)),
+                        height: Some(Length::Px(52.0)),
+                        ..InteractionPaint::default()
+                    },
+                    InteractionPaint::default(),
+                ]),
+            FrameRequest::new(bounds, &mut pressed_state),
         )
         .resource_diagnostics(),
     );
