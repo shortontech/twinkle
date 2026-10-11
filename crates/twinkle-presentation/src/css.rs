@@ -1265,6 +1265,31 @@ thread_local! {
 const INTERACTION_CACHE_ENTRIES: usize = 2048;
 const INTERACTION_CACHE_BYTES: usize = 2 * 1024 * 1024;
 
+/// Opt-in work and timing counters for native CSS cache-key resolution.
+/// Counters use interior `Cell` storage owned by the stylesheet; disabled
+/// resolution performs no clock reads or atomic operations.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StyleCacheDiagnostics {
+    /// Borrowed lookup keys constructed.
+    pub key_builds: usize,
+    /// Inherited-property collections sorted for owned/exact keys.
+    pub key_sorts: usize,
+    /// Complete inherited-property and ancestor contexts hashed.
+    pub full_context_hashes: usize,
+    /// Fingerprint table probes performed.
+    pub cache_probes: usize,
+    /// Probes accepted after exact key validation.
+    pub cache_hits: usize,
+    /// Candidate fingerprint matches validated against exact inputs.
+    pub exact_checks: usize,
+    /// Nanoseconds spent constructing borrowed keys and fingerprints.
+    pub key_build_ns: u64,
+    /// Nanoseconds spent probing fingerprint tables.
+    pub cache_probe_ns: u64,
+    /// Nanoseconds spent validating exact candidate keys.
+    pub exact_check_ns: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 struct InteractionCache {
     // A fingerprint selects a candidate, never authorizes reuse by itself.
@@ -1287,11 +1312,32 @@ pub struct StyleSheet {
     resolved: RefCell<HashMap<StyleCacheFingerprint, (StyleCacheKey, ControlStyle)>>,
     interaction_rules: [Vec<usize>; 3],
     interactions: RefCell<InteractionCache>,
+    diagnostics_enabled: std::cell::Cell<bool>,
+    diagnostics: std::cell::Cell<StyleCacheDiagnostics>,
     #[cfg(test)]
     interaction_rule_visits: std::cell::Cell<usize>,
 }
 
 impl StyleSheet {
+    /// Enables or disables CSS cache diagnostics and clears prior counters.
+    pub fn set_cache_diagnostics_enabled(&self, enabled: bool) {
+        self.diagnostics.set(StyleCacheDiagnostics::default());
+        self.diagnostics_enabled.set(enabled);
+    }
+
+    /// Returns the counters accumulated since diagnostics were enabled/reset.
+    pub fn cache_diagnostics(&self) -> StyleCacheDiagnostics {
+        self.diagnostics.get()
+    }
+
+    fn update_cache_diagnostics(&self, update: impl FnOnce(&mut StyleCacheDiagnostics)) {
+        if self.diagnostics_enabled.get() {
+            let mut diagnostics = self.diagnostics.get();
+            update(&mut diagnostics);
+            self.diagnostics.set(diagnostics);
+        }
+    }
+
     /// Compile CSS using the default appearance palette.
     pub fn compile(source: &str) -> Result<Self, String> {
         Self::compile_with_palette(source, ThemePalette::from_appearance(Appearance::default()))
@@ -1363,6 +1409,8 @@ impl StyleSheet {
             resolved: RefCell::default(),
             interaction_rules,
             interactions: RefCell::default(),
+            diagnostics_enabled: std::cell::Cell::new(false),
+            diagnostics: std::cell::Cell::new(StyleCacheDiagnostics::default()),
             #[cfg(test)]
             interaction_rule_visits: Default::default(),
         };
@@ -1539,6 +1587,14 @@ impl StyleSheet {
         ancestors: &[(String, Option<String>, Option<String>)],
         context_token: Option<StyleContextToken>,
     ) -> ControlStyle {
+        let diagnostics_enabled = self.diagnostics_enabled.get();
+        let key_started = diagnostics_enabled.then(std::time::Instant::now);
+        if context_token.is_none() {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.key_sorts = diagnostics.key_sorts.saturating_add(1);
+                diagnostics.full_context_hashes = diagnostics.full_context_hashes.saturating_add(1);
+            });
+        }
         let lookup = StyleCacheLookup::with_context(
             kind,
             id,
@@ -1548,11 +1604,38 @@ impl StyleSheet {
             context_token,
         );
         let fingerprint = lookup.fingerprint();
-        if let Some((key, style)) = self.resolved.borrow().get(&fingerprint)
-            && key.matches(&lookup)
-        {
-            return style.clone();
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.key_builds = diagnostics.key_builds.saturating_add(1);
+            diagnostics.key_build_ns = diagnostics.key_build_ns.saturating_add(
+                key_started.map_or(0, |started| started.elapsed().as_nanos() as u64),
+            );
+        });
+        let probe_started = diagnostics_enabled.then(std::time::Instant::now);
+        let cached = self.resolved.borrow();
+        let candidate = cached.get(&fingerprint);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.cache_probes = diagnostics.cache_probes.saturating_add(1);
+            diagnostics.cache_probe_ns = diagnostics.cache_probe_ns.saturating_add(
+                probe_started.map_or(0, |started| started.elapsed().as_nanos() as u64),
+            );
+        });
+        if let Some((key, style)) = candidate {
+            let exact_started = diagnostics_enabled.then(std::time::Instant::now);
+            let matches = key.matches(&lookup);
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.exact_checks = diagnostics.exact_checks.saturating_add(1);
+                diagnostics.exact_check_ns = diagnostics.exact_check_ns.saturating_add(
+                    exact_started.map_or(0, |started| started.elapsed().as_nanos() as u64),
+                );
+                if matches {
+                    diagnostics.cache_hits = diagnostics.cache_hits.saturating_add(1);
+                }
+            });
+            if matches {
+                return style.clone();
+            }
         }
+        drop(cached);
         let mut style = ControlStyle {
             ancestors: Arc::new(ancestors.to_vec()),
             ..ControlStyle::default()
@@ -1608,6 +1691,10 @@ impl StyleSheet {
             .collect::<HashMap<_, _>>()
             .into();
         style.context_token = style_context_token(&style.custom_properties, &style.ancestors);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.key_sorts = diagnostics.key_sorts.saturating_add(2);
+            diagnostics.full_context_hashes = diagnostics.full_context_hashes.saturating_add(1);
+        });
         let mut cache = self.resolved.borrow_mut();
         if cache.len() >= 256 {
             cache.clear();
@@ -1643,6 +1730,14 @@ impl StyleSheet {
         if self.interaction_rules[state.index()].is_empty() {
             return twinkle::InteractionPaint::default();
         }
+        let diagnostics_enabled = self.diagnostics_enabled.get();
+        let key_started = diagnostics_enabled.then(std::time::Instant::now);
+        if context_token.is_none() {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.key_sorts = diagnostics.key_sorts.saturating_add(1);
+                diagnostics.full_context_hashes = diagnostics.full_context_hashes.saturating_add(1);
+            });
+        }
         let lookup = StyleCacheLookup::with_context(
             kind,
             id,
@@ -1652,11 +1747,38 @@ impl StyleSheet {
             context_token,
         );
         let fingerprint = (lookup.fingerprint(), state);
-        if let Some((key, paint)) = self.interactions.borrow().entries.get(&fingerprint)
-            && key.matches(&lookup)
-        {
-            return *paint;
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.key_builds = diagnostics.key_builds.saturating_add(1);
+            diagnostics.key_build_ns = diagnostics.key_build_ns.saturating_add(
+                key_started.map_or(0, |started| started.elapsed().as_nanos() as u64),
+            );
+        });
+        let probe_started = diagnostics_enabled.then(std::time::Instant::now);
+        let interactions = self.interactions.borrow();
+        let candidate = interactions.entries.get(&fingerprint);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.cache_probes = diagnostics.cache_probes.saturating_add(1);
+            diagnostics.cache_probe_ns = diagnostics.cache_probe_ns.saturating_add(
+                probe_started.map_or(0, |started| started.elapsed().as_nanos() as u64),
+            );
+        });
+        if let Some((key, paint)) = candidate {
+            let exact_started = diagnostics_enabled.then(std::time::Instant::now);
+            let matches = key.matches(&lookup);
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.exact_checks = diagnostics.exact_checks.saturating_add(1);
+                diagnostics.exact_check_ns = diagnostics.exact_check_ns.saturating_add(
+                    exact_started.map_or(0, |started| started.elapsed().as_nanos() as u64),
+                );
+                if matches {
+                    diagnostics.cache_hits = diagnostics.cache_hits.saturating_add(1);
+                }
+            });
+            if matches {
+                return *paint;
+            }
         }
+        drop(interactions);
         let mut style = ControlStyle::default();
         for &index in &self.interaction_rules[state.index()] {
             let rule = &self.rules[index];
@@ -1687,6 +1809,9 @@ impl StyleSheet {
             height: style.height,
         };
         let key = lookup.to_owned();
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.key_sorts = diagnostics.key_sorts.saturating_add(1);
+        });
         let bytes = key.retained_bytes()
             + std::mem::size_of::<u64>()
             + std::mem::size_of::<InteractionState>()
@@ -1928,6 +2053,7 @@ mod tests {
             CSS_KEY_SORTS.with(std::cell::Cell::get),
             CSS_FULL_CONTEXT_HASHES.with(std::cell::Cell::get),
         );
+        css.set_cache_diagnostics_enabled(true);
         let second = css.resolve_with_context(
             "button",
             Some("save"),
@@ -1943,6 +2069,13 @@ mod tests {
 
         assert_eq!(second, first);
         assert_eq!(after, before);
+        let diagnostics = css.cache_diagnostics();
+        assert_eq!(diagnostics.key_builds, 1);
+        assert_eq!(diagnostics.key_sorts, 0);
+        assert_eq!(diagnostics.full_context_hashes, 0);
+        assert_eq!(diagnostics.cache_probes, 1);
+        assert_eq!(diagnostics.cache_hits, 1);
+        assert_eq!(diagnostics.exact_checks, 1);
 
         let first_paint = css.resolve_interaction_paint_with_context(
             "button",
@@ -1957,6 +2090,7 @@ mod tests {
             CSS_KEY_SORTS.with(std::cell::Cell::get),
             CSS_FULL_CONTEXT_HASHES.with(std::cell::Cell::get),
         );
+        css.set_cache_diagnostics_enabled(true);
         let second_paint = css.resolve_interaction_paint_with_context(
             "button",
             Some("save"),
@@ -1972,6 +2106,13 @@ mod tests {
         );
         assert_eq!(second_paint, first_paint);
         assert_eq!(after, before);
+        let diagnostics = css.cache_diagnostics();
+        assert_eq!(diagnostics.key_builds, 1);
+        assert_eq!(diagnostics.key_sorts, 0);
+        assert_eq!(diagnostics.full_context_hashes, 0);
+        assert_eq!(diagnostics.cache_probes, 1);
+        assert_eq!(diagnostics.cache_hits, 1);
+        assert_eq!(diagnostics.exact_checks, 1);
     }
 
     #[test]

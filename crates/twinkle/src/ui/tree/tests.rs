@@ -1698,6 +1698,9 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     assert!(resources.accessibility_storage_bytes > 0);
     assert!(resources.paint_storage_bytes > 0);
     assert!(resources.interaction_storage_bytes > 0);
+    assert_eq!(resources.signatures_computed, resources.retained_node_count);
+    assert!(resources.signature_fields_hashed > resources.signatures_computed);
+    assert!(resources.signature_bytes_hashed >= resources.signature_fields_hashed);
     assert!(resources.index_storage_bytes > 0);
     assert_eq!(
         resources.estimated_owned_bytes,
@@ -1717,6 +1720,19 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
         resources.peak_overlapping_generation_bytes,
         resources.estimated_owned_bytes
     );
+}
+
+#[test]
+fn signature_work_counters_are_strictly_opt_in() {
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        Text::<()>::new("no diagnostic hashing counters"),
+        FrameRequest::new(Rect::new(0.0, 0.0, 240.0, 40.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.signatures_computed, 0);
+    assert_eq!(resources.signature_fields_hashed, 0);
+    assert_eq!(resources.signature_bytes_hashed, 0);
 }
 
 #[test]

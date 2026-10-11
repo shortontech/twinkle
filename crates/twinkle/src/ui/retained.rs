@@ -80,6 +80,9 @@ pub(crate) struct ReconcileStats {
     pub(crate) moved: usize,
     pub(crate) replaced: usize,
     pub(crate) clean: usize,
+    pub(crate) signatures_computed: usize,
+    pub(crate) signature_fields_hashed: usize,
+    pub(crate) signature_bytes_hashed: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -367,6 +370,7 @@ pub(crate) struct RetainedNodeArena {
     by_ui_id: HashMap<UiId, RetainedNodeId>,
     last: ReconcileStats,
     pending_commit: Vec<RetainedNodeId>,
+    diagnostics_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -408,16 +412,64 @@ struct PhaseSignatures {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct PhaseFingerprint(u64);
 
-#[derive(Default)]
-struct CompactHasher(std::collections::hash_map::DefaultHasher);
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SignatureWork {
+    fields: usize,
+    bytes: usize,
+}
 
-impl CompactHasher {
-    fn add<T: Hash>(&mut self, value: &T) {
-        value.hash(&mut self.0);
+impl SignatureWork {
+    fn add(&mut self, other: Self) {
+        self.fields = self.fields.saturating_add(other.fields);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+    }
+}
+
+struct CountingHasher<'a> {
+    inner: &'a mut std::collections::hash_map::DefaultHasher,
+    bytes: &'a mut usize,
+}
+
+impl Hasher for CountingHasher<'_> {
+    fn finish(&self) -> u64 {
+        self.inner.finish()
     }
 
-    fn finish(self) -> PhaseFingerprint {
-        PhaseFingerprint(self.0.finish())
+    fn write(&mut self, bytes: &[u8]) {
+        *self.bytes = self.bytes.saturating_add(bytes.len());
+        self.inner.write(bytes);
+    }
+}
+
+#[derive(Default)]
+struct CompactHasher<const COLLECT: bool> {
+    inner: std::collections::hash_map::DefaultHasher,
+    fields: usize,
+    bytes: usize,
+}
+
+impl<const COLLECT: bool> CompactHasher<COLLECT> {
+    fn add<T: Hash>(&mut self, value: &T) {
+        if COLLECT {
+            self.fields = self.fields.saturating_add(1);
+            value.hash(&mut CountingHasher {
+                inner: &mut self.inner,
+                bytes: &mut self.bytes,
+            });
+        } else {
+            value.hash(&mut self.inner);
+        }
+    }
+
+    fn finish(&self) -> PhaseFingerprint {
+        PhaseFingerprint(self.inner.finish())
+    }
+
+    fn work(&self) -> SignatureWork {
+        SignatureWork {
+            fields: self.fields,
+            bytes: self.bytes,
+        }
     }
 }
 
@@ -425,8 +477,8 @@ fn bits(value: f32) -> u32 {
     value.to_bits()
 }
 
-fn length(hasher: &mut CompactHasher, value: Length) {
-    std::mem::discriminant(&value).hash(&mut hasher.0);
+fn length<const COLLECT: bool>(hasher: &mut CompactHasher<COLLECT>, value: Length) {
+    hasher.add(&std::mem::discriminant(&value));
     match value {
         Length::Px(value) | Length::Percent(value) | Length::Fraction(value) => {
             hasher.add(&bits(value));
@@ -435,11 +487,14 @@ fn length(hasher: &mut CompactHasher, value: Length) {
     }
 }
 
-fn optional_bits(hasher: &mut CompactHasher, value: Option<f32>) {
+fn optional_bits<const COLLECT: bool>(hasher: &mut CompactHasher<COLLECT>, value: Option<f32>) {
     hasher.add(&value.map(bits));
 }
 
-fn interaction_paint(hasher: &mut CompactHasher, value: &InteractionPaint) {
+fn interaction_paint<const COLLECT: bool>(
+    hasher: &mut CompactHasher<COLLECT>,
+    value: &InteractionPaint,
+) {
     hasher.add(&value.background);
     hasher.add(&value.foreground);
     hasher.add(&value.border_color);
@@ -455,7 +510,7 @@ fn interaction_paint(hasher: &mut CompactHasher, value: &InteractionPaint) {
     }
 }
 
-fn box_shadow(hasher: &mut CompactHasher, value: Option<BoxShadow>) {
+fn box_shadow<const COLLECT: bool>(hasher: &mut CompactHasher<COLLECT>, value: Option<BoxShadow>) {
     hasher.add(&value.is_some());
     if let Some(value) = value {
         hasher.add(&bits(value.offset_x));
@@ -466,7 +521,10 @@ fn box_shadow(hasher: &mut CompactHasher, value: Option<BoxShadow>) {
     }
 }
 
-fn dropdown_part(hasher: &mut CompactHasher, value: &DropdownPartStyle) {
+fn dropdown_part<const COLLECT: bool>(
+    hasher: &mut CompactHasher<COLLECT>,
+    value: &DropdownPartStyle,
+) {
     for float in [
         value.width,
         value.height,
@@ -495,8 +553,8 @@ fn dropdown_part(hasher: &mut CompactHasher, value: &DropdownPartStyle) {
     hasher.add(&value.border_color);
 }
 
-fn track(hasher: &mut CompactHasher, value: &Track) {
-    std::mem::discriminant(value).hash(&mut hasher.0);
+fn track<const COLLECT: bool>(hasher: &mut CompactHasher<COLLECT>, value: &Track) {
+    hasher.add(&std::mem::discriminant(value));
     match value {
         Track::Px(value) | Track::Fraction(value) => hasher.add(&bits(*value)),
         Track::MinMax(minimum, maximum) => {
@@ -512,8 +570,11 @@ fn track(hasher: &mut CompactHasher, value: &Track) {
     }
 }
 
-fn grid_columns(hasher: &mut CompactHasher, columns: &GridColumnSpec) {
-    std::mem::discriminant(columns).hash(&mut hasher.0);
+fn grid_columns<const COLLECT: bool>(
+    hasher: &mut CompactHasher<COLLECT>,
+    columns: &GridColumnSpec,
+) {
+    hasher.add(&std::mem::discriminant(columns));
     match columns {
         GridColumnSpec::Count(count) => hasher.add(count),
         GridColumnSpec::Tracks(tracks) => {
@@ -526,8 +587,10 @@ fn grid_columns(hasher: &mut CompactHasher, columns: &GridColumnSpec) {
     }
 }
 
-fn hash_layout_style(style: &Style) -> (PhaseFingerprint, PhaseFingerprint) {
-    let mut measure = CompactHasher::default();
+fn hash_layout_style<const COLLECT: bool>(
+    style: &Style,
+) -> (PhaseFingerprint, PhaseFingerprint, SignatureWork) {
+    let mut measure = CompactHasher::<COLLECT>::default();
     for value in [
         style.padding.top,
         style.padding.right,
@@ -554,7 +617,7 @@ fn hash_layout_style(style: &Style) -> (PhaseFingerprint, PhaseFingerprint) {
     measure.add(&style.align_items);
     measure.add(&style.justify_content);
 
-    let mut place = CompactHasher::default();
+    let mut place = CompactHasher::<COLLECT>::default();
     place.add(&style.overflow_x);
     place.add(&style.overflow_y);
     if let Some(position) = style.absolute_position {
@@ -562,7 +625,9 @@ fn hash_layout_style(style: &Style) -> (PhaseFingerprint, PhaseFingerprint) {
         place.add(&bits(position.y));
     }
     place.add(&style.follow_scroll_end);
-    (measure.finish(), place.finish())
+    let mut work = measure.work();
+    work.add(place.work());
+    (measure.finish(), place.finish(), work)
 }
 
 fn kind_tag(kind: &Kind) -> KindTag {
@@ -590,11 +655,13 @@ fn node_independent_output_reuse_safe<Message>(element: &Element<Message>) -> bo
         && element.style.proximity_magnification.is_none()
 }
 
-fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
-    let (style_measure, place) = hash_layout_style(&element.style);
-    let mut content_measure = CompactHasher::default();
-    let mut paint = CompactHasher::default();
-    let mut semantics = CompactHasher::default();
+fn signatures_with_work<Message, const COLLECT: bool>(
+    element: &Element<Message>,
+) -> (PhaseSignatures, SignatureWork) {
+    let (style_measure, place, mut work) = hash_layout_style::<COLLECT>(&element.style);
+    let mut content_measure = CompactHasher::<COLLECT>::default();
+    let mut paint = CompactHasher::<COLLECT>::default();
+    let mut semantics = CompactHasher::<COLLECT>::default();
     let mut measure_content_sensitive = false;
     let mut paint_content_sensitive = false;
     let interaction_content_sensitive = element.primary_message().is_some()
@@ -611,8 +678,8 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
         || element.style.accessibility_role.is_some()
         || element.style.accessibility_state.is_some()
         || element.style.accessibility_controls.is_some();
-    std::mem::discriminant(&element.kind).hash(&mut content_measure.0);
-    std::mem::discriminant(&element.kind).hash(&mut paint.0);
+    content_measure.add(&std::mem::discriminant(&element.kind));
+    paint.add(&std::mem::discriminant(&element.kind));
 
     match &element.kind {
         Kind::Text {
@@ -792,7 +859,7 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
     }
     paint.add(&element.style.focus_background_tint);
 
-    let mut interaction = CompactHasher::default();
+    let mut interaction = CompactHasher::<COLLECT>::default();
     interaction.add(&element.virtual_navigation);
     interaction.add(&element.primary_message().is_some());
     interaction.add(&element.declared_context_message().is_some());
@@ -824,18 +891,30 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
     semantics.add(&element.style.accessibility_hidden);
     semantics.add(&element.style.semantic_decorative);
 
-    PhaseSignatures {
-        measure,
-        place,
-        paint: paint.finish(),
-        interaction: interaction.finish(),
-        semantics: semantics.finish(),
-        content_revision: element.content_revision,
-        measure_content_sensitive,
-        paint_content_sensitive,
-        interaction_content_sensitive,
-        semantics_content_sensitive,
-    }
+    work.add(content_measure.work());
+    work.add(paint.work());
+    work.add(interaction.work());
+    work.add(semantics.work());
+    (
+        PhaseSignatures {
+            measure,
+            place,
+            paint: paint.finish(),
+            interaction: interaction.finish(),
+            semantics: semantics.finish(),
+            content_revision: element.content_revision,
+            measure_content_sensitive,
+            paint_content_sensitive,
+            interaction_content_sensitive,
+            semantics_content_sensitive,
+        },
+        work,
+    )
+}
+
+#[cfg(test)]
+fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
+    signatures_with_work::<_, false>(element).0
 }
 
 // Fingerprints reject unequal metadata cheaply, but never authorize reuse by
@@ -1476,6 +1555,26 @@ fn changed_phases(
 }
 
 impl RetainedNodeArena {
+    pub(crate) fn set_diagnostics_enabled(&mut self, enabled: bool) {
+        self.diagnostics_enabled = enabled;
+    }
+
+    fn compute_signatures<Message>(&mut self, element: &Element<Message>) -> PhaseSignatures {
+        if self.diagnostics_enabled {
+            let (signatures, work) = signatures_with_work::<_, true>(element);
+            self.last.signatures_computed = self.last.signatures_computed.saturating_add(1);
+            self.last.signature_fields_hashed = self
+                .last
+                .signature_fields_hashed
+                .saturating_add(work.fields);
+            self.last.signature_bytes_hashed =
+                self.last.signature_bytes_hashed.saturating_add(work.bytes);
+            signatures
+        } else {
+            signatures_with_work::<_, false>(element).0
+        }
+    }
+
     pub(crate) fn child_ui_id(&self, parent: &UiId, index: usize) -> Option<UiId> {
         let parent = self.by_ui_id.get(parent)?;
         let child = self.nodes.get(parent)?.children.get(index)?;
@@ -1707,7 +1806,7 @@ impl RetainedNodeArena {
             let node = &self.nodes[&id];
             (node.signatures, node.children.clone())
         };
-        let current = signatures(element);
+        let current = self.compute_signatures(element);
         let exact = if trust_fingerprint_for_test || !changed_nodes.contains(&id) {
             ExactPhaseMatches::ALL
         } else {
@@ -1876,7 +1975,7 @@ impl RetainedNodeArena {
         let mut reusable = old
             .as_mut()
             .filter(|node| node.kind == kind && node.identity == identity);
-        let current = signatures(element);
+        let current = self.compute_signatures(element);
         let (id, mut phases, mut metadata, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
             consumed.insert(old.id);
             self.last.reused += 1;
@@ -2846,6 +2945,64 @@ mod tests {
 
         assert_eq!(std::mem::size_of::<PrototypeHandle>(), 8);
         assert!(dense_bytes < hash_entry_lower_bound);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "release-profile phase-signature diagnostic overhead"]
+    fn phase_signature_diagnostics_release_admission() {
+        use crate::release_admission::AdmissionReport;
+
+        const LEAVES: usize = 1_024;
+        const SAMPLES: usize = 25;
+
+        fn view() -> Element<()> {
+            Column::new()
+                .children((0..LEAVES).map(|index| {
+                    Text::new(format!("diagnostic leaf {index}"))
+                        .id(format!("leaf-{index}"))
+                        .width(120.0)
+                        .height(20.0)
+                }))
+                .into_element()
+        }
+
+        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut disabled_samples = Vec::with_capacity(SAMPLES);
+        let mut collected_samples = Vec::with_capacity(SAMPLES);
+        let mut diagnostic_work = None;
+        for _ in 0..SAMPLES {
+            let declaration = view();
+            let mut state = UiStateStore::default();
+            let started = std::time::Instant::now();
+            let frame = UiFrame::resolve(declaration, FrameRequest::new(bounds, &mut state));
+            disabled_samples.push(started.elapsed());
+            assert_eq!(frame.resource_diagnostics().signatures_computed, 0);
+
+            let declaration = view();
+            let mut state = UiStateStore::default();
+            let started = std::time::Instant::now();
+            let frame = UiFrame::resolve(
+                declaration,
+                FrameRequest::new(bounds, &mut state).diagnostics(crate::DiagnosticMode::Collect),
+            );
+            collected_samples.push(started.elapsed());
+            let work = frame.resource_diagnostics();
+            assert_eq!(work.signatures_computed, LEAVES + 1);
+            diagnostic_work.get_or_insert(work);
+            assert_eq!(diagnostic_work, Some(work));
+        }
+
+        let work = diagnostic_work.expect("diagnostic work sample");
+        AdmissionReport::new("phase_signatures", "1024_leaf_diagnostic_overhead")
+            .metadata("nodes", LEAVES + 1)
+            .metadata("samples", SAMPLES)
+            .work("signatures_computed", work.signatures_computed)
+            .work("fields_hashed", work.signature_fields_hashed)
+            .work("bytes_hashed", work.signature_bytes_hashed)
+            .timings("disabled", &disabled_samples)
+            .timings("collected", &collected_samples)
+            .emit();
     }
 
     #[test]

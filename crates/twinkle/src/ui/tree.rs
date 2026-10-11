@@ -601,6 +601,12 @@ pub struct FrameResourceDiagnostics {
     pub retained_nodes_removed: usize,
     pub retained_nodes_moved: usize,
     pub retained_nodes_replaced: usize,
+    /// Phase-signature records computed while diagnostic collection is enabled.
+    pub signatures_computed: usize,
+    /// Typed dependency fields submitted to phase hashers.
+    pub signature_fields_hashed: usize,
+    /// Bytes consumed by phase hashers after typed `Hash` encoding.
+    pub signature_bytes_hashed: usize,
     /// Resolver nodes whose intrinsic measurement actually executed for this frame.
     pub nodes_measured: usize,
     /// Extra text measurements performed solely for requested layout diagnostics.
@@ -2244,6 +2250,7 @@ impl<Message: Clone> UiFrame<Message> {
             ..Self::default()
         };
         let previous_declaration = previous.and_then(|previous| previous.declaration_root.as_ref());
+        tree.retained_nodes.set_diagnostics_enabled(diagnostics);
         if let Some(changed) = changed_view_ids.filter(|changed| !changed.is_empty()) {
             tree.retained_nodes
                 .reconcile_changed_against(&root, previous_declaration, changed);
@@ -4276,6 +4283,9 @@ impl<Message: Clone> UiFrame<Message> {
             retained_nodes_removed: retained.removed,
             retained_nodes_moved: retained.moved,
             retained_nodes_replaced: retained.replaced,
+            signatures_computed: retained.signatures_computed,
+            signature_fields_hashed: retained.signature_fields_hashed,
+            signature_bytes_hashed: retained.signature_bytes_hashed,
             nodes_measured: self.nodes_measured,
             diagnostic_text_measurements: self.diagnostic_text_measurements,
             scroll_content_measurements: self.scroll_content_measurements,
