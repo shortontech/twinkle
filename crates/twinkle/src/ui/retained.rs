@@ -2461,6 +2461,120 @@ mod tests {
         semantics.style.semantic_role = Some(super::super::SemanticRole::Group);
         assert!(forced_dirty(&semantics).contains(DirtyPhases::SEMANTICS));
     }
+
+    #[test]
+    fn every_style_dependency_rejects_reuse_under_forced_fingerprint_collision() {
+        let baseline = Element::<()>::flex(super::super::Axis::Vertical);
+        let fingerprints = signatures(&baseline);
+        macro_rules! assert_invalidates {
+            ($phase:ident, $element:ident, $mutation:block) => {{
+                let mut $element = baseline.clone();
+                $mutation
+                let dirty = changed_phases(
+                    fingerprints,
+                    fingerprints,
+                    exact_phase_matches(&$element, &baseline),
+                );
+                assert!(
+                    dirty.contains(DirtyPhases::$phase),
+                    "{} must invalidate {}",
+                    stringify!($mutation),
+                    stringify!($phase)
+                );
+            }};
+        }
+
+        assert_invalidates!(MEASURE, element, { element.style.padding.top = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.padding.right = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.padding.bottom = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.padding.left = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.gap = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.width = Length::Px(1.0) });
+        assert_invalidates!(MEASURE, element, { element.style.height = Length::Px(1.0) });
+        assert_invalidates!(MEASURE, element, { element.style.basis = Length::Px(1.0) });
+        assert_invalidates!(MEASURE, element, { element.style.min_width = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.min_height = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.max_width = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.max_height = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.grow = 1.0 });
+        assert_invalidates!(MEASURE, element, { element.style.shrink = 0.5 });
+        assert_invalidates!(MEASURE, element, {
+            element.style.align_self = Some(crate::Align::Center)
+        });
+        assert_invalidates!(MEASURE, element, {
+            element.style.align_items = crate::Align::Center
+        });
+        assert_invalidates!(MEASURE, element, {
+            element.style.justify_content = crate::Justify::SpaceBetween
+        });
+
+        assert_invalidates!(PLACE, element, {
+            element.style.overflow_x = Overflow::Clip
+        });
+        assert_invalidates!(PLACE, element, {
+            element.style.overflow_y = Overflow::Clip
+        });
+        assert_invalidates!(PLACE, element, {
+            element.style.absolute_position = Some(crate::Point { x: 1.0, y: 2.0 })
+        });
+        assert_invalidates!(PLACE, element, { element.style.follow_scroll_end = true });
+
+        assert_invalidates!(PAINT, element, {
+            element.style.background = Some(0xff12_3456.into())
+        });
+        assert_invalidates!(PAINT, element, { element.style.border = Some(0xff12_3456) });
+        assert_invalidates!(PAINT, element, { element.style.border_width = 2.0 });
+        assert_invalidates!(PAINT, element, {
+            element.style.foreground = Some(0xff12_3456)
+        });
+        assert_invalidates!(PAINT, element, {
+            element.style.box_shadow = Some(BoxShadow::default())
+        });
+        assert_invalidates!(PAINT, element, { element.style.backdrop_blur = Some(1.0) });
+        assert_invalidates!(PAINT, element, { element.style.corner_radius = 1.0 });
+        assert_invalidates!(PAINT, element, { element.style.top_corner_radius = 1.0 });
+        assert_invalidates!(PAINT, element, {
+            element.style.interaction_paints = Some(Box::new([InteractionPaint::default(); 3]))
+        });
+        assert_invalidates!(PAINT, element, {
+            element.style.text_align = super::super::TextAlign::Center
+        });
+        assert_invalidates!(PAINT, element, { element.style.css_paint = true });
+        assert_invalidates!(PAINT, element, {
+            element.style.editing_parts = Some(Box::new([DropdownPartStyle::default(); 2]))
+        });
+        assert_invalidates!(PAINT, element, {
+            element.style.editing_menu = Some(Box::default())
+        });
+        assert_invalidates!(PAINT, element, {
+            element.style.focus_background_tint = Some(0xff12_3456)
+        });
+
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.accessibility_label = Some("label".into())
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.accessibility_description = Some("description".into())
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.accessibility_role = Some("button".into())
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.accessibility_state = Some("busy".into())
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.accessibility_controls = Some(UiId::from("controlled"))
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.semantic_role = Some(super::super::SemanticRole::Group)
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.accessibility_hidden = true
+        });
+        assert_invalidates!(SEMANTICS, element, {
+            element.style.semantic_decorative = true
+        });
+    }
     use crate::{
         Column, Component, ComponentBuilderExt, CustomPaint, FrameRequest, Grid, Rect, Row,
         StyledText, StyledTextSpan, Text, TextUnderlineStyle, Track, UiFrame, UiStateStore,
