@@ -1,4 +1,5 @@
 #![cfg(feature = "jsx")]
+#![recursion_limit = "256"]
 //! Ignored release-profile admission workload for a Blocks-shaped JSX application.
 //!
 //! Run with:
@@ -420,6 +421,13 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
                 "declarationAllocations": resources.declaration_allocation_count,
                 "uiIdSharedBytes": resources.ui_id_shared_storage_bytes,
                 "uiIdSharedAllocations": resources.ui_id_shared_allocation_count,
+                "resolvedStorageBytes": resources.resolved_storage_bytes,
+                "retainedArenaBytes": resources.retained_arena_bytes,
+                "accessibilityStorageBytes": resources.accessibility_storage_bytes,
+                "paintStorageBytes": resources.paint_storage_bytes,
+                "interactionStorageBytes": resources.interaction_storage_bytes,
+                "indexStorageBytes": resources.index_storage_bytes,
+                "retainedBuildScratchBytes": resources.retained_build_scratch_bytes,
                 "declarationEventSidecars": resources.declaration_event_sidecar_count,
                 "declarationEventSidecarBytes": resources.declaration_event_sidecar_bytes,
                 "declarationKindSidecars": resources.declaration_kind_sidecar_count,
@@ -549,6 +557,13 @@ fn rich_accessible_form_updates_emit_end_to_end_release_distribution() {
                 "declarationAllocations": resources.declaration_allocation_count,
                 "uiIdSharedBytes": resources.ui_id_shared_storage_bytes,
                 "uiIdSharedAllocations": resources.ui_id_shared_allocation_count,
+                "resolvedStorageBytes": resources.resolved_storage_bytes,
+                "retainedArenaBytes": resources.retained_arena_bytes,
+                "accessibilityStorageBytes": resources.accessibility_storage_bytes,
+                "paintStorageBytes": resources.paint_storage_bytes,
+                "interactionStorageBytes": resources.interaction_storage_bytes,
+                "indexStorageBytes": resources.index_storage_bytes,
+                "retainedBuildScratchBytes": resources.retained_build_scratch_bytes,
                 "declarationEventSidecars": resources.declaration_event_sidecar_count,
                 "declarationEventSidecarBytes": resources.declaration_event_sidecar_bytes,
                 "declarationKindSidecars": resources.declaration_kind_sidecar_count,
