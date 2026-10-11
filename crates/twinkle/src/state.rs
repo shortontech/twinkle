@@ -1103,6 +1103,27 @@ mod tests {
     }
 
     #[test]
+    fn colliding_cached_ui_id_fingerprints_still_use_exact_text_equality() {
+        let fingerprint = StableIdFingerprint(7);
+        let first = UiId(Arc::new(UiIdData {
+            value: "root/first".into(),
+            fingerprint,
+        }));
+        let second = UiId(Arc::new(UiIdData {
+            value: "root/second".into(),
+            fingerprint,
+        }));
+        assert_ne!(first, second);
+
+        let mut values = HashMap::new();
+        values.insert(first.clone(), 1);
+        values.insert(second.clone(), 2);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values.get(&first), Some(&1));
+        assert_eq!(values.get(&second), Some(&2));
+    }
+
+    #[test]
     fn controller_projection_never_retains_a_second_widget_target() {
         let mut store = UiStateStore::default();
         let a = UiId::from("a");
