@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU64;
 
 use crate::{Rect, Size, UiId};
 
@@ -10,7 +11,7 @@ use super::{
 
 /// Stable native identity assigned independently of a node's current arena slot.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct RetainedNodeId(u64);
+pub(crate) struct RetainedNodeId(NonZeroU64);
 
 /// Independent work classes dirtied by declarative reconciliation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -68,6 +69,9 @@ pub(crate) struct ReconcileStats {
 pub(crate) struct RetainedNode {
     id: RetainedNodeId,
     parent: Option<RetainedNodeId>,
+    /// Slot in the retained parent's declaration child array. Authoritative
+    /// non-structural updates use this to reach changed ancestry directly.
+    position: u32,
     kind: KindTag,
     dirty: DirtyPhases,
     children: Vec<RetainedNodeId>,
@@ -1337,18 +1341,18 @@ impl RetainedNodeArena {
         previous: Option<&Element<Message>>,
         changed: &[UiId],
     ) -> ReconcileStats {
-        let mut ancestry = HashSet::new();
         let mut changed_nodes = HashSet::new();
+        let mut affected_children = HashMap::<RetainedNodeId, HashSet<RetainedNodeId>>::new();
         for id in changed {
             let Some(mut node) = self.by_ui_id.get(id).copied() else {
                 return self.reconcile_against(root, previous);
             };
             changed_nodes.insert(node);
             loop {
-                ancestry.insert(node);
                 let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) else {
                     break;
                 };
+                affected_children.entry(parent).or_default().insert(node);
                 node = parent;
             }
         }
@@ -1359,12 +1363,19 @@ impl RetainedNodeArena {
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
         );
-        if !self.changed_shape_matches(root, root_id, &root_ui_id, &ancestry) {
+        if !self.changed_shape_matches(root, root_id, &root_ui_id, &affected_children) {
             return self.reconcile_against(root, previous);
         }
         self.last = ReconcileStats::default();
         self.pending_commit.clear();
-        self.reconcile_changed_node(root, previous, root_id, &ancestry, &changed_nodes, false);
+        self.reconcile_changed_node(
+            root,
+            previous,
+            root_id,
+            &affected_children,
+            &changed_nodes,
+            false,
+        );
         self.last.clone()
     }
 
@@ -1382,18 +1393,18 @@ impl RetainedNodeArena {
         // Existing arena-focused tests exercise topology and work accounting
         // without retaining declaration fixtures. Production always supplies
         // the prior declaration through `reconcile_changed_against`.
-        let mut ancestry = HashSet::new();
         let mut changed_nodes = HashSet::new();
+        let mut affected_children = HashMap::<RetainedNodeId, HashSet<RetainedNodeId>>::new();
         for id in changed {
             let Some(mut node) = self.by_ui_id.get(id).copied() else {
                 return self.reconcile(root);
             };
             changed_nodes.insert(node);
             loop {
-                ancestry.insert(node);
                 let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) else {
                     break;
                 };
+                affected_children.entry(parent).or_default().insert(node);
                 node = parent;
             }
         }
@@ -1404,12 +1415,19 @@ impl RetainedNodeArena {
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
         );
-        if !self.changed_shape_matches(root, root_id, &root_ui_id, &ancestry) {
+        if !self.changed_shape_matches(root, root_id, &root_ui_id, &affected_children) {
             return self.reconcile(root);
         }
         self.last = ReconcileStats::default();
         self.pending_commit.clear();
-        self.reconcile_changed_node(root, None, root_id, &ancestry, &changed_nodes, true);
+        self.reconcile_changed_node(
+            root,
+            None,
+            root_id,
+            &affected_children,
+            &changed_nodes,
+            true,
+        );
         self.last.clone()
     }
 
@@ -1418,7 +1436,7 @@ impl RetainedNodeArena {
         element: &Element<Message>,
         id: RetainedNodeId,
         ui_id: &UiId,
-        ancestry: &HashSet<RetainedNodeId>,
+        affected_children: &HashMap<RetainedNodeId, HashSet<RetainedNodeId>>,
     ) -> bool {
         let Some(node) = self.nodes.get(&id) else {
             return false;
@@ -1429,7 +1447,14 @@ impl RetainedNodeArena {
         {
             return false;
         }
-        for (index, (child, child_id)) in element.children.iter().zip(&node.children).enumerate() {
+        for child_id in affected_children.get(&id).into_iter().flatten() {
+            let Some(retained) = self.nodes.get(child_id) else {
+                return false;
+            };
+            let index = retained.position as usize;
+            let Some(child) = element.children.get(index) else {
+                return false;
+            };
             let identity = child
                 .id
                 .clone()
@@ -1438,9 +1463,6 @@ impl RetainedNodeArena {
                 || ui_id.scoped(format!("#{index}")),
                 |id| ui_id.scoped(id.as_str()),
             );
-            let Some(retained) = self.nodes.get(child_id) else {
-                return false;
-            };
             if retained.parent != Some(id)
                 || retained.identity != identity
                 || retained.ui_id != child_ui_id
@@ -1448,9 +1470,7 @@ impl RetainedNodeArena {
             {
                 return false;
             }
-            if ancestry.contains(child_id)
-                && !self.changed_shape_matches(child, *child_id, &child_ui_id, ancestry)
-            {
+            if !self.changed_shape_matches(child, *child_id, &child_ui_id, affected_children) {
                 return false;
             }
         }
@@ -1462,7 +1482,7 @@ impl RetainedNodeArena {
         element: &Element<Message>,
         previous_element: Option<&Element<Message>>,
         id: RetainedNodeId,
-        ancestry: &HashSet<RetainedNodeId>,
+        affected_children: &HashMap<RetainedNodeId, HashSet<RetainedNodeId>>,
         changed_nodes: &HashSet<RetainedNodeId>,
         trust_fingerprint_for_test: bool,
     ) {
@@ -1488,19 +1508,18 @@ impl RetainedNodeArena {
             )
         };
         let mut dirty = changed_phases(current, previous, exact);
-        for (index, (child, child_id)) in element.children.iter().zip(&children).enumerate() {
-            if ancestry.contains(child_id) {
-                let previous_child =
-                    previous_element.and_then(|previous| previous.children.get(index));
-                self.reconcile_changed_node(
-                    child,
-                    previous_child,
-                    *child_id,
-                    ancestry,
-                    changed_nodes,
-                    trust_fingerprint_for_test,
-                );
-            }
+        for child_id in affected_children.get(&id).into_iter().flatten() {
+            let index = self.nodes[child_id].position as usize;
+            let child = &element.children[index];
+            let previous_child = previous_element.and_then(|previous| previous.children.get(index));
+            self.reconcile_changed_node(
+                child,
+                previous_child,
+                *child_id,
+                affected_children,
+                changed_nodes,
+                trust_fingerprint_for_test,
+            );
         }
         let mut descendants = DirtyPhases::default();
         for child in &children {
@@ -1670,7 +1689,9 @@ impl RetainedNodeArena {
                 self.last.replaced += 1;
             }
             self.next_id = self.next_id.max(1);
-            let id = RetainedNodeId(self.next_id);
+            let id = RetainedNodeId(
+                NonZeroU64::new(self.next_id).expect("retained node IDs start at one"),
+            );
             self.next_id += 1;
             self.last.created += 1;
             (
@@ -1810,6 +1831,7 @@ impl RetainedNodeArena {
         let mut node = RetainedNode {
             id,
             parent,
+            position: u32::try_from(position).expect("declaration child index fits in u32"),
             kind,
             dirty,
             children,
@@ -2327,6 +2349,135 @@ mod tests {
             assert_eq!(sparse_node.dirty, full_node.dirty);
             assert_eq!(sparse_node.subtree_dirty, full_node.subtree_dirty);
         }
+    }
+
+    #[test]
+    fn authoritative_changed_leaf_work_scales_with_changed_ancestry() {
+        const LEAVES: usize = 512;
+        const MANY: usize = 64;
+
+        let view = |changed: &[usize]| {
+            Column::<()>::new()
+                .children((0..LEAVES).map(|index| {
+                    let changed = changed.contains(&index);
+                    Text::new(if changed { "B" } else { "A" })
+                        .id(format!("cell-{index}"))
+                        .content_revision(u64::from(changed))
+                }))
+                .into_element()
+        };
+        let before = view(&[]);
+        let mut baseline = RetainedNodeArena::default();
+        baseline.reconcile(&before);
+        baseline.commit_frame();
+
+        let cases = [
+            (Vec::new(), 1),
+            (vec![LEAVES / 2], 2),
+            ((0..MANY).map(|index| index * 7).collect(), MANY + 1),
+        ];
+        for (changed, expected_visits) in cases {
+            let after = view(&changed);
+            let ids = changed
+                .iter()
+                .map(|index| UiId::from("root").scoped(format!("cell-{index}")))
+                .collect::<Vec<_>>();
+            let mut sparse = baseline.clone();
+            let stats = sparse.reconcile_changed(&after, &ids);
+            assert_eq!(stats.visited, expected_visits);
+            assert_eq!(stats.reused, expected_visits);
+            assert_eq!(stats.created, 0);
+            assert_eq!(stats.removed, 0);
+            assert_eq!(stats.replaced, 0);
+        }
+    }
+
+    #[test]
+    fn authoritative_changed_path_shape_mismatch_falls_back_to_full_reconciliation() {
+        let view = |order: &[&str]| {
+            Column::<()>::new()
+                .children(order.iter().map(|key| keyed_text(key, key)))
+                .into_element()
+        };
+        let before = view(&["a", "b", "c"]);
+        let after = view(&["b", "a", "c"]);
+        let mut arena = RetainedNodeArena::default();
+        arena.reconcile(&before);
+        arena.commit_frame();
+
+        let stats = arena.reconcile_changed(&after, &[UiId::from("root/a")]);
+
+        assert_eq!(stats.visited, 4);
+        assert_eq!(stats.moved, 2);
+        assert_eq!(arena.nodes[&arena.root.unwrap()].children.len(), 3);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "release-profile zero/one/many changed-leaf scaling benchmark"]
+    fn changed_leaf_reconciliation_release_admission_scales_with_affected_content() {
+        use crate::release_admission::AdmissionReport;
+
+        const LEAVES: usize = 4_096;
+        const MANY: usize = 128;
+        const ITERATIONS: usize = 100;
+
+        fn view(changed: &[usize]) -> Element<()> {
+            Column::<()>::new()
+                .children((0..LEAVES).map(|index| {
+                    let changed = changed.contains(&index);
+                    Text::new(if changed { "B" } else { "A" })
+                        .id(format!("cell-{index}"))
+                        .content_revision(u64::from(changed))
+                }))
+                .into_element()
+        }
+
+        let before = view(&[]);
+        let mut baseline = RetainedNodeArena::default();
+        baseline.reconcile(&before);
+        baseline.commit_frame();
+        let cases = [
+            ("zero", Vec::new(), 1),
+            ("one", vec![LEAVES / 2], 2),
+            (
+                "many",
+                (0..MANY).map(|index| index * 31).collect(),
+                MANY + 1,
+            ),
+        ];
+        let mut report =
+            AdmissionReport::new("retained_reconciliation", "4096_leaf_zero_one_many_changed")
+                .metadata("leaves", LEAVES)
+                .metadata("many_changed", MANY)
+                .metadata("iterations", ITERATIONS);
+
+        for (label, changed, expected_visits) in cases {
+            let after = view(&changed);
+            let ids = changed
+                .iter()
+                .map(|index| UiId::from("root").scoped(format!("cell-{index}")))
+                .collect::<Vec<_>>();
+            let mut samples = Vec::with_capacity(ITERATIONS);
+            for _ in 0..ITERATIONS {
+                let mut arena = baseline.clone();
+                let started = std::time::Instant::now();
+                let stats = arena.reconcile_changed(&after, &ids);
+                samples.push(started.elapsed());
+                assert_eq!(stats.visited, expected_visits);
+                std::hint::black_box(arena);
+            }
+            let visited_label = match label {
+                "zero" => "zero_visited",
+                "one" => "one_visited",
+                "many" => "many_visited",
+                _ => unreachable!(),
+            };
+            report = report
+                .work(visited_label, expected_visits)
+                .timings(label, &samples);
+        }
+        report.emit();
     }
 
     #[test]
