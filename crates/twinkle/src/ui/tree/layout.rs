@@ -1524,6 +1524,7 @@ pub(super) struct TransientStateJournal {
     dropdown_expanded: std::collections::HashMap<UiId, bool>,
     text_patches: std::collections::HashMap<UiId, TransientTextPatch>,
     text_format_patches: std::collections::HashMap<UiId, TransientTextFormatPatch>,
+    slider_presentations: std::collections::HashMap<UiId, [DropdownPartStyle; 3]>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1558,6 +1559,7 @@ impl TransientStateJournal {
             + self.dropdown_expanded.len()
             + self.text_patches.len()
             + self.text_format_patches.len()
+            + self.slider_presentations.len()
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
@@ -1593,6 +1595,8 @@ impl TransientStateJournal {
             + self.text_patches.capacity() * std::mem::size_of::<(UiId, TransientTextPatch)>()
             + self.text_format_patches.capacity()
                 * std::mem::size_of::<(UiId, TransientTextFormatPatch)>()
+            + self.slider_presentations.capacity()
+                * std::mem::size_of::<(UiId, [DropdownPartStyle; 3])>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
@@ -1612,6 +1616,7 @@ impl TransientStateJournal {
             + usize::from(self.dropdown_expanded.capacity() != 0)
             + usize::from(self.text_patches.capacity() != 0)
             + usize::from(self.text_format_patches.capacity() != 0)
+            + usize::from(self.slider_presentations.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
 
@@ -1748,6 +1753,15 @@ impl TransientStateJournal {
                     .union(DirtyPhases::PAINT),
             );
         }
+        if self.slider_presentations.contains_key(id) {
+            use super::super::retained::DirtyPhases;
+            dirty.insert(
+                DirtyPhases::MEASURE
+                    .union(DirtyPhases::PLACE)
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION),
+            );
+        }
         if dirty == super::super::retained::DirtyPhases::default() {
             self.phases.remove(id);
         } else {
@@ -1827,6 +1841,18 @@ impl TransientStateJournal {
             .get(id)
             .and_then(|patch| patch.line_height)
             .or(canonical)
+    }
+
+    pub(super) fn slider_presentation<'a>(
+        &'a self,
+        id: &UiId,
+        canonical: Option<&'a [DropdownPartStyle; 3]>,
+    ) -> Option<&'a [DropdownPartStyle; 3]> {
+        self.slider_presentations.get(id).or(canonical)
+    }
+
+    fn has_direct_slider_presentation(&self, id: &UiId) -> bool {
+        self.slider_presentations.contains_key(id)
     }
 
     fn has_direct_text_patch(&self, id: &UiId) -> bool {
@@ -2239,15 +2265,20 @@ fn capture_transient_state<Message>(
     } else {
         overlay.vertical_scroll_offsets.remove(id);
     }
-    if dropdown_projection_changes
-        || matches!(
-            element.kind,
-            Kind::Slider {
-                presentation: Some(_),
-                ..
-            }
-        ) && direct_interaction.is_some()
+    if let Kind::Slider {
+        presentation: Some(parts),
+        ..
+    } = &element.kind
+        && let Some(index) = direct_interaction
     {
+        overlay.slider_presentations.insert(
+            id.clone(),
+            (*parts.as_ref()).map(|part| part.with_interaction(index)),
+        );
+    } else {
+        overlay.slider_presentations.remove(id);
+    }
+    if dropdown_projection_changes {
         if !overlay.kinds.contains_key(id) {
             let original = std::mem::replace(&mut element.kind, Kind::Layer);
             element.kind = original.clone();
@@ -2544,6 +2575,9 @@ fn apply_transient_state_with_parent<Message>(
                 ..
             } if compact_overlay.is_none() => *offset = scroll_offset.max(0.0),
             Kind::VerticalScroll { .. } => {}
+            Kind::Slider { .. }
+                if compact_overlay
+                    .is_some_and(|overlay| overlay.has_direct_slider_presentation(id)) => {}
             Kind::Slider {
                 presentation: Some(parts),
                 ..

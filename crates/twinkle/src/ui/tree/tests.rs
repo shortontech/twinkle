@@ -1317,6 +1317,50 @@ fn inherited_interaction_text_uses_compact_format_patches() {
 }
 
 #[test]
+fn styled_slider_interaction_uses_a_compact_presentation_patch() {
+    let mut state = UiStateStore::default();
+    state.set_pressed(Some(UiId::from("root/volume")));
+    let track = DropdownPartStyle {
+        height: 8.0,
+        background: Some(0x112233),
+        interaction_backgrounds: [None, Some(0x445566), None],
+        ..DropdownPartStyle::default()
+    };
+    let fill = DropdownPartStyle {
+        height: 8.0,
+        background: Some(0x224466),
+        ..DropdownPartStyle::default()
+    };
+    let thumb = DropdownPartStyle {
+        width: 20.0,
+        height: 20.0,
+        background: Some(0xf0f0f0),
+        ..DropdownPartStyle::default()
+    };
+    let frame = UiFrame::resolve(
+        Slider::new(TestMessage::Named("volume"), 0.5)
+            .id("volume")
+            .parts(track, fill, thumb),
+        FrameRequest::new(Rect::new(0.0, 0.0, 240.0, 40.0), &mut state),
+    );
+
+    assert!(frame.commands().iter().any(|command| matches!(
+        command,
+        PaintCommand::Fill {
+            color: 0x445566,
+            ..
+        } | PaintCommand::RoundedFill {
+            color: 0x445566,
+            ..
+        }
+    )));
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_kind_clone_bytes, 0);
+    assert_eq!(resources.transient_kind_clone_allocations, 0);
+    assert_eq!(resources.transient_kind_overlay_count, 1);
+}
+
+#[test]
 fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
     assert!(
         std::mem::size_of::<layout::TransientStylePatch>() < std::mem::size_of::<Style>(),
@@ -1560,6 +1604,37 @@ fn active_transient_overlay_paths_report_clone_and_storage_costs() {
         UiFrame::resolve(
             Slider::new(TestMessage::Named("volume"), 0.5).id("volume"),
             FrameRequest::new(bounds, &mut slider_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut styled_slider_state = UiStateStore::default();
+    styled_slider_state.set_pressed(Some(UiId::from("root/volume")));
+    report(
+        "styled-slider",
+        UiFrame::resolve(
+            Slider::new(TestMessage::Named("volume"), 0.5)
+                .id("volume")
+                .parts(
+                    DropdownPartStyle {
+                        height: 8.0,
+                        background: Some(0x112233),
+                        interaction_backgrounds: [None, Some(0x445566), None],
+                        ..DropdownPartStyle::default()
+                    },
+                    DropdownPartStyle {
+                        height: 8.0,
+                        background: Some(0x224466),
+                        ..DropdownPartStyle::default()
+                    },
+                    DropdownPartStyle {
+                        width: 20.0,
+                        height: 20.0,
+                        background: Some(0xf0f0f0),
+                        ..DropdownPartStyle::default()
+                    },
+                ),
+            FrameRequest::new(bounds, &mut styled_slider_state),
         )
         .resource_diagnostics(),
     );

@@ -207,6 +207,9 @@ pub(super) fn emit_element<Message: Clone>(
             presentation: Some(parts),
             ..
         } if style.css_paint => {
+            let parts = overlay
+                .and_then(|overlay| overlay.slider_presentation(&node.id, Some(parts.as_ref())))
+                .unwrap_or(parts.as_ref());
             let track = slider_track_rect(node.content, &parts[0]).inset(parts[0].padding);
             Rect::new(
                 track.origin.x,
@@ -873,6 +876,9 @@ pub(super) fn emit_element<Message: Clone>(
             if !phases.paint {
                 return;
             }
+            let presentation = overlay
+                .and_then(|overlay| overlay.slider_presentation(&node.id, presentation.as_deref()))
+                .or(presentation.as_deref());
             if let Some(parts) = presentation {
                 let track_style = &parts[0];
                 let track_rect = slider_track_rect(node.content, track_style);
