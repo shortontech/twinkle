@@ -1286,7 +1286,7 @@ impl<Message: Clone> UiFrame<Message> {
             None,
         );
         self.resolved.nodes[parent].children.push(index);
-        emit_element(&content, index, None, self, None, EmissionPhases::ALL);
+        emit_element(&content, index, None, None, self, None, EmissionPhases::ALL);
         for node in &self.resolved.nodes[index..] {
             state.touch(node.id.clone());
         }
@@ -2303,7 +2303,9 @@ impl<Message: Clone> UiFrame<Message> {
             state.set_focus(Some(initial));
             apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
         }
-        tree.selection_regions = collect_selection_regions(&root, &tree.resolved);
+        transient_overlay.detach_effective(&mut root, &root_id);
+        tree.selection_regions =
+            collect_selection_regions(&root, &tree.resolved, Some(&transient_overlay));
         for region in &tree.selection_regions {
             state.touch(region.id.clone());
             state.reconcile_document_selection(region.id.clone(), region.document.clone());
@@ -2315,7 +2317,14 @@ impl<Message: Clone> UiFrame<Message> {
         }
         tree.prepare_selection_paints(state);
         tree.reset_emission();
-        tree.emit_incremental(&root, 0, None, previous, EmissionPhases::ALL);
+        tree.emit_incremental(
+            &root,
+            0,
+            None,
+            Some(&transient_overlay),
+            previous,
+            EmissionPhases::ALL,
+        );
         tree.rebuild_paint_fragment_indices();
         tree.present_text_context(state);
         tree.append_scrollbars(Some(state));
@@ -2369,9 +2378,6 @@ impl<Message: Clone> UiFrame<Message> {
         tree.retained_nodes.commit_frame();
         tree.transient_style_overlay_count = transient_overlay.style_count();
         tree.transient_kind_overlay_count = transient_overlay.kind_count();
-        if !transient_overlay.is_empty() {
-            transient_overlay.restore(&mut root, &root_id);
-        }
         tree.declaration_root = Some(root);
         tree.release_build_scratch();
         tree
@@ -2476,6 +2482,7 @@ impl<Message: Clone> UiFrame<Message> {
         element: &Element<Message>,
         node_index: usize,
         inherited_foreground: Option<Color>,
+        overlay: Option<&TransientStateJournal>,
         previous: Option<&Self>,
         requested: EmissionPhases,
     ) {
@@ -2556,6 +2563,7 @@ impl<Message: Clone> UiFrame<Message> {
             element,
             node_index,
             inherited_foreground,
+            overlay,
             self,
             previous,
             execute,
@@ -2754,6 +2762,7 @@ impl<Message: Clone> UiFrame<Message> {
             element,
             node_index,
             inherited_foreground,
+            None,
             self,
             None,
             EmissionPhases {
@@ -2872,9 +2881,9 @@ impl<Message: Clone> UiFrame<Message> {
             |id| UiId::from("root").scoped(id.as_str()),
         );
         layout_element(&root, &root_id, bounds, None, None, None, &mut tree, None);
-        tree.selection_regions = collect_selection_regions(&root, &tree.resolved);
+        tree.selection_regions = collect_selection_regions(&root, &tree.resolved, None);
         tree.reset_emission();
-        emit_element(&root, 0, None, &mut tree, None, EmissionPhases::ALL);
+        emit_element(&root, 0, None, None, &mut tree, None, EmissionPhases::ALL);
         tree.append_scrollbars(None);
         tree.commands.append(&mut tree.overlay_commands);
         tree.hits.append(&mut tree.overlay_hits);
@@ -8311,6 +8320,7 @@ fn is_scroll_container<Message>(element: &Element<Message>) -> bool {
 fn collect_selection_regions<Message>(
     root: &Element<Message>,
     resolved: &ResolvedLayout,
+    overlay: Option<&TransientStateJournal>,
 ) -> Vec<SelectionRegionLayout> {
     fn visit<Message>(
         element: &Element<Message>,
@@ -8319,13 +8329,16 @@ fn collect_selection_regions<Message>(
         builders: &mut Vec<SelectionRegionBuilder>,
         active: Option<usize>,
         excluded: bool,
+        overlay: Option<&TransientStateJournal>,
     ) {
         let node = &resolved.nodes[node_index];
-        let active = if element.style.selection_region {
+        let style = overlay.map_or(&element.style, |overlay| overlay.style(&node.id, element));
+        let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(&node.id, element));
+        let active = if style.selection_region {
             builders.push(SelectionRegionBuilder {
                 id: node.id.clone(),
                 rect: node.content,
-                supplied: element.style.selection_document.clone(),
+                supplied: style.selection_document.clone(),
                 runs: Vec::new(),
                 logical_runs: Vec::new(),
             });
@@ -8336,10 +8349,10 @@ fn collect_selection_regions<Message>(
         let excluded = excluded
             || element.primary_message().is_some() && !is_scroll_container(element)
             || element.text_mapper.is_some()
-            || matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown(_));
+            || matches!(kind, Kind::Slider { .. } | Kind::Dropdown(_));
         if let Some(region_index) = active
             && !excluded
-            && element.style.selectable != Some(false)
+            && style.selectable != Some(false)
             && let Kind::Text {
                 value,
                 scale,
@@ -8348,10 +8361,9 @@ fn collect_selection_regions<Message>(
                 line_height,
                 max_lines,
                 ..
-            } = &element.kind
+            } = kind
         {
-            let run_id = element
-                .style
+            let run_id = style
                 .selection_run_id
                 .clone()
                 .unwrap_or_else(|| node.id.as_str().to_owned());
@@ -8365,12 +8377,12 @@ fn collect_selection_regions<Message>(
                 *wrap,
                 *line_height,
                 max_lines.map(std::num::NonZeroUsize::get),
-                element.style.text_align,
+                style.text_align,
             );
             builders[region_index].logical_runs.push(SelectionRun {
                 id: run_id.clone(),
                 text: Arc::from(text.clone()),
-                boundary_before: element.style.selection_boundary,
+                boundary_before: style.selection_boundary,
             });
             builders[region_index].runs.push(SelectionRunGeometry {
                 node_index,
@@ -8380,11 +8392,10 @@ fn collect_selection_regions<Message>(
         }
         if let Some(region_index) = active
             && !excluded
-            && element.style.selectable != Some(false)
-            && let Kind::StyledText(styled) = &element.kind
+            && style.selectable != Some(false)
+            && let Kind::StyledText(styled) = kind
         {
-            let run_id = element
-                .style
+            let run_id = style
                 .selection_run_id
                 .clone()
                 .unwrap_or_else(|| node.id.as_str().to_owned());
@@ -8397,12 +8408,12 @@ fn collect_selection_regions<Message>(
                 styled.scale,
                 styled.wrap,
                 styled.line_height,
-                element.style.text_align,
+                style.text_align,
             );
             builders[region_index].logical_runs.push(SelectionRun {
                 id: run_id.clone(),
                 text: Arc::from(text),
-                boundary_before: element.style.selection_boundary,
+                boundary_before: style.selection_boundary,
             });
             builders[region_index].runs.push(SelectionRunGeometry {
                 node_index,
@@ -8411,12 +8422,20 @@ fn collect_selection_regions<Message>(
             });
         }
         for (&child_index, child) in node.children.iter().zip(&element.children) {
-            visit(child, child_index, resolved, builders, active, excluded);
+            visit(
+                child,
+                child_index,
+                resolved,
+                builders,
+                active,
+                excluded,
+                overlay,
+            );
         }
     }
 
     let mut builders = Vec::new();
-    visit(root, 0, resolved, &mut builders, None, false);
+    visit(root, 0, resolved, &mut builders, None, false, overlay);
     builders
         .into_iter()
         .map(|builder| SelectionRegionLayout {

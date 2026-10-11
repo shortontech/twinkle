@@ -577,6 +577,7 @@ pub(super) fn layout_element<Message: Clone>(
                 style.align_items,
                 style.justify_content,
                 &element.children,
+                overlay.map(|overlay| (id, overlay)),
             );
             let child_clip = if scrollable_x || scrollable_y {
                 Some(descendant_clip.map_or(content, |parent| {
@@ -929,10 +930,6 @@ pub(super) struct TransientStateJournal {
 }
 
 impl TransientStateJournal {
-    pub(super) fn is_empty(&self) -> bool {
-        self.styles.is_empty() && self.kinds.is_empty()
-    }
-
     pub(super) fn style_count(&self) -> usize {
         self.styles.len()
     }
@@ -945,12 +942,6 @@ impl TransientStateJournal {
         &self,
     ) -> impl Iterator<Item = (&UiId, super::super::retained::DirtyPhases)> {
         self.phases.iter().map(|(id, phases)| (id, *phases))
-    }
-
-    pub(super) fn restore<Message>(mut self, element: &mut Element<Message>, id: &UiId) {
-        self.restore_tree(element, id);
-        debug_assert!(self.styles.is_empty());
-        debug_assert!(self.kinds.is_empty());
     }
 
     /// Restores the canonical declaration while retaining the effective
@@ -1017,24 +1008,6 @@ impl TransientStateJournal {
         element: &'a Element<Message>,
     ) -> &'a Kind {
         self.kinds.get(id).unwrap_or(&element.kind)
-    }
-
-    fn restore_tree<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
-        for (index, child) in element.children.iter_mut().enumerate() {
-            let child_id = resolved_child_id(id, child, index);
-            self.restore_tree(child, &child_id);
-        }
-        self.restore_node(element, id);
-    }
-
-    fn restore_node<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
-        if let Some(style) = self.styles.remove(id) {
-            element.style = style;
-        }
-        if let Some(kind) = self.kinds.remove(id) {
-            element.kind = kind;
-        }
-        compact_kind_capacity(&mut element.kind);
     }
 }
 
@@ -1781,15 +1754,19 @@ fn flex_bounds<Message>(
     align_items: Align,
     justify: Justify,
     children: &[Element<Message>],
+    context: Option<(&UiId, &TransientStateJournal)>,
 ) -> Vec<Rect> {
     if children.is_empty() {
         return Vec::new();
     }
     let measured = children
         .iter()
-        .map(|child| {
-            measure_element(
+        .enumerate()
+        .map(|(index, child)| {
+            measure_child_effective(
                 child,
+                context,
+                index,
                 Constraints::loose(match axis {
                     Axis::Horizontal => Size::new(f32::INFINITY, content.size.height),
                     Axis::Vertical => Size::new(content.size.width, f32::INFINITY),
@@ -1799,47 +1776,54 @@ fn flex_bounds<Message>(
         .collect::<Vec<_>>();
     let items = children
         .iter()
+        .enumerate()
         .zip(&measured)
-        .map(|(child, measured)| {
+        .map(|((index, child), measured)| {
+            let style = effective_child_style(child, context, index);
             let (intrinsic, min, max) = match axis {
-                Axis::Horizontal => (measured.width, child.style.min_width, child.style.max_width),
+                Axis::Horizontal => (measured.width, style.min_width, style.max_width),
                 Axis::Vertical => (
                     measured.height,
-                    child.style.min_height,
-                    child.style.max_height,
+                    style.min_height,
+                    style.max_height,
                 ),
             };
             let parent = match axis {
                 Axis::Horizontal => content.size.width,
                 Axis::Vertical => content.size.height,
             };
-            let preferred = child.style.basis.resolve(
+            let preferred = style.basis.resolve(
                 parent,
                 match axis {
-                    Axis::Horizontal => child.style.width.resolve(parent, intrinsic),
-                    Axis::Vertical => child.style.height.resolve(parent, intrinsic),
+                    Axis::Horizontal => style.width.resolve(parent, intrinsic),
+                    Axis::Vertical => style.height.resolve(parent, intrinsic),
                 },
             );
             FlexItem::flex(
                 preferred,
                 min.max(0.0),
                 max.max(min.max(0.0)),
-                child.style.grow,
-                child.style.shrink,
+                style.grow,
+                style.shrink,
             )
         })
         .collect::<Vec<_>>();
     let mut rects = layout_flex(content, axis, gap.max(0.0), &items);
     let resolved_measured = children
         .iter()
+        .enumerate()
         .zip(&rects)
-        .map(|(child, rect)| match axis {
-            Axis::Horizontal => measure_element(
+        .map(|((index, child), rect)| match axis {
+            Axis::Horizontal => measure_child_effective(
                 child,
+                context,
+                index,
                 Constraints::loose(Size::new(rect.size.width, f32::INFINITY)),
             ),
-            Axis::Vertical => measure_element(
+            Axis::Vertical => measure_child_effective(
                 child,
+                context,
+                index,
                 Constraints::loose(Size::new(content.size.width, rect.size.height)),
             ),
         })
@@ -1861,8 +1845,14 @@ fn flex_bounds<Message>(
     let shared_baseline = if axis == Axis::Horizontal {
         children
             .iter()
+            .enumerate()
             .zip(&resolved_measured)
-            .filter(|(child, _)| child.style.align_self.unwrap_or(align_items) == Align::Baseline)
+            .filter(|((index, child), _)| {
+                effective_child_style(child, context, *index)
+                    .align_self
+                    .unwrap_or(align_items)
+                    == Align::Baseline
+            })
             .map(|(_, size)| size.height * 0.8)
             .fold(0.0, f32::max)
     } else {
@@ -1874,14 +1864,15 @@ fn flex_bounds<Message>(
         .zip(&resolved_measured)
         .enumerate()
     {
+        let style = effective_child_style(child, context, index);
         let main_offset = leading + index as f32 * extra_gap;
-        let alignment = child.style.align_self.unwrap_or(align_items);
+        let alignment = style.align_self.unwrap_or(align_items);
         match axis {
             Axis::Horizontal => {
                 rect.origin.x += main_offset;
                 let cross = measured.height.min(content.size.height);
                 if alignment != Align::Stretch
-                    || (child.style.css_paint && child.style.height != Length::Auto)
+                    || (style.css_paint && style.height != Length::Auto)
                 {
                     rect.size.height = cross;
                     rect.origin.y += match alignment {
@@ -1896,7 +1887,7 @@ fn flex_bounds<Message>(
                 rect.origin.y += main_offset;
                 let cross = measured.width.min(content.size.width);
                 if alignment != Align::Stretch
-                    || (child.style.css_paint && child.style.width != Length::Auto)
+                    || (style.css_paint && style.width != Length::Auto)
                 {
                     rect.size.width = cross;
                     rect.origin.x += match alignment {

@@ -165,6 +165,7 @@ pub(super) fn emit_element<Message: Clone>(
     element: &Element<Message>,
     node_index: usize,
     inherited_foreground: Option<Color>,
+    overlay: Option<&TransientStateJournal>,
     tree: &mut UiFrame<Message>,
     previous: Option<&UiFrame<Message>>,
     phases: EmissionPhases,
@@ -194,13 +195,15 @@ pub(super) fn emit_element<Message: Clone>(
             children: resolved.children.clone(),
         }
     };
+    let style = overlay.map_or(&element.style, |overlay| overlay.style(&node.id, element));
+    let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(&node.id, element));
     let fragment_start = tree.commands.len();
     let rect = node.allocated;
-    let value_bounds = match &element.kind {
+    let value_bounds = match kind {
         Kind::Slider {
             presentation: Some(parts),
             ..
-        } if element.style.css_paint => {
+        } if style.css_paint => {
             let track = slider_track_rect(node.content, &parts[0]).inset(parts[0].padding);
             Rect::new(
                 track.origin.x,
@@ -250,13 +253,10 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_value_mapper: None,
             });
         }
-        let foreground = element.style.foreground.or(inherited_foreground);
-        if matches!(
-            element.kind,
-            Kind::Flex(_) | Kind::Grid { .. } | Kind::Layer
-        ) {
+        let foreground = style.foreground.or(inherited_foreground);
+        if matches!(kind, Kind::Flex(_) | Kind::Grid { .. } | Kind::Layer) {
             for (&child_index, child) in node.children.iter().zip(&element.children) {
-                tree.emit_incremental(child, child_index, foreground, previous, phases);
+                tree.emit_incremental(child, child_index, foreground, overlay, previous, phases);
             }
         }
         if phases.paint {
@@ -268,26 +268,26 @@ pub(super) fn emit_element<Message: Clone>(
         }
         return;
     }
-    let rounded_solid_border = match (element.style.background, element.style.border) {
+    let rounded_solid_border = match (style.background, style.border) {
         (Some(Background::Solid(background)), Some(border))
-            if element.style.corner_radius > 0.0 && element.style.border_width > 0.0 =>
+            if style.corner_radius > 0.0 && style.border_width > 0.0 =>
         {
             Some((background, border))
         }
         _ => None,
     };
     if phases.paint
-        && let Some(blur) = element.style.backdrop_blur
+        && let Some(blur) = style.backdrop_blur
         && blur > 0.0
     {
         tree.commands.push(PaintCommand::BackdropBlur {
             rect,
-            radius: element.style.corner_radius,
+            radius: style.corner_radius,
             blur,
         });
     }
     if phases.paint
-        && let Some(shadow) = element.style.box_shadow
+        && let Some(shadow) = style.box_shadow
         && shadow.color != 0
     {
         let layers = shadow.blur.ceil().clamp(1.0, 12.0) as u32;
@@ -307,7 +307,7 @@ pub(super) fn emit_element<Message: Clone>(
                     rect.size.height + expansion * 2.0,
                 ),
                 color,
-                radius: element.style.corner_radius + expansion,
+                radius: style.corner_radius + expansion,
             });
         }
     }
@@ -322,47 +322,47 @@ pub(super) fn emit_element<Message: Clone>(
         tree.commands.push(PaintCommand::RoundedFill {
             rect,
             color: border,
-            radius: element.style.corner_radius,
+            radius: style.corner_radius,
         });
         tree.commands.push(PaintCommand::RoundedFill {
             rect: rect.inset(Insets::all(width)),
             color: background,
-            radius: (element.style.corner_radius - width).max(0.0),
+            radius: (style.corner_radius - width).max(0.0),
         });
     } else if phases.paint {
-        if let Some(background) = element.style.background {
+        if let Some(background) = style.background {
             tree.commands.push(match background {
-                Background::Solid(color) if element.style.corner_radius > 0.0 => {
+                Background::Solid(color) if style.corner_radius > 0.0 => {
                     PaintCommand::RoundedFill {
                         rect,
                         color,
-                        radius: element.style.corner_radius,
+                        radius: style.corner_radius,
                     }
                 }
-                Background::Solid(color) if element.style.top_corner_radius > 0.0 => {
+                Background::Solid(color) if style.top_corner_radius > 0.0 => {
                     PaintCommand::TopRoundedFill {
                         rect,
                         color,
-                        radius: element.style.top_corner_radius,
+                        radius: style.top_corner_radius,
                     }
                 }
                 Background::Solid(color) => PaintCommand::Fill { rect, color },
                 Background::LinearGradient(gradient) => PaintCommand::Gradient { rect, gradient },
             });
         }
-        if let Some(color) = element.style.border {
-            tree.commands.push(if element.style.corner_radius > 0.0 {
+        if let Some(color) = style.border {
+            tree.commands.push(if style.corner_radius > 0.0 {
                 PaintCommand::RoundedStroke {
                     rect,
                     color,
-                    width: element.style.border_width,
-                    radius: element.style.corner_radius,
+                    width: style.border_width,
+                    radius: style.corner_radius,
                 }
             } else {
                 PaintCommand::Stroke {
                     rect,
                     color,
-                    width: element.style.border_width,
+                    width: style.border_width,
                 }
             });
         }
@@ -492,7 +492,7 @@ pub(super) fn emit_element<Message: Clone>(
             line_height,
             details,
             ..
-        } = &element.kind
+        } = kind
     {
         let input_value = details
             .as_ref()
@@ -509,13 +509,13 @@ pub(super) fn emit_element<Message: Clone>(
             initial: input_value.cloned().unwrap_or_else(|| value.clone()),
             map: map.clone(),
             secure,
-            context_menu_presentation: element.style.editing_menu.clone(),
+            context_menu_presentation: style.editing_menu.clone(),
             context_menu_style: crate::OverlayStyle {
-                background: match element.style.background {
+                background: match style.background {
                     Some(Background::Solid(color)) => color,
                     _ => crate::theme::FALLBACK_FOCUS_SURFACE,
                 },
-                foreground: element.style.foreground.unwrap_or(0xe8edf4),
+                foreground: style.foreground.unwrap_or(0xe8edf4),
                 border: element
                     .style
                     .focus_background_tint
@@ -523,7 +523,7 @@ pub(super) fn emit_element<Message: Clone>(
                 selected: element
                     .style
                     .controller_focus_background_tint
-                    .or(element.style.focus_background_tint)
+                    .or(style.focus_background_tint)
                     .unwrap_or(crate::theme::FALLBACK_CONTROLLER_FOCUS_CUE),
                 radius: 7,
             },
@@ -551,9 +551,9 @@ pub(super) fn emit_element<Message: Clone>(
         }
     }
 
-    let foreground = element.style.foreground.or(inherited_foreground);
-    let clips_descendants = element.style.overflow_x != Overflow::Visible
-        || element.style.overflow_y != Overflow::Visible;
+    let foreground = style.foreground.or(inherited_foreground);
+    let clips_descendants =
+        style.overflow_x != Overflow::Visible || style.overflow_y != Overflow::Visible;
     if phases.paint && clips_descendants {
         tree.commands.push(PaintCommand::PushClip(rect));
     }
@@ -577,7 +577,7 @@ pub(super) fn emit_element<Message: Clone>(
             line_height,
             details: Some(details),
             ..
-        } = &element.kind
+        } = kind
         && let Some((start, end)) = details.selection_x
     {
         let color = element
@@ -617,10 +617,10 @@ pub(super) fn emit_element<Message: Clone>(
             line_height,
             details: Some(details),
             ..
-        } = &element.kind
+        } = kind
         && let Some(caret_position) = details.caret_position
     {
-        let parts = element.style.editing_parts.as_ref();
+        let parts = style.editing_parts.as_ref();
         let color = parts.map_or_else(
             || Some(foreground.unwrap_or(0x00ff_ffff)),
             |parts| parts[0].background,
@@ -652,7 +652,7 @@ pub(super) fn emit_element<Message: Clone>(
             });
         }
     }
-    match &element.kind {
+    match kind {
         Kind::CustomPaint { paint } => {
             if !phases.paint {
                 return;
@@ -712,19 +712,19 @@ pub(super) fn emit_element<Message: Clone>(
                         text: text.clone(),
                         scale: *scale,
                         color,
-                        align: element.style.text_align,
+                        align: style.text_align,
                         bold: *bold,
                         wrap: *wrap,
                     });
                 }
             }
-            if !element.style.css_paint || foreground.is_some_and(|color| color != 0) {
+            if !style.css_paint || foreground.is_some_and(|color| color != 0) {
                 tree.commands.push(PaintCommand::Text {
                     bounds: text_rect,
                     text,
                     scale: *scale,
                     color: foreground.unwrap_or(0x00ff_ffff),
-                    align: element.style.text_align,
+                    align: style.text_align,
                     bold: *bold,
                     wrap: *wrap,
                 });
@@ -739,7 +739,7 @@ pub(super) fn emit_element<Message: Clone>(
                     scale: styled.scale,
                     font_size: None,
                     color: foreground.unwrap_or(0x00ff_ffff),
-                    align: element.style.text_align,
+                    align: style.text_align,
                 });
             }
             if phases.interaction && !element.inline_messages.is_empty() {
@@ -751,7 +751,7 @@ pub(super) fn emit_element<Message: Clone>(
                     styled.scale,
                     styled.wrap,
                     styled.line_height,
-                    element.style.text_align,
+                    style.text_align,
                 );
                 for (index, (range, message)) in element.inline_messages.iter().enumerate() {
                     let link_id = node.id.scoped(format!("$inline-{index}"));
@@ -1267,13 +1267,13 @@ pub(super) fn emit_element<Message: Clone>(
                 .unwrap_or(node.content);
             tree.commands.push(PaintCommand::PushClip(content_clip));
             for (&child_index, child) in node.children.iter().zip(&element.children) {
-                tree.emit_incremental(child, child_index, foreground, previous, phases);
+                tree.emit_incremental(child, child_index, foreground, overlay, previous, phases);
             }
             tree.commands.push(PaintCommand::PopClip);
         }
         Kind::Flex(_) | Kind::Grid { .. } | Kind::Layer => {
             for (&child_index, child) in node.children.iter().zip(&element.children) {
-                tree.emit_incremental(child, child_index, foreground, previous, phases);
+                tree.emit_incremental(child, child_index, foreground, overlay, previous, phases);
             }
         }
     }
@@ -1281,14 +1281,14 @@ pub(super) fn emit_element<Message: Clone>(
     // style layer. Repeat an active/focused border in the foreground so their
     // own track or header cannot cover the selection indicator.
     if phases.paint
-        && matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown(_))
-        && let Some(color) = element.style.border
-        && element.style.border_width > 0.0
+        && matches!(kind, Kind::Slider { .. } | Kind::Dropdown(_))
+        && let Some(color) = style.border
+        && style.border_width > 0.0
     {
         tree.commands.push(PaintCommand::Stroke {
             rect,
             color,
-            width: element.style.border_width,
+            width: style.border_width,
         });
     }
     if phases.paint && clips_descendants {
