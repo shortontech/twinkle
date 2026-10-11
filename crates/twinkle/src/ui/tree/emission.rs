@@ -1050,6 +1050,17 @@ pub(super) fn emit_element<Message: Clone>(
                 .details
                 .as_ref()
                 .map_or(&[][..], |details| details.resolved_options.as_slice());
+            let transient_presentation =
+                overlay.and_then(|overlay| overlay.dropdown_presentation(&node.id));
+            let base_part = |index: usize| {
+                transient_presentation
+                    .map(|presentation| presentation.parts[index])
+                    .or_else(|| {
+                        presentation
+                            .as_ref()
+                            .map(|parts| ResolvedPartStyle::from(parts[index]))
+                    })
+            };
             let selected_icon = dropdown
                 .details
                 .as_ref()
@@ -1059,20 +1070,24 @@ pub(super) fn emit_element<Message: Clone>(
                 .as_ref()
                 .map_or(&[][..], |details| details.option_icons.as_slice());
             let rect = node.content;
-            let header_height = presentation
-                .as_ref()
-                .map_or(if *dropdown_overlay { 30.0 } else { 42.0 }, |parts| {
-                    parts[0].height + parts[0].margin.height()
+            let header_height = base_part(0)
+                .map_or(if *dropdown_overlay { 30.0 } else { 42.0 }, |part| {
+                    part.height + part.margin.height()
                 });
-            let option_height = presentation
-                .as_ref()
-                .map_or(if *dropdown_overlay { 34.0 } else { 36.0 }, |parts| {
-                    parts[1].height + parts[1].margin.height()
+            let option_height = base_part(1)
+                .map_or(if *dropdown_overlay { 34.0 } else { 36.0 }, |part| {
+                    part.height + part.margin.height()
                 });
             let option_part = |index: usize| {
-                resolved_options
-                    .get(index)
-                    .or_else(|| option_presentations.get(index))
+                transient_presentation
+                    .and_then(|presentation| presentation.resolved_options.get(index).copied())
+                    .or_else(|| {
+                        resolved_options
+                            .get(index)
+                            .or_else(|| option_presentations.get(index))
+                            .copied()
+                            .map(ResolvedPartStyle::from)
+                    })
             };
             let row_height = |index: usize| {
                 option_part(index).map_or(option_height, |part| part.height + part.margin.height())
@@ -1101,26 +1116,26 @@ pub(super) fn emit_element<Message: Clone>(
                 }
             };
             let header = Rect::new(rect.origin.x, rect.origin.y, rect.size.width, header_height);
-            let header = presentation.as_ref().map_or(header, |parts| {
-                let mut header = header.inset(parts[0].margin);
-                if parts[0].width > 0.0 {
-                    header.size.width = header.size.width.min(parts[0].width);
+            let header = base_part(0).map_or(header, |part| {
+                let mut header = header.inset(part.margin);
+                if part.width > 0.0 {
+                    header.size.width = header.size.width.min(part.width);
                 }
                 header
             });
-            if let Some(parts) = presentation {
-                let mut header_part = parts[0];
+            if presentation.is_some() {
+                let mut header_part = base_part(0).expect("styled dropdown header");
                 if selected_icon.is_some() {
                     header_part.padding.left += 28.0;
                 }
-                paint_dropdown_part(
+                paint_resolved_part(
                     &mut tree.commands,
                     header,
                     &header_part,
                     selected,
                     TextAlign::Start,
                 );
-                let indicator = &parts[2];
+                let indicator = base_part(2).expect("styled dropdown indicator");
                 let indicator_available = header.inset(indicator.margin);
                 let indicator_width = indicator.width.min(indicator_available.size.width);
                 let indicator_height = if indicator.height > 0.0 {
@@ -1135,10 +1150,10 @@ pub(super) fn emit_element<Message: Clone>(
                     indicator_width,
                     indicator_height,
                 );
-                paint_dropdown_part(
+                paint_resolved_part(
                     &mut tree.commands,
                     indicator_rect,
-                    indicator,
+                    &indicator,
                     if expanded { "▲" } else { "▼" },
                     TextAlign::Center,
                 );
@@ -1185,7 +1200,7 @@ pub(super) fn emit_element<Message: Clone>(
                     *generation,
                     presentation
                         .as_ref()
-                        .map_or(12.0, |parts| parts[0].padding.left),
+                        .map_or(12.0, |_| base_part(0).unwrap().padding.left),
                 );
             }
             // Keep the typed option topology available while collapsed so the
@@ -1215,12 +1230,13 @@ pub(super) fn emit_element<Message: Clone>(
                         &mut tree.commands
                     };
                     let icon = option_icons.get(index).and_then(Option::as_ref);
-                    if let Some(parts) = presentation {
-                        let mut part = *option_part(index).unwrap_or(&parts[1]);
+                    if presentation.is_some() {
+                        let mut part = option_part(index)
+                            .unwrap_or_else(|| base_part(1).expect("styled dropdown option"));
                         if icon.is_some() {
                             part.padding.left += 28.0;
                         }
-                        paint_dropdown_part(commands, option_rect, &part, option, TextAlign::Start);
+                        paint_resolved_part(commands, option_rect, &part, option, TextAlign::Start);
                     } else {
                         commands.push(PaintCommand::Fill {
                             rect: option_rect,
@@ -1249,7 +1265,7 @@ pub(super) fn emit_element<Message: Clone>(
                             image,
                             *generation,
                             option_part(index)
-                                .or_else(|| presentation.as_ref().map(|parts| &parts[1]))
+                                .or_else(|| base_part(1))
                                 .map_or(12.0, |part| part.padding.left),
                         );
                     }

@@ -8143,7 +8143,13 @@ fn measure_element_effective<Message>(
                 .as_ref()
                 .map_or(&[][..], |details| details.resolved_options.as_slice());
             if let Some(parts) = presentation {
-                let header = &parts[0];
+                let transient = context.and_then(|(id, overlay)| overlay.dropdown_presentation(id));
+                let header = transient
+                    .map(|presentation| presentation.parts[0])
+                    .unwrap_or_else(|| parts[0].into());
+                let indicator = transient
+                    .map(|presentation| presentation.parts[2])
+                    .unwrap_or_else(|| parts[2].into());
                 let text_width = if header.font_size > 0.0 {
                     measure_text(
                         selected,
@@ -8161,15 +8167,23 @@ fn measure_element_effective<Message>(
                 let width = if header.width > 0.0 {
                     header.width
                 } else {
-                    text_width + header.padding.width() + parts[2].width + parts[2].margin.width()
+                    text_width + header.padding.width() + indicator.width + indicator.margin.width()
                 };
                 let options_height = if expanded && !*overlay {
                     (0..options.len())
                         .map(|index| {
-                            resolved_options
-                                .get(index)
-                                .or_else(|| option_presentations.get(index))
-                                .unwrap_or(&parts[1])
+                            transient
+                                .and_then(|presentation| {
+                                    presentation.resolved_options.get(index).copied()
+                                })
+                                .unwrap_or_else(|| {
+                                    resolved_options
+                                        .get(index)
+                                        .or_else(|| option_presentations.get(index))
+                                        .unwrap_or(&parts[1])
+                                        .to_owned()
+                                        .into()
+                                })
                         })
                         .map(|part| part.height + part.margin.height())
                         .sum()

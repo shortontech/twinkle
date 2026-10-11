@@ -1361,6 +1361,57 @@ fn styled_slider_interaction_uses_a_compact_presentation_patch() {
 }
 
 #[test]
+fn styled_dropdown_expansion_uses_a_compact_presentation_patch() {
+    let mut state = UiStateStore::default();
+    state.set_dropdown_open(UiId::from("root/choice"), true);
+    let header = DropdownPartStyle {
+        height: 32.0,
+        background: Some(0x112233),
+        foreground: Some(0xffffff),
+        font_size: 14.0,
+        ..DropdownPartStyle::default()
+    };
+    let option = DropdownPartStyle {
+        height: 28.0,
+        background: Some(0x223344),
+        foreground: Some(0xeeeeee),
+        font_size: 13.0,
+        ..DropdownPartStyle::default()
+    };
+    let indicator = DropdownPartStyle {
+        width: 20.0,
+        height: 20.0,
+        foreground: Some(0xffffff),
+        font_size: 12.0,
+        ..DropdownPartStyle::default()
+    };
+    let frame = UiFrame::resolve(
+        Dropdown::new(
+            TestMessage::Named("toggle"),
+            "One",
+            [
+                ("One", TestMessage::Option(1)),
+                ("Two", TestMessage::Option(2)),
+            ],
+        )
+        .id("choice")
+        .parts(header, option, indicator),
+        FrameRequest::new(Rect::new(0.0, 0.0, 240.0, 100.0), &mut state),
+    );
+
+    assert_eq!(
+        frame.message_at(Point { x: 20.0, y: 74.0 }),
+        Some(&TestMessage::Option(2))
+    );
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_style_clone_bytes, 0);
+    assert_eq!(resources.transient_style_clone_allocations, 0);
+    assert_eq!(resources.transient_kind_clone_bytes, 0);
+    assert_eq!(resources.transient_kind_clone_allocations, 0);
+    assert_eq!(resources.transient_kind_overlay_count, 1);
+}
+
+#[test]
 fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
     assert!(
         std::mem::size_of::<layout::TransientStylePatch>() < std::mem::size_of::<Style>(),
@@ -1579,6 +1630,48 @@ fn active_transient_overlay_paths_report_clone_and_storage_costs() {
             )
             .id("choice"),
             FrameRequest::new(bounds, &mut dropdown_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut styled_dropdown_state = UiStateStore::default();
+    styled_dropdown_state.set_dropdown_open(UiId::from("root/choice"), true);
+    report(
+        "styled-dropdown",
+        UiFrame::resolve(
+            Dropdown::new(
+                TestMessage::Named("toggle"),
+                "One",
+                [
+                    ("One", TestMessage::Option(1)),
+                    ("Two", TestMessage::Option(2)),
+                ],
+            )
+            .id("choice")
+            .parts(
+                DropdownPartStyle {
+                    height: 32.0,
+                    background: Some(0x112233),
+                    foreground: Some(0xffffff),
+                    font_size: 14.0,
+                    ..DropdownPartStyle::default()
+                },
+                DropdownPartStyle {
+                    height: 28.0,
+                    background: Some(0x223344),
+                    foreground: Some(0xeeeeee),
+                    font_size: 13.0,
+                    ..DropdownPartStyle::default()
+                },
+                DropdownPartStyle {
+                    width: 20.0,
+                    height: 20.0,
+                    foreground: Some(0xffffff),
+                    font_size: 12.0,
+                    ..DropdownPartStyle::default()
+                },
+            ),
+            FrameRequest::new(bounds, &mut styled_dropdown_state),
         )
         .resource_diagnostics(),
     );

@@ -1525,6 +1525,7 @@ pub(super) struct TransientStateJournal {
     text_patches: std::collections::HashMap<UiId, TransientTextPatch>,
     text_format_patches: std::collections::HashMap<UiId, TransientTextFormatPatch>,
     slider_presentations: std::collections::HashMap<UiId, [ResolvedPartStyle; 3]>,
+    dropdown_presentations: std::collections::HashMap<UiId, ResolvedDropdownPresentation>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1581,6 +1582,13 @@ impl From<DropdownPartStyle> for ResolvedPartStyle {
     }
 }
 
+#[derive(Debug)]
+pub(super) struct ResolvedDropdownPresentation {
+    pub(super) expanded: bool,
+    pub(super) parts: [ResolvedPartStyle; 3],
+    pub(super) resolved_options: Vec<ResolvedPartStyle>,
+}
+
 impl TransientStateJournal {
     pub(super) fn style_count(&self) -> usize {
         self.style_patches.len()
@@ -1593,6 +1601,7 @@ impl TransientStateJournal {
             + self.text_patches.len()
             + self.text_format_patches.len()
             + self.slider_presentations.len()
+            + self.dropdown_presentations.len()
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
@@ -1630,6 +1639,8 @@ impl TransientStateJournal {
                 * std::mem::size_of::<(UiId, TransientTextFormatPatch)>()
             + self.slider_presentations.capacity()
                 * std::mem::size_of::<(UiId, [ResolvedPartStyle; 3])>()
+            + self.dropdown_presentations.capacity()
+                * std::mem::size_of::<(UiId, ResolvedDropdownPresentation)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
@@ -1638,6 +1649,13 @@ impl TransientStateJournal {
                 .text_patches
                 .values()
                 .map(|patch| patch.value.capacity() + patch.input_value.capacity())
+                .sum::<usize>()
+            + self
+                .dropdown_presentations
+                .values()
+                .map(|patch| {
+                    patch.resolved_options.capacity() * std::mem::size_of::<ResolvedPartStyle>()
+                })
                 .sum::<usize>()
     }
 
@@ -1650,6 +1668,7 @@ impl TransientStateJournal {
             + usize::from(self.text_patches.capacity() != 0)
             + usize::from(self.text_format_patches.capacity() != 0)
             + usize::from(self.slider_presentations.capacity() != 0)
+            + usize::from(self.dropdown_presentations.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
 
@@ -1795,6 +1814,16 @@ impl TransientStateJournal {
                     .union(DirtyPhases::INTERACTION),
             );
         }
+        if self.dropdown_presentations.contains_key(id) {
+            use super::super::retained::DirtyPhases;
+            dirty.insert(
+                DirtyPhases::MEASURE
+                    .union(DirtyPhases::PLACE)
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        }
         if dirty == super::super::retained::DirtyPhases::default() {
             self.phases.remove(id);
         } else {
@@ -1827,7 +1856,15 @@ impl TransientStateJournal {
     }
 
     pub(super) fn dropdown_expanded(&self, id: &UiId, canonical: bool) -> bool {
-        self.dropdown_expanded.get(id).copied().unwrap_or(canonical)
+        self.dropdown_presentations
+            .get(id)
+            .map(|patch| patch.expanded)
+            .or_else(|| self.dropdown_expanded.get(id).copied())
+            .unwrap_or(canonical)
+    }
+
+    pub(super) fn dropdown_presentation(&self, id: &UiId) -> Option<&ResolvedDropdownPresentation> {
+        self.dropdown_presentations.get(id)
     }
 
     pub(super) fn text_value<'a>(&'a self, id: &UiId, canonical: &'a str) -> &'a str {
@@ -1889,7 +1926,7 @@ impl TransientStateJournal {
     }
 
     fn has_direct_dropdown_patch(&self, id: &UiId) -> bool {
-        self.dropdown_expanded.contains_key(id)
+        self.dropdown_expanded.contains_key(id) || self.dropdown_presentations.contains_key(id)
     }
 
     fn has_direct_style_patch(&self, id: &UiId) -> bool {
@@ -2069,6 +2106,58 @@ fn merged_text_paint(
     }
 }
 
+fn dropdown_part_interaction(
+    state: &UiStateStore,
+    id: &UiId,
+    mut part: DropdownPartStyle,
+) -> DropdownPartStyle {
+    let index = if state.pressed() == Some(id) {
+        Some(1)
+    } else if state.window_focused()
+        && (state.focused() == Some(id) || state.navigation().controller_selected() == Some(id))
+    {
+        Some(2)
+    } else if state.hovered() == Some(id) {
+        Some(0)
+    } else {
+        None
+    };
+    if let Some(index) = index {
+        part = part.with_interaction(index);
+    }
+    part
+}
+
+fn project_dropdown_presentation(
+    dropdown: &DropdownKind,
+    id: &UiId,
+    state: &UiStateStore,
+    expanded: bool,
+    owner_paint: InteractionPaint,
+) -> Option<ResolvedDropdownPresentation> {
+    let canonical_parts = dropdown.presentation.as_deref()?;
+    let mut parts = (*canonical_parts).map(|part| part.inherited_paint(owner_paint));
+    parts[0] = dropdown_part_interaction(state, id, parts[0]);
+    parts[2] = dropdown_part_interaction(state, id, parts[2]);
+    let resolved_options = (0..dropdown.options.len())
+        .map(|index| {
+            let part = dropdown
+                .details
+                .as_ref()
+                .and_then(|details| details.option_presentations.get(index))
+                .copied()
+                .unwrap_or(parts[1])
+                .inherited_paint(owner_paint);
+            dropdown_part_interaction(state, &id.scoped(format!("option-{index}")), part).into()
+        })
+        .collect();
+    Some(ResolvedDropdownPresentation {
+        expanded,
+        parts: parts.map(ResolvedPartStyle::from),
+        resolved_options,
+    })
+}
+
 fn capture_transient_state<Message>(
     element: &mut Element<Message>,
     id: &UiId,
@@ -2137,9 +2226,52 @@ fn capture_transient_state<Message>(
     } else {
         false
     };
-    let dropdown_height_changes = matches!(element.kind, Kind::Dropdown(_))
-        && !element.style.css_paint
-        && !direct_dropdown_supported;
+    let styled_dropdown_changes = if let Kind::Dropdown(dropdown) = &element.kind
+        && dropdown.presentation.is_some()
+        && dropdown_projection_needed(element, id, state, interaction_index)
+    {
+        let transient = state.touch(id.clone());
+        if dropdown.open_generation != transient.dropdown_open_generation {
+            transient.dropdown_open_generation = dropdown.open_generation;
+            transient.dropdown_open = true;
+        }
+        let expanded = transient.dropdown_open;
+        let owner_paint = interaction_index
+            .map(|index| {
+                element
+                    .style
+                    .interaction_paints
+                    .as_ref()
+                    .map_or(InteractionPaint::default(), |paints| paints[index])
+            })
+            .unwrap_or_default();
+        if let Some(presentation) =
+            project_dropdown_presentation(dropdown, id, state, expanded, owner_paint)
+        {
+            if !element.style.css_paint {
+                let height = presentation.parts[0].height
+                    + presentation.parts[0].margin.height()
+                    + if expanded && !dropdown.overlay {
+                        presentation
+                            .resolved_options
+                            .iter()
+                            .map(|part| part.height + part.margin.height())
+                            .sum::<f32>()
+                    } else {
+                        0.0
+                    };
+                overlay.style_patches.entry(id.clone()).or_default().height =
+                    Some(Length::Px(height));
+            }
+            overlay
+                .dropdown_presentations
+                .insert(id.clone(), presentation);
+        }
+        true
+    } else {
+        overlay.dropdown_presentations.remove(id);
+        false
+    };
     if inherited_geometry_scale.to_bits() != 1.0f32.to_bits() {
         let patch = overlay.style_patches.entry(id.clone()).or_default();
         if let Length::Px(width) = element.style.width {
@@ -2259,7 +2391,7 @@ fn capture_transient_state<Message>(
                 42.0
             }));
     }
-    let style_can_change = dropdown_height_changes;
+    let style_can_change = false;
     if style_can_change {
         if !overlay.styles.contains_key(id) {
             let original = std::mem::take(&mut element.style);
@@ -2282,8 +2414,9 @@ fn capture_transient_state<Message>(
     } else {
         overlay.text_patches.remove(id);
     }
-    let dropdown_projection_changes =
-        !direct_dropdown && dropdown_projection_needed(element, id, state, interaction_index);
+    let dropdown_projection_changes = !direct_dropdown
+        && !styled_dropdown_changes
+        && dropdown_projection_needed(element, id, state, interaction_index);
     let vertical_scroll_projection_changes = vertical_scroll_projection_needed(element, id, state);
     if vertical_scroll_projection_changes {
         let offset = state
