@@ -15,6 +15,8 @@ pub mod controller;
 pub mod document_selection;
 #[allow(missing_docs)]
 pub mod gpu;
+#[cfg(feature = "gpu-presenter")]
+mod gpu_presenter;
 pub mod input;
 #[allow(missing_docs)]
 mod internal_surface;

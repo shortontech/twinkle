@@ -1,4 +1,6 @@
 use crate::{ControllerSource, HostedControllerSource};
+#[cfg(feature = "gpu-presenter")]
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
     any::Any,
     cell::RefCell,
@@ -108,6 +110,8 @@ struct NativeControllerBatch {
     envelopes: Vec<crate::ControllerEnvelope>,
 }
 
+const CONTROLLER_IDLE_WAIT: Duration = Duration::from_secs(1);
+
 struct NativeControllerWorker {
     batches: Receiver<NativeControllerBatch>,
     focused: Arc<AtomicBool>,
@@ -190,7 +194,7 @@ impl NativeControllerWorker {
                 let mut observed_focus_generation = worker_focus_generation.load(Ordering::Acquire);
                 while !worker_stop.load(Ordering::Acquire) {
                     let (application_events, envelopes) = controller.wait_application(
-                        Duration::from_millis(250),
+                        CONTROLLER_IDLE_WAIT,
                         worker_focused.load(Ordering::Acquire),
                     );
                     let focus_generation = worker_focus_generation.load(Ordering::Acquire);
@@ -4438,8 +4442,10 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     application: Option<A>,
     adapter: H,
     display: OwnedDisplayHandle,
-    window: Option<Arc<dyn Window>>,
+    #[cfg(feature = "gpu-presenter")]
+    gpu_presenter: Option<crate::gpu_presenter::WindowGpuPresenter>,
     surface: Option<softbuffer::Surface<OwnedDisplayHandle, Arc<dyn Window>>>,
+    window: Option<Arc<dyn Window>>,
     raster: AsyncRasterWorker,
     raster_revision: u64,
     input: twinkle_input::winit::Adapter,
@@ -4561,8 +4567,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             application: Some(application),
             adapter,
             display,
-            window: None,
+            #[cfg(feature = "gpu-presenter")]
+            gpu_presenter: None,
             surface: None,
+            window: None,
             raster,
             raster_revision: 0,
             input: twinkle_input::winit::Adapter::default(),
@@ -4960,6 +4968,39 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             commands: host.commands().to_vec(),
             damage: None,
         });
+    }
+
+    fn ensure_software_surface(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.surface.is_some() {
+            return Ok(());
+        }
+        let Some(window) = self.window.clone() else {
+            return Ok(());
+        };
+        let context = softbuffer::Context::new(self.display.clone())?;
+        self.surface = Some(softbuffer::Surface::new(&context, window)?);
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu-presenter")]
+    fn present_gpu(&mut self) -> Result<bool, String> {
+        let (Some(presenter), Some(host), Some(window)) = (
+            self.gpu_presenter.as_mut(),
+            self.host.as_ref(),
+            self.window.as_ref(),
+        ) else {
+            return Ok(false);
+        };
+        let size = window.surface_size();
+        let frame = host.render_frame();
+        presenter.present(
+            frame.logical_size.0,
+            size.width,
+            size.height,
+            frame.commands,
+            host.retained_paint_damage(),
+        )?;
+        Ok(true)
     }
 
     fn present_completed_raster(&mut self) -> Result<(), Box<dyn Error>> {
@@ -5491,23 +5532,38 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 return;
             }
         }
-        let context = match softbuffer::Context::new(self.display.clone()) {
-            Ok(context) => context,
-            Err(error) => {
-                self.fail(event_loop, error);
-                return;
-            }
-        };
-        let surface = match softbuffer::Surface::new(&context, window.clone()) {
-            Ok(surface) => surface,
-            Err(error) => {
-                self.fail(event_loop, error);
-                return;
-            }
-        };
-        self.surface = Some(surface);
         self.host = Some(host);
         self.window = Some(window.clone());
+        #[cfg(feature = "gpu-presenter")]
+        if std::env::var_os("TWINKLE_RENDERER").as_deref() != Some(std::ffi::OsStr::new("software"))
+        {
+            let gpu = self
+                .display
+                .display_handle()
+                .and_then(|display| window.window_handle().map(|window| (display, window)))
+                .map_err(|error| error.to_string())
+                .and_then(|(display, native_window)| {
+                    // SAFETY: the runtime owns both handles and drops the presenter before the window.
+                    unsafe { crate::gpu_presenter::WindowGpuPresenter::new(display, native_window) }
+                });
+            match gpu {
+                Ok(presenter) => {
+                    tracing::info!("standalone GPU presenter initialized");
+                    self.gpu_presenter = Some(presenter);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "standalone GPU presenter unavailable; using software");
+                }
+            }
+        }
+        #[cfg(feature = "gpu-presenter")]
+        let using_gpu = self.gpu_presenter.is_some();
+        #[cfg(not(feature = "gpu-presenter"))]
+        let using_gpu = false;
+        if !using_gpu && let Err(error) = self.ensure_software_surface() {
+            self.fail(event_loop, error);
+            return;
+        }
         self.scheduler.invalidate();
         if self.scheduler.request_present() {
             window.request_redraw();
@@ -5564,6 +5620,21 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
             WindowEvent::RedrawRequested => {
                 self.flush_pending_continuous_input(event_loop, window.as_ref());
                 if self.scheduler.begin_present() {
+                    #[cfg(feature = "gpu-presenter")]
+                    match self.present_gpu() {
+                        Ok(true) => {}
+                        Ok(false) => self.queue_raster(),
+                        Err(error) => {
+                            tracing::warn!(%error, "GPU presentation failed; switching to software");
+                            self.gpu_presenter = None;
+                            if let Err(error) = self.ensure_software_surface() {
+                                self.fail(event_loop, error);
+                                return;
+                            }
+                            self.queue_raster();
+                        }
+                    }
+                    #[cfg(not(feature = "gpu-presenter"))]
                     self.queue_raster();
                 }
                 return;

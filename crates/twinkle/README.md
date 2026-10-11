@@ -1,7 +1,8 @@
 # twinkle
 
 `twinkle` is a native Rust UX layer with React-style declarative authoring, typed messages,
-intrinsic responsive layout, stable interaction state, and an included software presenter. It is
+intrinsic responsive layout, stable interaction state, and GPU presentation with an automatic
+software fallback. It is
 an independent UI engine. Hosted controller input is selected explicitly, while applications
 provide any required session discovery and transport through host adapters.
 
@@ -64,16 +65,17 @@ If you are building reusable Rust components or a design system, start with the
 continue with the repository's [task recipes](../../docs/task-guides.md).
 
 An executable implements `Application` and calls `run(app)`. The runtime owns winit initialization,
-the native window, event and redraw loops, software presentation, and the per-window `UiStateStore`; the
+the native window, event and redraw loops, presentation, and the per-window `UiStateStore`; the
 application owns only domain state, typed messages, `update`, and `view`. See
 [`examples/standalone.rs`](examples/standalone.rs) for the complete counter application.
 
-The default build includes native controller discovery. Hosted-controller and controller-free
-applications can omit gilrs with
-`twinkle-ui = { version = "0.2", default-features = false }`; the backend-neutral controller
-vocabulary remains available. Native windowing, clipboard and image support, and software
-presentation are currently core capabilities. Oxc and V8 are not in this crate's dependency
-closure; JSX is an opt-in feature of the separate repository tooling.
+The default build includes native controller discovery and the `gpu-presenter` feature. The
+standalone runtime prefers wgpu and falls back to its software presenter if GPU initialization or
+presentation fails. Set `TWINKLE_RENDERER=software` to force the fallback for diagnostics and A/B
+testing. `default-features = false` omits both native controller discovery and the GPU presenter;
+enable either feature explicitly when needed. The backend-neutral controller vocabulary and
+software fallback remain available without default features. Oxc and V8 are not in this crate's
+dependency closure; JSX is an opt-in feature of the separate repository tooling.
 
 ## Controller navigation
 

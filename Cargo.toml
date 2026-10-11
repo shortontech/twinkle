@@ -48,3 +48,7 @@ proptest = "1"
 winit = "0.31.0-beta.3"
 winit-030 = { package = "winit", version = "0.30.13" }
 windows = "0.62.2"
+bytemuck = { version = "1.25.0", features = ["derive"] }
+pollster = "0.4.0"
+raw-window-handle = "0.6.2"
+wgpu = "30.0.0"

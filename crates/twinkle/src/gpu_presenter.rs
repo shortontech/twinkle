@@ -1,0 +1,1336 @@
+//! Hardware presentation for standalone Twinkle windows.
+
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
+
+use crate::backend::PaintCommand;
+use crate::{DamageRegion, GradientAxis, Rect, SoftwareRenderer};
+use raw_window_handle::{DisplayHandle, WindowHandle};
+
+const SHADER: &str = r#"
+struct VertexIn {
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+    @location(3) half_size: vec2<f32>,
+    @location(4) shape: vec2<f32>,
+};
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) half_size: vec2<f32>,
+    @location(3) shape: vec2<f32>,
+};
+@group(0) @binding(0) var image: texture_2d<f32>;
+@group(0) @binding(1) var image_sampler: sampler;
+@vertex fn vs_main(input: VertexIn) -> VertexOut {
+    var out: VertexOut;
+    out.position = vec4<f32>(input.position, 0.0, 1.0);
+    out.uv = input.uv;
+    out.color = input.color;
+    out.half_size = input.half_size;
+    out.shape = input.shape;
+    return out;
+}
+@fragment fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    return textureSample(image, image_sampler, input.uv) * input.color;
+}
+@fragment fn fs_shape(input: VertexOut) -> @location(0) vec4<f32> {
+    let radius = min(input.shape.x, min(input.half_size.x, input.half_size.y));
+    let point = (input.uv * 2.0 - vec2<f32>(1.0)) * input.half_size;
+    let q = abs(point) - (input.half_size - vec2<f32>(radius));
+    let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    let outer = 1.0 - smoothstep(-0.75, 0.75, distance);
+    var coverage = outer;
+    if input.shape.y > 0.0 {
+        let inner = 1.0 - smoothstep(-0.75, 0.75, distance + input.shape.y);
+        coverage = max(0.0, outer - inner);
+    }
+    return input.color * coverage;
+}
+"#;
+const MAX_TEXTURE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_RETAINED_FRAMEBUFFER_BYTES: usize = 128 * 1024 * 1024;
+
+fn retained_framebuffer_bytes(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)
+        .filter(|bytes| *bytes <= MAX_RETAINED_FRAMEBUFFER_BYTES)
+}
+
+fn retained_framebuffer_configuration(
+    width: u32,
+    height: u32,
+    scale: f32,
+    format: wgpu::TextureFormat,
+) -> (u32, u32, u32, wgpu::TextureFormat) {
+    (width, height, scale.to_bits(), format)
+}
+
+#[derive(Default)]
+struct TextureCache {
+    entries: HashMap<String, Arc<wgpu::BindGroup>>,
+    bytes: usize,
+    peak_bytes: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    color: [f32; 4],
+    half_size: [f32; 2],
+    shape: [f32; 2],
+}
+
+struct GpuGraphics {
+    instance: wgpu::Instance,
+    display: raw_window_handle::RawDisplayHandle,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    shader: wgpu::ShaderModule,
+    texture_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    white: Arc<wgpu::BindGroup>,
+    textures: RefCell<TextureCache>,
+    text_renderer: RefCell<SoftwareRenderer>,
+}
+
+impl GpuGraphics {
+    unsafe fn new(display: DisplayHandle<'_>, window: WindowHandle<'_>) -> Result<Self, String> {
+        let instance = wgpu::Instance::default();
+        // SAFETY: the caller guarantees the native window and display outlive
+        // this temporary compatibility surface and subsequent presenters.
+        let surface = unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: Some(display.as_raw()),
+                raw_window_handle: window.as_raw(),
+            })
+        }
+        .map_err(|error| error.to_string())?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+            apply_limit_buckets: true,
+        }))
+        .map_err(|error| error.to_string())?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Twinkle standalone GPU"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            ..Default::default()
+        }))
+        .map_err(|error| error.to_string())?;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Nickel shell primitives"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Nickel shell texture layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Nickel shell texture sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let white = upload_texture(&device, &queue, &texture_layout, &sampler, 1, 1, &[255; 4]);
+        Ok(Self {
+            instance,
+            display: display.as_raw(),
+            adapter,
+            device,
+            queue,
+            shader,
+            texture_layout,
+            sampler,
+            white,
+            textures: RefCell::new(TextureCache::default()),
+            text_renderer: RefCell::new(SoftwareRenderer::new_pixel_buffer(1, 1, 1.0)),
+        })
+    }
+
+    fn texture(&self, key: String, width: u32, height: u32, pixels: &[u8]) -> Arc<wgpu::BindGroup> {
+        if let Some(texture) = self.textures.borrow().entries.get(&key) {
+            return texture.clone();
+        }
+        let texture = upload_texture(
+            &self.device,
+            &self.queue,
+            &self.texture_layout,
+            &self.sampler,
+            width,
+            height,
+            pixels,
+        );
+        let texture_bytes = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        if texture_bytes > MAX_TEXTURE_CACHE_BYTES {
+            return texture;
+        }
+        let mut cache = self.textures.borrow_mut();
+        if cache.bytes.saturating_add(texture_bytes) > MAX_TEXTURE_CACHE_BYTES {
+            cache.entries.clear();
+            cache.bytes = 0;
+        }
+        cache.bytes += texture_bytes;
+        cache.peak_bytes = cache.peak_bytes.max(cache.bytes);
+        cache.entries.insert(key, texture.clone());
+        texture
+    }
+
+    fn text_texture(
+        &self,
+        command: &PaintCommand,
+        bounds: Rect,
+        scale: f32,
+    ) -> Arc<wgpu::BindGroup> {
+        let mut local = command.clone();
+        match &mut local {
+            PaintCommand::Text { bounds, .. } | PaintCommand::StyledText { bounds, .. } => {
+                bounds.origin.x = 0.0;
+                bounds.origin.y = 0.0;
+            }
+            _ => unreachable!(),
+        }
+        let key = format!("text:{scale:?}:{local:?}");
+        if let Some(texture) = self.textures.borrow().entries.get(&key) {
+            return texture.clone();
+        }
+        let width = (bounds.size.width * scale).ceil().max(1.0) as u32;
+        let height = (bounds.size.height * scale).ceil().max(1.0) as u32;
+        let mut renderer = self.text_renderer.borrow_mut();
+        renderer.resize(width, height, scale);
+        renderer.invalidate();
+        renderer.render(&[local]);
+        let mut bytes = Vec::with_capacity(renderer.pixels().len() * 4);
+        for pixel in renderer.pixels() {
+            bytes.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
+        }
+        if renderer.pixel_capacity_bytes() > 8 * 1024 * 1024 {
+            renderer.suspend();
+        }
+        drop(renderer);
+        self.texture(key, width, height, &bytes)
+    }
+}
+
+fn upload_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Arc<wgpu::BindGroup> {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Twinkle standalone cached texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Twinkle standalone texture"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    }))
+}
+
+#[derive(Clone, Copy)]
+struct PresentationGeometry {
+    logical_width: u32,
+    pixel_width: u32,
+    pixel_height: u32,
+}
+
+pub(crate) struct WindowGpuPresenter {
+    presenter: GpuPresenter,
+    graphics: GpuGraphics,
+}
+
+impl WindowGpuPresenter {
+    /// # Safety
+    /// The display and window handles must remain valid until this presenter is dropped.
+    pub(crate) unsafe fn new(
+        display: DisplayHandle<'_>,
+        window: WindowHandle<'_>,
+    ) -> Result<Self, String> {
+        let graphics = unsafe { GpuGraphics::new(display, window) }?;
+        let presenter = unsafe { GpuPresenter::new(window, &graphics) }?;
+        Ok(Self {
+            presenter,
+            graphics,
+        })
+    }
+
+    pub(crate) fn present(
+        &mut self,
+        logical_width: u32,
+        pixel_width: u32,
+        pixel_height: u32,
+        commands: &[PaintCommand],
+        damage: Option<&[Rect]>,
+    ) -> Result<DamageRegion, String> {
+        self.presenter.present(
+            PresentationGeometry {
+                logical_width,
+                pixel_width,
+                pixel_height,
+            },
+            &self.graphics,
+            commands,
+            damage,
+        )
+    }
+}
+
+struct GpuPresenter {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    configured: bool,
+    pipeline: wgpu::RenderPipeline,
+    shape_pipeline: wgpu::RenderPipeline,
+    clear_pipeline: wgpu::RenderPipeline,
+    retained: Option<RetainedFramebuffer>,
+    retained_diagnostics: RetainedFramebufferDiagnostics,
+    vertex_buffer: Option<wgpu::Buffer>,
+    vertex_capacity: usize,
+}
+
+struct RetainedFramebuffer {
+    view: wgpu::TextureView,
+    texture: Arc<wgpu::BindGroup>,
+    configuration: (u32, u32, u32, wgpu::TextureFormat),
+    valid: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RetainedFramebufferDiagnostics {
+    pub live_bytes: usize,
+    pub peak_bytes: usize,
+    pub creations: u64,
+    pub releases: u64,
+    pub budget_fallbacks: u64,
+    pub composited_frames: u64,
+    pub direct_full_frames: u64,
+    pub full_initializations: u64,
+    pub partial_redraws: u64,
+    pub full_redraws: u64,
+    pub unchanged_reuses: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OffscreenRedraw {
+    Full,
+    Partial(Rect),
+    Reuse,
+}
+
+fn union_rect(left: Rect, right: Rect) -> Rect {
+    let x = left.origin.x.min(right.origin.x);
+    let y = left.origin.y.min(right.origin.y);
+    let right_edge = (left.origin.x + left.size.width).max(right.origin.x + right.size.width);
+    let bottom_edge = (left.origin.y + left.size.height).max(right.origin.y + right.size.height);
+    Rect::new(x, y, right_edge - x, bottom_edge - y)
+}
+
+fn offscreen_redraw(
+    commands: &[PaintCommand],
+    damage: Option<&[Rect]>,
+    valid: bool,
+) -> OffscreenRedraw {
+    if !valid
+        || commands
+            .iter()
+            .any(|command| matches!(command, PaintCommand::BackdropBlur { .. }))
+    {
+        return OffscreenRedraw::Full;
+    }
+    let Some(damage) = damage else {
+        return OffscreenRedraw::Full;
+    };
+    damage
+        .iter()
+        .copied()
+        .reduce(union_rect)
+        .map_or(OffscreenRedraw::Reuse, OffscreenRedraw::Partial)
+}
+
+fn physical_scissor(
+    rect: Rect,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> Option<(u32, u32, u32, u32)> {
+    let left = (rect.origin.x * scale).floor().clamp(0.0, width as f32) as u32;
+    let top = (rect.origin.y * scale).floor().clamp(0.0, height as f32) as u32;
+    let right = ((rect.origin.x + rect.size.width) * scale)
+        .ceil()
+        .clamp(0.0, width as f32) as u32;
+    let bottom = ((rect.origin.y + rect.size.height) * scale)
+        .ceil()
+        .clamp(0.0, height as f32) as u32;
+    (right > left && bottom > top).then(|| (left, top, right - left, bottom - top))
+}
+
+fn intersect_scissor(
+    left: (u32, u32, u32, u32),
+    right: (u32, u32, u32, u32),
+) -> Option<(u32, u32, u32, u32)> {
+    let x = left.0.max(right.0);
+    let y = left.1.max(right.1);
+    let right_edge = left
+        .0
+        .saturating_add(left.2)
+        .min(right.0.saturating_add(right.2));
+    let bottom = left
+        .1
+        .saturating_add(left.3)
+        .min(right.1.saturating_add(right.3));
+    (right_edge > x && bottom > y).then(|| (x, y, right_edge - x, bottom - y))
+}
+
+impl GpuPresenter {
+    unsafe fn new(window: WindowHandle<'_>, graphics: &GpuGraphics) -> Result<Self, String> {
+        // SAFETY: ShellSurface drops the presenter before the native window.
+        let surface = unsafe {
+            graphics
+                .instance
+                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: Some(graphics.display),
+                    raw_window_handle: window.as_raw(),
+                })
+        }
+        .map_err(|error| error.to_string())?;
+        let mut config = surface
+            .get_default_config(&graphics.adapter, 1, 1)
+            .ok_or_else(|| "GPU adapter cannot present to this window".to_owned())?;
+        let capabilities = surface.get_capabilities(&graphics.adapter);
+        config.format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| *format == wgpu::TextureFormat::Bgra8Unorm)
+            .unwrap_or(config.format);
+        if capabilities
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+        {
+            config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+        }
+        let layout = graphics
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Twinkle standalone pipeline"),
+                bind_group_layouts: &[Some(&graphics.texture_layout)],
+                immediate_size: 0,
+            });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2];
+        let pipeline = graphics
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Twinkle standalone textured rectangles"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &graphics.shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &graphics.shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        let clear_pipeline =
+            graphics
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Twinkle standalone damage clear"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &graphics.shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &attributes,
+                        })],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &graphics.shader,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: config.format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                });
+        let shape_pipeline =
+            graphics
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Twinkle standalone GPU shapes"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &graphics.shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &attributes,
+                        })],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &graphics.shader,
+                        entry_point: Some("fs_shape"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: config.format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                });
+        Ok(Self {
+            surface,
+            config,
+            configured: false,
+            pipeline,
+            shape_pipeline,
+            clear_pipeline,
+            retained: None,
+            retained_diagnostics: RetainedFramebufferDiagnostics::default(),
+            vertex_buffer: None,
+            vertex_capacity: 0,
+        })
+    }
+
+    fn ensure_retained_framebuffer(
+        &mut self,
+        graphics: &GpuGraphics,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> bool {
+        let Some(bytes) = retained_framebuffer_bytes(width, height) else {
+            self.release_retained_framebuffer();
+            self.retained_diagnostics.budget_fallbacks =
+                self.retained_diagnostics.budget_fallbacks.saturating_add(1);
+            return false;
+        };
+        let configuration =
+            retained_framebuffer_configuration(width, height, scale, self.config.format);
+        if self
+            .retained
+            .as_ref()
+            .is_some_and(|target| target.configuration == configuration)
+        {
+            return true;
+        }
+        self.release_retained_framebuffer();
+        let texture = graphics.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Nickel retained shell framebuffer"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampled = Arc::new(
+            graphics
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Nickel retained shell framebuffer"),
+                    layout: &graphics.texture_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&graphics.sampler),
+                        },
+                    ],
+                }),
+        );
+        self.retained = Some(RetainedFramebuffer {
+            view,
+            texture: sampled,
+            configuration,
+            valid: false,
+        });
+        self.retained_diagnostics.live_bytes = bytes;
+        self.retained_diagnostics.peak_bytes = self.retained_diagnostics.peak_bytes.max(bytes);
+        self.retained_diagnostics.creations = self.retained_diagnostics.creations.saturating_add(1);
+        true
+    }
+
+    fn release_retained_framebuffer(&mut self) {
+        if self.retained.take().is_some() {
+            self.retained_diagnostics.releases =
+                self.retained_diagnostics.releases.saturating_add(1);
+        }
+        self.retained_diagnostics.live_bytes = 0;
+    }
+
+    fn present(
+        &mut self,
+        geometry: PresentationGeometry,
+        graphics: &GpuGraphics,
+        commands: &[PaintCommand],
+        damage: Option<&[Rect]>,
+    ) -> Result<DamageRegion, String> {
+        if geometry.pixel_width == 0 || geometry.pixel_height == 0 {
+            self.release_retained_framebuffer();
+            self.configured = false;
+            return Ok(DamageRegion::default());
+        }
+        let width = geometry.pixel_width.max(1);
+        let height = geometry.pixel_height.max(1);
+        let changed = self.config.width != width || self.config.height != height;
+        if changed || !self.configured {
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(&graphics.device, &self.config);
+            self.configured = true;
+        }
+        let scale = width as f32 / geometry.logical_width.max(1) as f32;
+        let retained = self.ensure_retained_framebuffer(graphics, width, height, scale);
+        let retained_valid = self.retained.as_ref().is_some_and(|target| target.valid);
+        let mut redraw = if retained {
+            offscreen_redraw(commands, damage, retained_valid)
+        } else {
+            OffscreenRedraw::Full
+        };
+        let mut frame = Frame::new(width, height, scale, graphics.white.clone());
+        frame.prepare(commands, graphics);
+        let clear_start = frame.vertices.len() as u32;
+        let mut damage_scissor = match redraw {
+            OffscreenRedraw::Partial(damage) => physical_scissor(damage, width, height, scale),
+            OffscreenRedraw::Full | OffscreenRedraw::Reuse => None,
+        };
+        if damage_scissor == Some((0, 0, width, height)) {
+            redraw = OffscreenRedraw::Full;
+            damage_scissor = None;
+        } else if matches!(redraw, OffscreenRedraw::Partial(_)) && damage_scissor.is_none() {
+            redraw = OffscreenRedraw::Reuse;
+        }
+        if damage_scissor.is_some() {
+            frame
+                .vertices
+                .extend_from_slice(&fullscreen_vertices([0.0; 4]));
+        }
+        let composite_start = frame.vertices.len() as u32;
+        if retained {
+            frame
+                .vertices
+                .extend_from_slice(&fullscreen_vertices([1.0; 4]));
+        }
+        let output = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(output) => output,
+            wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
+                self.configured = false;
+                output
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface.configure(&graphics.device, &self.config);
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(output)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+                    other => {
+                        return Err(format!(
+                            "cannot acquire GPU surface after reconfigure: {other:?}"
+                        ));
+                    }
+                }
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(DamageRegion::default());
+            }
+            other => return Err(format!("cannot acquire GPU surface: {other:?}")),
+        };
+        let vertex_bytes = bytemuck::cast_slice(&frame.vertices);
+        let required = vertex_bytes.len().max(std::mem::size_of::<Vertex>());
+        if required > self.vertex_capacity {
+            self.vertex_capacity = required.next_power_of_two();
+            self.vertex_buffer = Some(graphics.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Nickel shell frame vertices"),
+                size: self.vertex_capacity as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let vertex_buffer = self.vertex_buffer.as_ref().expect("frame buffer allocated");
+        if !vertex_bytes.is_empty() {
+            graphics.queue.write_buffer(vertex_buffer, 0, vertex_bytes);
+        }
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = graphics
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Nickel shell frame"),
+            });
+        {
+            let target = self
+                .retained
+                .as_ref()
+                .filter(|_| retained)
+                .map_or(&view, |retained| &retained.view);
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Nickel retained shell frame"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if matches!(redraw, OffscreenRedraw::Full) {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            if let Some(scissor) = damage_scissor {
+                pass.set_pipeline(&self.clear_pipeline);
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                pass.set_bind_group(0, graphics.white.as_ref(), &[]);
+                pass.draw(clear_start..clear_start + 6, 0..1);
+            }
+            for draw in &frame.draws {
+                let scissor = match redraw {
+                    OffscreenRedraw::Full => Some(draw.scissor),
+                    OffscreenRedraw::Partial(_) => {
+                        damage_scissor.and_then(|damage| intersect_scissor(draw.scissor, damage))
+                    }
+                    OffscreenRedraw::Reuse => None,
+                };
+                let Some(scissor) = scissor else { continue };
+                pass.set_pipeline(match draw.kind {
+                    DrawKind::Textured => &self.pipeline,
+                    DrawKind::Shape => &self.shape_pipeline,
+                });
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                pass.set_bind_group(0, draw.texture.as_ref(), &[]);
+                pass.draw(draw.start..draw.end, 0..1);
+            }
+        }
+        if let Some(retained) = self.retained.as_ref().filter(|_| retained) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Nickel shell surface composite"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_scissor_rect(0, 0, width, height);
+            pass.set_bind_group(0, retained.texture.as_ref(), &[]);
+            pass.draw(composite_start..composite_start + 6, 0..1);
+            self.retained_diagnostics.composited_frames = self
+                .retained_diagnostics
+                .composited_frames
+                .saturating_add(1);
+        } else {
+            self.retained_diagnostics.direct_full_frames = self
+                .retained_diagnostics
+                .direct_full_frames
+                .saturating_add(1);
+        }
+        graphics.queue.submit(Some(encoder.finish()));
+        match redraw {
+            OffscreenRedraw::Full => {
+                self.retained_diagnostics.full_redraws =
+                    self.retained_diagnostics.full_redraws.saturating_add(1);
+            }
+            OffscreenRedraw::Partial(_) => {
+                self.retained_diagnostics.partial_redraws =
+                    self.retained_diagnostics.partial_redraws.saturating_add(1);
+            }
+            OffscreenRedraw::Reuse => {
+                self.retained_diagnostics.unchanged_reuses =
+                    self.retained_diagnostics.unchanged_reuses.saturating_add(1);
+            }
+        }
+        if let Some(retained) = self.retained.as_mut().filter(|_| retained)
+            && !retained.valid
+        {
+            retained.valid = true;
+            self.retained_diagnostics.full_initializations = self
+                .retained_diagnostics
+                .full_initializations
+                .saturating_add(1);
+        }
+        graphics.queue.present(output);
+        Ok(DamageRegion {
+            rects: vec![Rect::new(0.0, 0.0, width as f32, height as f32)].into(),
+        })
+    }
+}
+
+struct Draw {
+    start: u32,
+    end: u32,
+    scissor: (u32, u32, u32, u32),
+    texture: Arc<wgpu::BindGroup>,
+    kind: DrawKind,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DrawKind {
+    Textured,
+    Shape,
+}
+
+struct Frame {
+    width: u32,
+    height: u32,
+    scale: f32,
+    white: Arc<wgpu::BindGroup>,
+    vertices: Vec<Vertex>,
+    draws: Vec<Draw>,
+    clips: Vec<Rect>,
+}
+
+fn fullscreen_vertices(color: [f32; 4]) -> [Vertex; 6] {
+    let top_left = Vertex {
+        position: [-1.0, 1.0],
+        uv: [0.0, 0.0],
+        color,
+        half_size: [0.0; 2],
+        shape: [0.0; 2],
+    };
+    let top_right = Vertex {
+        position: [1.0, 1.0],
+        uv: [1.0, 0.0],
+        color,
+        half_size: [0.0; 2],
+        shape: [0.0; 2],
+    };
+    let bottom_left = Vertex {
+        position: [-1.0, -1.0],
+        uv: [0.0, 1.0],
+        color,
+        half_size: [0.0; 2],
+        shape: [0.0; 2],
+    };
+    let bottom_right = Vertex {
+        position: [1.0, -1.0],
+        uv: [1.0, 1.0],
+        color,
+        half_size: [0.0; 2],
+        shape: [0.0; 2],
+    };
+    [
+        top_left,
+        bottom_left,
+        top_right,
+        top_right,
+        bottom_left,
+        bottom_right,
+    ]
+}
+
+impl Frame {
+    fn new(width: u32, height: u32, scale: f32, white: Arc<wgpu::BindGroup>) -> Self {
+        Self {
+            width,
+            height,
+            scale,
+            white,
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            clips: vec![Rect::new(
+                0.0,
+                0.0,
+                width as f32 / scale,
+                height as f32 / scale,
+            )],
+        }
+    }
+
+    fn rect(
+        &mut self,
+        rect: Rect,
+        color: [f32; 4],
+        texture: Arc<wgpu::BindGroup>,
+        kind: DrawKind,
+        radius: f32,
+        stroke: f32,
+    ) {
+        let clip = *self.clips.last().expect("frame clip");
+        if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
+            return;
+        }
+        if intersect(rect, clip).is_none() {
+            return;
+        }
+        let x0 = (rect.origin.x * self.scale / self.width as f32) * 2.0 - 1.0;
+        let y0 = 1.0 - (rect.origin.y * self.scale / self.height as f32) * 2.0;
+        let x1 = ((rect.origin.x + rect.size.width) * self.scale / self.width as f32) * 2.0 - 1.0;
+        let y1 = 1.0 - ((rect.origin.y + rect.size.height) * self.scale / self.height as f32) * 2.0;
+        let half_size = [
+            rect.size.width * self.scale * 0.5,
+            rect.size.height * self.scale * 0.5,
+        ];
+        let shape = [radius * self.scale, stroke * self.scale];
+        let corners = [
+            Vertex {
+                position: [x0, y0],
+                uv: [0.0, 0.0],
+                color,
+                half_size,
+                shape,
+            },
+            Vertex {
+                position: [x1, y0],
+                uv: [1.0, 0.0],
+                color,
+                half_size,
+                shape,
+            },
+            Vertex {
+                position: [x0, y1],
+                uv: [0.0, 1.0],
+                color,
+                half_size,
+                shape,
+            },
+            Vertex {
+                position: [x1, y1],
+                uv: [1.0, 1.0],
+                color,
+                half_size,
+                shape,
+            },
+        ];
+        let start = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(&[
+            corners[0], corners[2], corners[1], corners[1], corners[2], corners[3],
+        ]);
+        let sx = (clip.origin.x * self.scale)
+            .floor()
+            .clamp(0.0, self.width as f32) as u32;
+        let sy = (clip.origin.y * self.scale)
+            .floor()
+            .clamp(0.0, self.height as f32) as u32;
+        let ex = ((clip.origin.x + clip.size.width) * self.scale)
+            .ceil()
+            .clamp(0.0, self.width as f32) as u32;
+        let ey = ((clip.origin.y + clip.size.height) * self.scale)
+            .ceil()
+            .clamp(0.0, self.height as f32) as u32;
+        if ex > sx && ey > sy {
+            let scissor = (sx, sy, ex - sx, ey - sy);
+            if let Some(last) = self.draws.last_mut()
+                && last.end == start
+                && last.scissor == scissor
+                && Arc::ptr_eq(&last.texture, &texture)
+                && last.kind == kind
+            {
+                last.end += 6;
+                return;
+            }
+            self.draws.push(Draw {
+                start,
+                end: start + 6,
+                scissor,
+                texture,
+                kind,
+            });
+        }
+    }
+
+    fn solid(&mut self, rect: Rect, color: u32) {
+        self.rect(
+            rect,
+            rgb(color),
+            self.white.clone(),
+            DrawKind::Textured,
+            0.0,
+            0.0,
+        );
+    }
+
+    fn rounded(&mut self, rect: Rect, color: u32, radius: f32, top_only: bool) {
+        if top_only {
+            for (span, shaded) in
+                crate::backend::rounded_coverage_spans(rect, color, radius, None, true, self.scale)
+            {
+                self.solid(span, shaded);
+            }
+        } else {
+            self.rect(
+                rect,
+                rgb(color),
+                self.white.clone(),
+                DrawKind::Shape,
+                radius,
+                0.0,
+            );
+        }
+    }
+
+    fn prepare(&mut self, commands: &[PaintCommand], graphics: &GpuGraphics) {
+        for command in commands {
+            match command {
+                PaintCommand::BackdropBlur { .. } => {}
+                PaintCommand::Fill { rect, color } | PaintCommand::OverlayFill { rect, color } => {
+                    self.solid(*rect, *color)
+                }
+                PaintCommand::RoundedFill {
+                    rect,
+                    color,
+                    radius,
+                } => self.rounded(*rect, *color, *radius, false),
+                PaintCommand::TopRoundedFill {
+                    rect,
+                    color,
+                    radius,
+                } => self.rounded(*rect, *color, *radius, true),
+                PaintCommand::RoundedStroke {
+                    rect,
+                    color,
+                    width,
+                    radius,
+                } => {
+                    self.rect(
+                        *rect,
+                        rgb(*color),
+                        self.white.clone(),
+                        DrawKind::Shape,
+                        *radius,
+                        *width,
+                    );
+                }
+                PaintCommand::Gradient { rect, gradient } => {
+                    let horizontal = gradient.axis == GradientAxis::Horizontal;
+                    let extent = if horizontal {
+                        rect.size.width
+                    } else {
+                        rect.size.height
+                    };
+                    for step in 0..extent.ceil().max(1.0) as u32 {
+                        let at = step as f32;
+                        let color = mix(
+                            gradient.start,
+                            gradient.end,
+                            ((at + 0.5) / extent.max(1.0)).clamp(0.0, 1.0),
+                        );
+                        let strip = if horizontal {
+                            Rect::new(
+                                rect.origin.x + at,
+                                rect.origin.y,
+                                (extent - at).min(1.0),
+                                rect.size.height,
+                            )
+                        } else {
+                            Rect::new(
+                                rect.origin.x,
+                                rect.origin.y + at,
+                                rect.size.width,
+                                (extent - at).min(1.0),
+                            )
+                        };
+                        self.solid(strip, color);
+                    }
+                }
+                PaintCommand::Stroke { rect, color, width }
+                | PaintCommand::OverlayStroke { rect, color, width } => {
+                    let w = width.max(0.0).min(rect.size.width).min(rect.size.height);
+                    self.solid(
+                        Rect::new(rect.origin.x, rect.origin.y, rect.size.width, w),
+                        *color,
+                    );
+                    self.solid(
+                        Rect::new(
+                            rect.origin.x,
+                            rect.origin.y + rect.size.height - w,
+                            rect.size.width,
+                            w,
+                        ),
+                        *color,
+                    );
+                    self.solid(
+                        Rect::new(
+                            rect.origin.x,
+                            rect.origin.y + w,
+                            w,
+                            (rect.size.height - 2.0 * w).max(0.0),
+                        ),
+                        *color,
+                    );
+                    self.solid(
+                        Rect::new(
+                            rect.origin.x + rect.size.width - w,
+                            rect.origin.y + w,
+                            w,
+                            (rect.size.height - 2.0 * w).max(0.0),
+                        ),
+                        *color,
+                    );
+                }
+                PaintCommand::Text { bounds, .. } | PaintCommand::StyledText { bounds, .. } => {
+                    if bounds.size.width > 0.0
+                        && bounds.size.height > 0.0
+                        && intersect(*bounds, *self.clips.last().unwrap()).is_some()
+                    {
+                        let texture = graphics.text_texture(command, *bounds, self.scale);
+                        self.rect(*bounds, [1.0; 4], texture, DrawKind::Textured, 0.0, 0.0);
+                    }
+                }
+                PaintCommand::Image {
+                    bounds,
+                    id,
+                    generation,
+                    image,
+                    high_density,
+                } => {
+                    if bounds.size.width <= 0.0
+                        || bounds.size.height <= 0.0
+                        || intersect(*bounds, *self.clips.last().expect("frame clip")).is_none()
+                    {
+                        continue;
+                    }
+                    let selected = high_density
+                        .as_ref()
+                        .filter(|_| self.scale >= 1.5)
+                        .unwrap_or(image);
+                    if selected.width() == 0 || selected.height() == 0 {
+                        continue;
+                    }
+                    let key = format!(
+                        "image:{id}:{generation}:{}:{}:{}:{:p}",
+                        self.scale >= 1.5,
+                        selected.width(),
+                        selected.height(),
+                        Arc::as_ptr(selected),
+                    );
+                    let cached = graphics.textures.borrow().entries.get(&key).cloned();
+                    let texture = if let Some(cached) = cached {
+                        cached
+                    } else {
+                        let mut bytes = selected.as_raw().clone();
+                        for pixel in bytes.as_chunks_mut::<4>().0.iter_mut() {
+                            let alpha = pixel[3] as u16;
+                            for channel in &mut pixel[..3] {
+                                *channel = ((*channel as u16 * alpha + 127) / 255) as u8;
+                            }
+                        }
+                        graphics.texture(key, selected.width(), selected.height(), &bytes)
+                    };
+                    self.rect(*bounds, [1.0; 4], texture, DrawKind::Textured, 0.0, 0.0);
+                }
+                PaintCommand::PushClip(rect) => {
+                    let clip = *self.clips.last().unwrap();
+                    self.clips
+                        .push(intersect(clip, *rect).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)));
+                }
+                PaintCommand::PopClip => {
+                    if self.clips.len() > 1 {
+                        self.clips.pop();
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+    let x = a.origin.x.max(b.origin.x);
+    let y = a.origin.y.max(b.origin.y);
+    let right = (a.origin.x + a.size.width).min(b.origin.x + b.size.width);
+    let bottom = (a.origin.y + a.size.height).min(b.origin.y + b.size.height);
+    (right > x && bottom > y).then(|| Rect::new(x, y, right - x, bottom - y))
+}
+
+fn rgb(color: u32) -> [f32; 4] {
+    let alpha = if color <= 0x00ff_ffff {
+        1.0
+    } else {
+        ((color >> 24) & 255) as f32 / 255.0
+    };
+    [
+        ((color >> 16) & 255) as f32 / 255.0 * alpha,
+        ((color >> 8) & 255) as f32 / 255.0 * alpha,
+        (color & 255) as f32 / 255.0 * alpha,
+        alpha,
+    ]
+}
+
+fn mix(start: u32, end: u32, at: f32) -> u32 {
+    let channel = |shift: u32| {
+        let a = if shift == 24 && start <= 0x00ff_ffff {
+            255
+        } else {
+            (start >> shift) & 255
+        };
+        let b = if shift == 24 && end <= 0x00ff_ffff {
+            255
+        } else {
+            (end >> shift) & 255
+        };
+        (a as f32 + (b as f32 - a as f32) * at).round() as u32
+    };
+    channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_framebuffer_obeys_memory_budget() {
+        assert_eq!(retained_framebuffer_bytes(1920, 1080), Some(8_294_400));
+        assert_eq!(retained_framebuffer_bytes(u32::MAX, u32::MAX), None);
+    }
+
+    #[test]
+    fn retained_damage_selects_full_partial_and_reuse() {
+        let commands = [PaintCommand::Fill {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            color: 0xffffff,
+        }];
+        assert_eq!(
+            offscreen_redraw(&commands, None, true),
+            OffscreenRedraw::Full
+        );
+        assert_eq!(
+            offscreen_redraw(&commands, Some(&[]), true),
+            OffscreenRedraw::Reuse
+        );
+        assert_eq!(
+            offscreen_redraw(&commands, Some(&[Rect::new(2.0, 3.0, 4.0, 5.0)]), true),
+            OffscreenRedraw::Partial(Rect::new(2.0, 3.0, 4.0, 5.0))
+        );
+    }
+
+    #[test]
+    fn physical_scissor_clips_to_surface() {
+        assert_eq!(
+            physical_scissor(Rect::new(-2.0, 3.0, 8.0, 5.0), 20, 20, 2.0),
+            Some((0, 6, 12, 10))
+        );
+        assert_eq!(
+            physical_scissor(Rect::new(30.0, 30.0, 2.0, 2.0), 20, 20, 1.0),
+            None
+        );
+    }
+}

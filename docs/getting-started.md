@@ -127,11 +127,12 @@ To build reusable components or a Rust design system, follow the
 
 ## Current feature surface
 
-The default `twinkle-ui` dependency includes native controller discovery. Hosted-controller or
-controller-free applications can omit gilrs with
-`twinkle-ui = { version = "0.2", default-features = false }`; the controller event vocabulary
-remains available. Native windowing, clipboard support, image support, and software presentation
-currently remain core capabilities. It does not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and
+The default `twinkle-ui` dependency includes native controller discovery and GPU presentation.
+The standalone runtime prefers wgpu and automatically falls back to software presentation. Set
+`TWINKLE_RENDERER=software` to force the fallback for diagnostics. With
+`default-features = false`, both `native-controller` and `gpu-presenter` are omitted; either can be
+enabled explicitly, while the controller event vocabulary and software presenter remain
+available. It does not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and
 `twinkle-workbench` crates and is enabled there with their `jsx` feature.
 
 For a Rust host that deliberately executes TSX, use the

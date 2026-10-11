@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "native-controller")]
-use gilrs::Gilrs;
+use gilrs::{Gilrs, GilrsBuilder};
 #[cfg(feature = "native-controller")]
 use twinkle_input::controller::{ControllerEvent, ControllerNormalizer};
 #[cfg(any(feature = "native-controller", test))]
@@ -465,7 +465,11 @@ impl ControllerInput {
 
     /// Initializes native discovery, logging and retaining an unavailable source on failure.
     pub fn new() -> Self {
-        let gilrs = Gilrs::new()
+        // Twinkle exposes no force-feedback API. Gilrs otherwise starts a
+        // permanent 50 ms mixer loop even when no effect is ever created.
+        let gilrs = GilrsBuilder::new()
+            .with_force_feedback(false)
+            .build()
             .map_err(|error| tracing::warn!(%error, "controller input is unavailable"))
             .ok();
         let connected = gilrs
