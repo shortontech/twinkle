@@ -800,6 +800,14 @@ impl<Message: Clone> UiFrame<Message> {
         self.declaration_root.clone()
     }
 
+    /// Transfers the retained immutable declaration into a consuming rebuild.
+    /// Callers must only use this when the old frame will not remain published
+    /// if staging fails; transactional/blocking-overlay staging uses the
+    /// cloning accessor above instead.
+    pub(crate) fn take_retained_declaration(&mut self) -> Option<Element<Message>> {
+        self.declaration_root.take()
+    }
+
     fn open_primary_overlay(
         &self,
         state: &mut UiStateStore,

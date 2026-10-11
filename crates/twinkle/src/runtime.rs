@@ -4088,17 +4088,21 @@ impl<A: Application> UiHost<A> {
             .is_some_and(|pending| pending.frame_generation.is_some());
         let context = ViewContext::from_host(self.bounds, &self.state, Some(&self.tree));
         let overlay_interaction = OverlayInteractionSnapshot::capture(&self.state, &self.tree);
-        let paint_started = Instant::now();
-        let view = retain
-            .then(|| self.tree.retained_declaration())
-            .flatten()
-            .unwrap_or_else(|| {
-                view_calls += 1;
-                crate::Component::into_element(self.application.view(context.clone()))
-            });
-        let overlays = self.application.frame_overlays(context);
+        let overlays = self.application.frame_overlays(context.clone());
         let open_overlay = self.state.open_overlay_id().cloned();
         let blocking_overlay = blocking_overlay_is_open(&overlays, open_overlay.as_ref());
+        let paint_started = Instant::now();
+        let retained_view = retain.then(|| {
+            if blocking_overlay {
+                self.tree.retained_declaration()
+            } else {
+                self.tree.take_retained_declaration()
+            }
+        });
+        let view = retained_view.flatten().unwrap_or_else(|| {
+            view_calls += 1;
+            crate::Component::into_element(self.application.view(context.clone()))
+        });
         let paint_list_us = elapsed_us(paint_started);
         let layout_started = Instant::now();
 
