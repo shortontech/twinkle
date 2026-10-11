@@ -1198,6 +1198,10 @@ fn transient_overlay_restores_canonical_declaration_before_publication() {
 
 #[test]
 fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
+    assert!(
+        std::mem::size_of::<layout::TransientStylePatch>() < std::mem::size_of::<Style>(),
+        "a transient style patch must remain smaller than a complete style"
+    );
     let mut state = UiStateStore::default();
     state.set_hovered(Some(UiId::from("root/button")));
     let mut declaration = Container::<TestMessage>::new()

@@ -1102,7 +1102,7 @@ fn kind_clone_cost(kind: &Kind) -> (usize, usize) {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct TransientStylePatch {
+pub(super) struct TransientStylePatch {
     background: Option<Option<Background>>,
     border: Option<Option<Color>>,
     border_width: Option<f32>,
