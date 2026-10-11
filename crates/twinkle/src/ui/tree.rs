@@ -244,6 +244,20 @@ pub struct AccessibilityNode {
     pub value: Option<SemanticValueSnapshot>,
 }
 
+/// Compact frame-owned authority for an accessibility projection.
+///
+/// Semantic strings, actions, identity and interaction state remain owned by
+/// the corresponding resolved node. The public adapter record is materialized
+/// lazily only when a consumer asks for accessibility nodes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AccessibilityDescriptor {
+    resolved_index: usize,
+    parent: Option<usize>,
+    rect: Rect,
+    navigation_depth: usize,
+    collection_position: Option<(usize, usize)>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DiagnosticKind {
     ContradictoryConstraints,
@@ -432,6 +446,10 @@ pub struct FrameResourceDiagnostics {
     pub retained_arena_bytes: usize,
     /// Accessibility records and their directly owned strings/action buffers.
     pub accessibility_storage_bytes: usize,
+    /// Lazily materialized public accessibility adapter snapshot. This is zero
+    /// until [`UiFrame::accessibility_nodes`] is requested and is included in
+    /// `accessibility_storage_bytes` when present.
+    pub accessibility_projection_bytes: usize,
     /// Paint command, fragment, overlay, and damage-vector storage.
     pub paint_storage_bytes: usize,
     /// Hit, message, text-input, selection, and scroll-region vector storage.
@@ -620,7 +638,8 @@ pub struct UiFrame<Message = String> {
     selection_paints: HashMap<usize, Vec<Rect>>,
     scrolls: Vec<ScrollRegion<Message>>,
     grids: Vec<ResolvedGrid>,
-    accessibility: Vec<AccessibilityNode>,
+    accessibility: Vec<AccessibilityDescriptor>,
+    accessibility_projection: std::sync::OnceLock<Vec<AccessibilityNode>>,
     accessibility_indices: HashMap<UiId, usize>,
     semantic_role_name_index: HashMap<(SemanticRole, String), Vec<usize>>,
     semantic_parents: Vec<Option<usize>>,
@@ -686,6 +705,7 @@ impl<Message> Default for UiFrame<Message> {
             scrolls: Vec::new(),
             grids: Vec::new(),
             accessibility: Vec::new(),
+            accessibility_projection: std::sync::OnceLock::new(),
             accessibility_indices: HashMap::new(),
             semantic_role_name_index: HashMap::new(),
             semantic_parents: Vec::new(),
@@ -1436,28 +1456,12 @@ impl<Message: Clone> UiFrame<Message> {
                     command,
                 });
             }
-            self.accessibility.push(AccessibilityNode {
-                id: id.clone(),
-                parent: Some(menu_id.clone()),
-                component: "MenuItem",
+            self.accessibility.push(AccessibilityDescriptor {
+                resolved_index: item_index,
+                parent: Some(menu_index),
                 rect: item_rect,
-                interactive: enabled,
-                label: Some(item.label.clone()),
-                description: None,
-                role: Some("menuitem".into()),
-                state: None,
-                controls: (!item.children.is_empty()).then(|| id.scoped("submenu")),
-                semantic_role: Some(SemanticRole::MenuItem),
-                actions: enabled
-                    .then_some(ActionKind::Activate)
-                    .into_iter()
-                    .collect(),
-                enabled,
-                focused: interaction.focused,
-                controller_selected: interaction.controller_selected,
                 navigation_depth: depth,
                 collection_position: None,
-                value: None,
             });
             if active_submenu.is_some_and(|(active, _)| active == index) {
                 submenu = Some((id, item_index, item_rect, item.children.as_slice()));
@@ -1533,25 +1537,12 @@ impl<Message: Clone> UiFrame<Message> {
         self.resolved.nodes[parent_index]
             .children
             .push(submenu_index);
-        self.accessibility.push(AccessibilityNode {
-            id: submenu_id.clone(),
-            parent: Some(parent_id),
-            component: "Menu",
+        self.accessibility.push(AccessibilityDescriptor {
+            resolved_index: submenu_index,
+            parent: Some(parent_index),
             rect: submenu_rect,
-            interactive: false,
-            label: None,
-            description: None,
-            role: Some(SemanticRole::Menu.as_str().into()),
-            state: None,
-            controls: None,
-            semantic_role: Some(SemanticRole::Menu),
-            actions: Vec::new(),
-            enabled: true,
-            focused: false,
-            controller_selected: false,
             navigation_depth: depth + 1,
             collection_position: None,
-            value: None,
         });
         let descendant = self.emit_overlay_menu_items(
             state,
@@ -1582,6 +1573,7 @@ impl<Message: Clone> UiFrame<Message> {
         state: &mut UiStateStore,
         mut menu: crate::OverlayMenu<Message>,
     ) -> Result<(), SemanticActionError> {
+        self.accessibility_projection.take();
         menu = menu.fit_width_to_content(self.viewport.size.width - 4.0);
         let requested = menu.anchor.id().clone();
         let suffix = format!("/{}", requested.as_str());
@@ -1690,25 +1682,12 @@ impl<Message: Clone> UiFrame<Message> {
             semantic_value: None,
             children: Vec::with_capacity(item_count),
         });
-        self.accessibility.push(AccessibilityNode {
-            id: menu.id.as_ui_id().clone(),
+        self.accessibility.push(AccessibilityDescriptor {
+            resolved_index: menu_index,
             parent: None,
-            component: "Menu",
             rect,
-            interactive: false,
-            label: None,
-            description: None,
-            role: Some(SemanticRole::Menu.as_str().into()),
-            state: None,
-            controls: None,
-            semantic_role: Some(SemanticRole::Menu),
-            actions: Vec::new(),
-            enabled: true,
-            focused: false,
-            controller_selected: false,
             navigation_depth: 1,
             collection_position: None,
-            value: None,
         });
         if menu.focus == crate::OverlayFocusPolicy::FirstItem
             && let Some(item) = menu.items.iter().find(|item| {
@@ -1775,8 +1754,10 @@ impl<Message: Clone> UiFrame<Message> {
             .filter(|node| self.is_descendant_or_self(overlay_root, &node.id))
             .map(|node| node.id.clone())
             .collect::<BTreeSet<_>>();
-        self.accessibility
-            .retain(|node| overlay_accessibility.contains(&node.id));
+        let resolved = &self.resolved.nodes;
+        self.accessibility.retain(|descriptor| {
+            overlay_accessibility.contains(&resolved[descriptor.resolved_index].id)
+        });
         Ok(())
     }
 
@@ -2827,7 +2808,41 @@ impl<Message: Clone> UiFrame<Message> {
     }
 
     pub fn accessibility_nodes(&self) -> &[AccessibilityNode] {
-        &self.accessibility
+        self.accessibility_projection
+            .get_or_init(|| {
+                self.accessibility
+                    .iter()
+                    .map(|descriptor| {
+                        let node = &self.resolved.nodes[descriptor.resolved_index];
+                        AccessibilityNode {
+                            id: node.id.clone(),
+                            parent: descriptor
+                                .parent
+                                .map(|parent| self.resolved.nodes[parent].id.clone()),
+                            component: node.component,
+                            rect: descriptor.rect,
+                            interactive: node.interaction.interactive,
+                            label: node.accessibility_label.clone(),
+                            description: node.accessibility_description.clone(),
+                            role: node
+                                .semantic_role
+                                .map(|role| role.as_str().to_owned())
+                                .or_else(|| node.accessibility_role.clone()),
+                            state: node.accessibility_state.clone(),
+                            controls: node.accessibility_controls.clone(),
+                            semantic_role: node.semantic_role,
+                            actions: node.semantic_actions.clone(),
+                            enabled: !node.semantic_actions.is_empty(),
+                            focused: node.interaction.focused,
+                            controller_selected: node.interaction.controller_selected,
+                            navigation_depth: descriptor.navigation_depth,
+                            collection_position: descriptor.collection_position,
+                            value: node.semantic_value.clone(),
+                        }
+                    })
+                    .collect()
+            })
+            .as_slice()
     }
 
     pub(crate) fn navigation_depth(&self, state: &UiStateStore) -> usize {
@@ -3742,7 +3757,10 @@ impl<Message: Clone> UiFrame<Message> {
             + self.selection_regions.capacity() * std::mem::size_of::<SelectionRegionLayout>()
             + self.scrolls.capacity() * std::mem::size_of::<ScrollRegion<Message>>()
             + self.grids.capacity() * std::mem::size_of::<ResolvedGrid>()
-            + self.accessibility.capacity() * std::mem::size_of::<AccessibilityNode>()
+            + self.accessibility.capacity() * std::mem::size_of::<AccessibilityDescriptor>()
+            + self.accessibility_projection.get().map_or(0, |projection| {
+                projection.capacity() * std::mem::size_of::<AccessibilityNode>()
+            })
             + self.resolved.nodes.capacity() * std::mem::size_of::<ResolvedNode>()
             + self.diagnostics.capacity() * std::mem::size_of::<LayoutDiagnostic>()
     }
@@ -3755,16 +3773,20 @@ impl<Message: Clone> UiFrame<Message> {
             .iter()
             .map(|node| node.children.capacity() * std::mem::size_of::<usize>())
             .sum::<usize>();
-        let accessibility_strings = self
-            .accessibility
-            .iter()
-            .map(|node| {
-                node.label.as_ref().map_or(0, String::capacity)
-                    + node.description.as_ref().map_or(0, String::capacity)
-                    + node.role.as_ref().map_or(0, String::capacity)
-                    + node.state.as_ref().map_or(0, String::capacity)
-            })
-            .sum::<usize>();
+        let accessibility_projection_bytes =
+            self.accessibility_projection.get().map_or(0, |projection| {
+                projection.capacity() * std::mem::size_of::<AccessibilityNode>()
+                    + projection
+                        .iter()
+                        .map(|node| {
+                            node.label.as_ref().map_or(0, String::capacity)
+                                + node.description.as_ref().map_or(0, String::capacity)
+                                + node.role.as_ref().map_or(0, String::capacity)
+                                + node.state.as_ref().map_or(0, String::capacity)
+                                + node.actions.capacity() * std::mem::size_of::<ActionKind>()
+                        })
+                        .sum::<usize>()
+            });
         let declaration_tree_bytes = self
             .declaration_root
             .as_ref()
@@ -3813,13 +3835,8 @@ impl<Message: Clone> UiFrame<Message> {
             + self.grids.capacity() * std::mem::size_of::<ResolvedGrid>();
         let retained_arena_bytes = self.retained_nodes.estimated_bytes();
         let accessibility_storage_bytes = self.accessibility.capacity()
-            * std::mem::size_of::<AccessibilityNode>()
-            + accessibility_strings
-            + self
-                .accessibility
-                .iter()
-                .map(|node| node.actions.capacity() * std::mem::size_of::<ActionKind>())
-                .sum::<usize>();
+            * std::mem::size_of::<AccessibilityDescriptor>()
+            + accessibility_projection_bytes;
         let paint_storage_bytes = self.commands.capacity() * std::mem::size_of::<PaintCommand>()
             + self.paint_fragments.capacity() * std::mem::size_of::<PaintFragment>()
             + self
@@ -3887,7 +3904,11 @@ impl<Message: Clone> UiFrame<Message> {
             accessibility_node_count: self.accessibility.len(),
             estimated_retained_bytes: vector_bytes
                 + node_children
-                + accessibility_strings
+                + accessibility_projection_bytes.saturating_sub(
+                    self.accessibility_projection.get().map_or(0, |projection| {
+                        projection.capacity() * std::mem::size_of::<AccessibilityNode>()
+                    }),
+                )
                 + self.retained_nodes.estimated_bytes(),
             declaration_tree_bytes,
             declaration_event_sidecar_count,
@@ -3901,6 +3922,7 @@ impl<Message: Clone> UiFrame<Message> {
             resolved_storage_bytes,
             retained_arena_bytes,
             accessibility_storage_bytes,
+            accessibility_projection_bytes,
             paint_storage_bytes,
             interaction_storage_bytes,
             index_storage_bytes,
@@ -7267,6 +7289,7 @@ impl<Message: Clone> UiFrame<Message> {
                 collection_positions[index] = collection_positions[parent];
             }
         }
+        self.accessibility_projection.take();
         self.accessibility = self
             .resolved
             .nodes
@@ -7279,9 +7302,8 @@ impl<Message: Clone> UiFrame<Message> {
                 let rect = node.clip.map_or(node.allocated, |clip| {
                     intersection(node.allocated, clip).unwrap_or(node.allocated)
                 });
-                let parent = self.semantic_parents[index]
-                    .map(|parent| self.resolved.nodes[parent].id.clone());
-                if self
+                let parent = self.semantic_parents[index];
+                let reused_descriptor = self
                     .retained_nodes
                     .phase_is_clean(&node.id, super::retained::DirtyPhases::SEMANTICS)
                     && previous.is_some_and(|previous| {
@@ -7295,44 +7317,35 @@ impl<Message: Clone> UiFrame<Message> {
                                     && old.clip == node.clip
                             })
                     })
-                    && let Some(cached) = previous.and_then(|previous| {
+                    && previous.is_some_and(|previous| {
                         previous
                             .accessibility_indices
                             .get(&node.id)
                             .and_then(|index| previous.accessibility.get(*index))
                             .filter(|cached| {
-                                cached.id == node.id
-                                    && cached.parent == parent
+                                let cached_node = &previous.resolved.nodes[cached.resolved_index];
+                                let cached_parent = cached
+                                    .parent
+                                    .map(|parent| &previous.resolved.nodes[parent].id);
+                                let parent_id =
+                                    parent.map(|parent| &self.resolved.nodes[parent].id);
+                                cached_node.id == node.id
+                                    && cached_parent == parent_id
                                     && cached.collection_position == collection_positions[index]
                             })
-                    })
-                {
+                            .is_some()
+                    });
+                if reused_descriptor {
                     reused = reused.saturating_add(1);
-                    return Some(cached.clone());
+                } else {
+                    executed = executed.saturating_add(1);
                 }
-                executed = executed.saturating_add(1);
-                Some(AccessibilityNode {
-                    id: node.id.clone(),
+                Some(AccessibilityDescriptor {
+                    resolved_index: index,
                     parent,
-                    component: node.component,
                     rect,
-                    interactive: node.interaction.interactive,
-                    label: node.accessibility_label.clone(),
-                    description: node.accessibility_description.clone(),
-                    role: node
-                        .semantic_role
-                        .map(|role| role.as_str().to_owned())
-                        .or_else(|| node.accessibility_role.clone()),
-                    state: node.accessibility_state.clone(),
-                    controls: node.accessibility_controls.clone(),
-                    semantic_role: node.semantic_role,
-                    actions: node.semantic_actions.clone(),
-                    enabled: !node.semantic_actions.is_empty(),
-                    focused: node.interaction.focused,
-                    controller_selected: node.interaction.controller_selected,
                     navigation_depth: self.navigation_depth_for_index(index),
                     collection_position: collection_positions[index],
-                    value: node.semantic_value.clone(),
                 })
             })
             .collect();
@@ -7346,15 +7359,23 @@ impl<Message: Clone> UiFrame<Message> {
                 .filter(|node| self.is_descendant_or_self(overlay.as_ui_id(), &node.id))
                 .map(|node| node.id.clone())
                 .collect::<BTreeSet<_>>();
-            self.accessibility.retain(|node| scoped.contains(&node.id));
+            let resolved = &self.resolved.nodes;
+            self.accessibility
+                .retain(|descriptor| scoped.contains(&resolved[descriptor.resolved_index].id));
         }
         self.accessibility_indices.clear();
-        self.accessibility_indices.extend(
-            self.accessibility
-                .iter()
-                .enumerate()
-                .map(|(index, node)| (node.id.clone(), index)),
-        );
+        self.accessibility_indices
+            .extend(
+                self.accessibility
+                    .iter()
+                    .enumerate()
+                    .map(|(index, descriptor)| {
+                        (
+                            self.resolved.nodes[descriptor.resolved_index].id.clone(),
+                            index,
+                        )
+                    }),
+            );
         self.semantic_role_name_index.clear();
         for (index, node) in self.resolved.nodes.iter().enumerate() {
             if self.target_is_in_active_overlay(&node.id)

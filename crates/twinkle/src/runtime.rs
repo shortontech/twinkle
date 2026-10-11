@@ -3545,6 +3545,11 @@ impl<A: Application> UiHost<A> {
                 combined.telemetry.paint_fragments_reused = work.reused_fragments;
                 combined.telemetry.paint_damage_rects = work.damage_rects;
                 combined.telemetry.semantic_nodes_reused = self.tree.accessibility_nodes().len();
+                // Accessibility adapter snapshots are materialized lazily. If
+                // this retained path is the first consumer, include that cache
+                // in the host's live frame accounting immediately.
+                self.retained_frame_bytes =
+                    self.tree.resource_diagnostics().estimated_retained_bytes;
             } else {
                 let (paint_list_us, layout_us, rebuild_outcome) = self.rebuild_timed_retaining(
                     may_retain_view && view_context_unchanged && combined.messages.is_empty(),

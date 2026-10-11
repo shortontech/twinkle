@@ -1626,6 +1626,35 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
 }
 
 #[test]
+#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
+fn accessibility_projection_is_compact_and_materialized_only_on_demand() {
+    assert_eq!(std::mem::size_of::<super::AccessibilityDescriptor>(), 72);
+    assert_eq!(std::mem::size_of::<super::AccessibilityNode>(), 280);
+
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        Button::new(TestMessage::Named("save"), "Save").id("save"),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+    let before = frame.resource_diagnostics();
+    assert_eq!(before.accessibility_projection_bytes, 0);
+
+    let snapshot = frame.accessibility_nodes();
+    assert!(!snapshot.is_empty());
+    assert!(
+        snapshot
+            .iter()
+            .any(|node| node.label.as_deref() == Some("Save"))
+    );
+    let after = frame.resource_diagnostics();
+    assert!(after.accessibility_projection_bytes > 0);
+    assert_eq!(
+        after.accessibility_storage_bytes,
+        before.accessibility_storage_bytes + after.accessibility_projection_bytes
+    );
+}
+
+#[test]
 fn ordinary_dropdown_accounts_for_only_its_compact_kind_sidecar() {
     let mut state = UiStateStore::default();
     let frame = UiFrame::resolve(
