@@ -1412,14 +1412,14 @@ fn styled_dropdown_expansion_uses_a_compact_presentation_patch() {
 }
 
 #[test]
-fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
+fn compact_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
     assert!(
         std::mem::size_of::<layout::TransientStylePatch>() < std::mem::size_of::<Style>(),
         "a transient style patch must remain smaller than a complete style"
     );
     let mut state = UiStateStore::default();
     state.set_hovered(Some(UiId::from("root/button")));
-    let mut declaration = Container::<TestMessage>::new()
+    let declaration = Container::<TestMessage>::new()
         .id("button")
         .background(0x112233)
         .hover_background(0x445566)
@@ -1428,7 +1428,7 @@ fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution(
     let root_id = UiId::from("root").scoped("button");
     let mut overlay = TransientStateJournal::default();
 
-    apply_transient_state_staged(&mut declaration, &root_id, &mut state, &mut overlay);
+    apply_transient_state_staged(&declaration, &root_id, &mut state, &mut overlay);
     assert_eq!(
         declaration.style.background,
         Some(Background::Solid(0x112233))
@@ -1437,7 +1437,7 @@ fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution(
         overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))
     );
-    overlay.detach_effective(&mut declaration, &root_id);
+    overlay.finalize(&declaration, &root_id);
 
     assert_eq!(
         declaration.style.background,
@@ -1448,7 +1448,7 @@ fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution(
         Some(Background::Solid(0x445566))
     );
     let staged_bytes = overlay.storage_bytes();
-    overlay.release_staged_styles();
+    overlay.finalize(&declaration, &root_id);
     assert_eq!(
         overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))

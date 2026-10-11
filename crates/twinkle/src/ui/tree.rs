@@ -2217,7 +2217,7 @@ impl<Message: Clone> UiFrame<Message> {
         changed_view_ids: Option<&[UiId]>,
         overlap_previous_owned_bytes: usize,
     ) -> Self {
-        let mut root = root.into_element();
+        let root = root.into_element();
         let root_id = root.id.as_ref().map_or_else(
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
@@ -2226,8 +2226,8 @@ impl<Message: Clone> UiFrame<Message> {
         state.begin_frame();
         state.begin_geometry_animation_frame();
         let mut transient_overlay = TransientStateJournal::default();
-        apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
-        transient_overlay.detach_effective(&mut root, &root_id);
+        apply_transient_state_staged(&root, &root_id, state, &mut transient_overlay);
+        transient_overlay.finalize(&root, &root_id);
         let mut tree = Self {
             // This property belongs to the immutable declaration, not the
             // pointer position. Re-evaluating it on motion walks offscreen and
@@ -2315,7 +2315,6 @@ impl<Message: Clone> UiFrame<Message> {
             &mut tree,
             previous,
         );
-        transient_overlay.attach_effective(&mut root, &root_id);
         let initial = tree
             .resolved
             .nodes
@@ -2339,10 +2338,10 @@ impl<Message: Clone> UiFrame<Message> {
             && state.navigation().controller_selected().is_none()
         {
             state.set_focus(Some(initial));
-            apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
+            transient_overlay.clear_patches();
+            apply_transient_state_staged(&root, &root_id, state, &mut transient_overlay);
         }
-        transient_overlay.detach_effective(&mut root, &root_id);
-        transient_overlay.release_staged_styles();
+        transient_overlay.finalize(&root, &root_id);
         tree.selection_regions =
             collect_selection_regions(&root, &tree.resolved, Some(&transient_overlay));
         for region in &tree.selection_regions {

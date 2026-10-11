@@ -1145,179 +1145,6 @@ pub(super) fn apply_transient_state<Message>(
     apply_transient_state_with_parent(element, id, state, None, None);
 }
 
-fn style_owned_bytes(style: &Style) -> usize {
-    style.details().map_or(0, |details| {
-        std::mem::size_of::<StyleDetails>()
-            + details
-                .accessibility_label
-                .as_ref()
-                .map_or(0, String::capacity)
-            + details
-                .accessibility_description
-                .as_ref()
-                .map_or(0, String::capacity)
-            + details
-                .accessibility_role
-                .as_ref()
-                .map_or(0, String::capacity)
-            + details
-                .accessibility_state
-                .as_ref()
-                .map_or(0, String::capacity)
-            + details
-                .selection_run_id
-                .as_ref()
-                .map_or(0, String::capacity)
-            + details
-                .interaction_paints
-                .as_ref()
-                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
-            + details
-                .editing_parts
-                .as_ref()
-                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
-            + details
-                .editing_menu
-                .as_ref()
-                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
-            + details
-                .scrollbar_parts
-                .as_ref()
-                .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
-    })
-}
-
-fn style_clone_cost(style: &Style) -> (usize, usize) {
-    let allocations = style.details().map_or(0, |details| {
-        1 + [
-            details.accessibility_label.as_ref(),
-            details.accessibility_description.as_ref(),
-            details.accessibility_role.as_ref(),
-            details.accessibility_state.as_ref(),
-            details.selection_run_id.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|value| value.capacity() != 0)
-        .count()
-            + usize::from(details.interaction_paints.is_some())
-            + usize::from(details.editing_parts.is_some())
-            + usize::from(details.editing_menu.is_some())
-            + usize::from(details.scrollbar_parts.is_some())
-    });
-    (
-        std::mem::size_of::<Style>() + style_owned_bytes(style),
-        allocations,
-    )
-}
-
-fn kind_owned_bytes(kind: &Kind) -> usize {
-    match kind {
-        Kind::Grid {
-            columns: GridColumnSpec::Tracks(tracks),
-        } => tracks.capacity() * std::mem::size_of::<Track>(),
-        Kind::CustomPaintCommands { commands } => {
-            commands.capacity() * std::mem::size_of::<PaintCommand>()
-        }
-        Kind::Text { value, details, .. } => {
-            value.capacity()
-                + details.as_ref().map_or(0, |details| {
-                    std::mem::size_of::<TextDetails>()
-                        + details.input_value.as_ref().map_or(0, String::capacity)
-                        + details
-                            .input_placeholder
-                            .as_ref()
-                            .map_or(0, String::capacity)
-                })
-        }
-        Kind::StyledText(styled) => {
-            std::mem::size_of::<StyledTextKind>()
-                + styled.value.capacity()
-                + styled.spans.capacity() * std::mem::size_of::<StyledTextSpan>()
-        }
-        Kind::Slider { presentation, .. } => presentation
-            .as_ref()
-            .map_or(0, |value| std::mem::size_of_val(value.as_ref())),
-        Kind::Dropdown(dropdown) => {
-            std::mem::size_of::<DropdownKind>()
-                + dropdown.selected.capacity()
-                + dropdown.options.capacity() * std::mem::size_of::<String>()
-                + dropdown.options.iter().map(String::capacity).sum::<usize>()
-                + dropdown
-                    .presentation
-                    .as_ref()
-                    .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
-                + dropdown.details.as_ref().map_or(0, |details| {
-                    std::mem::size_of::<DropdownDetails>()
-                        + details.option_presentations.capacity()
-                            * std::mem::size_of::<DropdownPartStyle>()
-                        + details.resolved_options.capacity()
-                            * std::mem::size_of::<DropdownPartStyle>()
-                        + details.option_icons.capacity()
-                            * std::mem::size_of::<Option<(u16, Arc<RgbaImage>, u64)>>()
-                })
-        }
-        Kind::Flex(_)
-        | Kind::Layer
-        | Kind::VerticalScroll { .. }
-        | Kind::Grid { .. }
-        | Kind::CustomPaint { .. }
-        | Kind::Image { .. } => 0,
-    }
-}
-
-fn kind_clone_cost(kind: &Kind) -> (usize, usize) {
-    let allocated = |capacity: usize| usize::from(capacity != 0);
-    let allocations = match kind {
-        Kind::Grid {
-            columns: GridColumnSpec::Tracks(tracks),
-        } => allocated(tracks.capacity()),
-        Kind::CustomPaintCommands { commands } => allocated(commands.capacity()),
-        Kind::Text { value, details, .. } => {
-            allocated(value.capacity())
-                + details.as_ref().map_or(0, |details| {
-                    1 + details
-                        .input_value
-                        .as_ref()
-                        .map_or(0, |value| allocated(value.capacity()))
-                        + details
-                            .input_placeholder
-                            .as_ref()
-                            .map_or(0, |value| allocated(value.capacity()))
-                })
-        }
-        Kind::StyledText(styled) => {
-            1 + allocated(styled.value.capacity()) + allocated(styled.spans.capacity())
-        }
-        Kind::Slider { presentation, .. } => usize::from(presentation.is_some()),
-        Kind::Dropdown(dropdown) => {
-            1 + allocated(dropdown.selected.capacity())
-                + allocated(dropdown.options.capacity())
-                + dropdown
-                    .options
-                    .iter()
-                    .map(|value| allocated(value.capacity()))
-                    .sum::<usize>()
-                + usize::from(dropdown.presentation.is_some())
-                + dropdown.details.as_ref().map_or(0, |details| {
-                    1 + allocated(details.option_presentations.capacity())
-                        + allocated(details.resolved_options.capacity())
-                        + allocated(details.option_icons.capacity())
-                })
-        }
-        Kind::Flex(_)
-        | Kind::Layer
-        | Kind::VerticalScroll { .. }
-        | Kind::Grid { .. }
-        | Kind::CustomPaint { .. }
-        | Kind::Image { .. } => 0,
-    };
-    (
-        std::mem::size_of::<Kind>() + kind_owned_bytes(kind),
-        allocations,
-    )
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct TransientStylePatch {
     background: Option<Option<Background>>,
@@ -1332,27 +1159,6 @@ pub(super) struct TransientStylePatch {
 }
 
 impl TransientStylePatch {
-    fn between(canonical: &Style, effective: &Style) -> Option<Self> {
-        let patch = Self {
-            background: (canonical.background != effective.background)
-                .then_some(effective.background),
-            border: (canonical.border != effective.border).then_some(effective.border),
-            border_width: (canonical.border_width != effective.border_width)
-                .then_some(effective.border_width),
-            foreground: (canonical.foreground != effective.foreground)
-                .then_some(effective.foreground),
-            corner_radius: (canonical.corner_radius != effective.corner_radius)
-                .then_some(effective.corner_radius),
-            width: (canonical.width != effective.width).then_some(effective.width),
-            height: (canonical.height != effective.height).then_some(effective.height),
-            scroll_offset_x: (canonical.scroll_offset_x != effective.scroll_offset_x)
-                .then_some(effective.scroll_offset_x),
-            scroll_offset: (canonical.scroll_offset != effective.scroll_offset)
-                .then_some(effective.scroll_offset),
-        };
-        (patch != Self::default()).then_some(patch)
-    }
-
     fn merge(&mut self, newer: Self) {
         if newer.background.is_some() {
             self.background = newer.background;
@@ -1517,9 +1323,7 @@ impl std::ops::Deref for EffectiveStyle<'_> {
 
 #[derive(Default)]
 pub(super) struct TransientStateJournal {
-    styles: std::collections::HashMap<UiId, Style>,
     style_patches: std::collections::HashMap<UiId, TransientStylePatch>,
-    kinds: std::collections::HashMap<UiId, Kind>,
     vertical_scroll_offsets: std::collections::HashMap<UiId, f32>,
     dropdown_expanded: std::collections::HashMap<UiId, bool>,
     text_patches: std::collections::HashMap<UiId, TransientTextPatch>,
@@ -1527,12 +1331,6 @@ pub(super) struct TransientStateJournal {
     slider_presentations: std::collections::HashMap<UiId, [ResolvedPartStyle; 3]>,
     dropdown_presentations: std::collections::HashMap<UiId, ResolvedDropdownPresentation>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
-    whole_payload_clone_bytes: usize,
-    whole_payload_clone_allocations: usize,
-    style_clone_bytes: usize,
-    style_clone_allocations: usize,
-    kind_clone_bytes: usize,
-    kind_clone_allocations: usize,
 }
 
 #[derive(Debug)]
@@ -1595,8 +1393,7 @@ impl TransientStateJournal {
     }
 
     pub(super) fn kind_count(&self) -> usize {
-        self.kinds.len()
-            + self.vertical_scroll_offsets.len()
+        self.vertical_scroll_offsets.len()
             + self.dropdown_expanded.len()
             + self.text_patches.len()
             + self.text_format_patches.len()
@@ -1605,33 +1402,31 @@ impl TransientStateJournal {
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
-        self.whole_payload_clone_bytes
+        0
     }
 
     pub(super) fn whole_payload_clone_allocations(&self) -> usize {
-        self.whole_payload_clone_allocations
+        0
     }
 
     pub(super) fn style_clone_bytes(&self) -> usize {
-        self.style_clone_bytes
+        0
     }
 
     pub(super) fn style_clone_allocations(&self) -> usize {
-        self.style_clone_allocations
+        0
     }
 
     pub(super) fn kind_clone_bytes(&self) -> usize {
-        self.kind_clone_bytes
+        0
     }
 
     pub(super) fn kind_clone_allocations(&self) -> usize {
-        self.kind_clone_allocations
+        0
     }
 
     pub(super) fn storage_bytes(&self) -> usize {
-        self.styles.capacity() * std::mem::size_of::<(UiId, Style)>()
-            + self.style_patches.capacity() * std::mem::size_of::<(UiId, TransientStylePatch)>()
-            + self.kinds.capacity() * std::mem::size_of::<(UiId, Kind)>()
+        self.style_patches.capacity() * std::mem::size_of::<(UiId, TransientStylePatch)>()
             + self.vertical_scroll_offsets.capacity() * std::mem::size_of::<(UiId, f32)>()
             + self.dropdown_expanded.capacity() * std::mem::size_of::<(UiId, bool)>()
             + self.text_patches.capacity() * std::mem::size_of::<(UiId, TransientTextPatch)>()
@@ -1643,8 +1438,6 @@ impl TransientStateJournal {
                 * std::mem::size_of::<(UiId, ResolvedDropdownPresentation)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
-            + self.styles.values().map(style_owned_bytes).sum::<usize>()
-            + self.kinds.values().map(kind_owned_bytes).sum::<usize>()
             + self
                 .text_patches
                 .values()
@@ -1660,9 +1453,7 @@ impl TransientStateJournal {
     }
 
     pub(super) fn table_allocations(&self) -> usize {
-        usize::from(self.styles.capacity() != 0)
-            + usize::from(self.style_patches.capacity() != 0)
-            + usize::from(self.kinds.capacity() != 0)
+        usize::from(self.style_patches.capacity() != 0)
             + usize::from(self.vertical_scroll_offsets.capacity() != 0)
             + usize::from(self.dropdown_expanded.capacity() != 0)
             + usize::from(self.text_patches.capacity() != 0)
@@ -1678,67 +1469,27 @@ impl TransientStateJournal {
         self.phases.iter().map(|(id, phases)| (id, *phases))
     }
 
-    /// Restores the canonical declaration while retaining the effective
-    /// transient payloads in this side table. This creates the ownership
-    /// boundary needed for resolution to read through the table without
-    /// modifying the declaration it will publish.
-    pub(super) fn detach_effective<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
-        self.detach_effective_tree(element, id, true);
+    pub(super) fn finalize<Message>(&mut self, element: &Element<Message>, id: &UiId) {
+        self.finalize_tree(element, id);
     }
 
-    pub(super) fn attach_effective<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
-        self.detach_effective_tree(element, id, false);
+    pub(super) fn clear_patches(&mut self) {
+        self.style_patches.clear();
+        self.vertical_scroll_offsets.clear();
+        self.dropdown_expanded.clear();
+        self.text_patches.clear();
+        self.text_format_patches.clear();
+        self.slider_presentations.clear();
+        self.dropdown_presentations.clear();
+        self.phases.clear();
     }
 
-    /// Drops the Stage A whole-style bridge after the final detach. All later
-    /// consumers read the compact field patch against the canonical style.
-    pub(super) fn release_staged_styles(&mut self) {
-        self.styles = std::collections::HashMap::new();
-    }
-
-    fn detach_effective_tree<Message>(
-        &mut self,
-        element: &mut Element<Message>,
-        id: &UiId,
-        derive_patches: bool,
-    ) {
-        for (index, child) in element.children.iter_mut().enumerate() {
+    fn finalize_tree<Message>(&mut self, element: &Element<Message>, id: &UiId) {
+        for (index, child) in element.children.iter().enumerate() {
             let child_id = resolved_child_id(id, child, index);
-            self.detach_effective_tree(child, &child_id, derive_patches);
+            self.finalize_tree(child, &child_id);
         }
-        let had_staged_style = self.styles.contains_key(id);
-        if let Some(canonical) = self.styles.get_mut(id) {
-            std::mem::swap(canonical, &mut element.style);
-        }
-        if self
-            .styles
-            .get(id)
-            .is_some_and(|effective| *effective == element.style)
-        {
-            self.styles.remove(id);
-        }
-        if let Some(canonical) = self.kinds.get_mut(id) {
-            std::mem::swap(canonical, &mut element.kind);
-        }
-        if self.kinds.get(id).is_some_and(|effective| {
-            super::super::retained::exact_kind_metadata_equal(effective, &element.kind)
-        }) {
-            self.kinds.remove(id);
-        }
-        let effective_style = self.styles.get(id).unwrap_or(&element.style);
-        if derive_patches && had_staged_style {
-            if let Some(patch) = TransientStylePatch::between(&element.style, effective_style) {
-                self.style_patches.insert(id.clone(), patch);
-            } else {
-                self.style_patches.remove(id);
-            }
-        }
-        let effective_kind = self.kinds.get(id).unwrap_or(&element.kind);
-        let mut dirty = super::super::retained::transient_dirty_phases(
-            element,
-            effective_style,
-            effective_kind,
-        );
+        let mut dirty = super::super::retained::DirtyPhases::default();
         if let Some(patch) = self.style_patches.get(id) {
             use super::super::retained::DirtyPhases;
             if patch.width.is_some() || patch.height.is_some() {
@@ -1829,7 +1580,6 @@ impl TransientStateJournal {
         } else {
             self.phases.insert(id.clone(), dirty);
         }
-        compact_kind_capacity(&mut element.kind);
     }
 
     pub(super) fn style<'a, Message>(
@@ -1842,10 +1592,10 @@ impl TransientStateJournal {
 
     pub(super) fn kind<'a, Message>(
         &'a self,
-        id: &UiId,
+        _id: &UiId,
         element: &'a Element<Message>,
     ) -> &'a Kind {
-        self.kinds.get(id).unwrap_or(&element.kind)
+        &element.kind
     }
 
     pub(super) fn vertical_scroll_offset(&self, id: &UiId, canonical: f32) -> f32 {
@@ -1930,18 +1680,17 @@ impl TransientStateJournal {
     }
 
     fn has_direct_style_patch(&self, id: &UiId) -> bool {
-        self.styles.get(id).is_none() && self.style_patches.contains_key(id)
+        self.style_patches.contains_key(id)
     }
 }
 
 pub(super) fn apply_transient_state_staged<Message>(
-    element: &mut Element<Message>,
+    element: &Element<Message>,
     id: &UiId,
     state: &mut UiStateStore,
     overlay: &mut TransientStateJournal,
 ) {
     capture_transient_state(element, id, state, None, None, 1.0, overlay);
-    apply_transient_state_with_parent(element, id, state, None, Some(overlay));
 }
 
 fn local_transient_style_patch<Message>(
@@ -2159,7 +1908,7 @@ fn project_dropdown_presentation(
 }
 
 fn capture_transient_state<Message>(
-    element: &mut Element<Message>,
+    element: &Element<Message>,
     id: &UiId,
     state: &mut UiStateStore,
     parent_interaction: Option<usize>,
@@ -2195,6 +1944,27 @@ fn capture_transient_state<Message>(
                 .is_some_and(|scope| scope.pane)
                 && state.navigation().controller_pane() == Some(id)))
         && element.style.controller_scope_background.is_some();
+    let owns_state = element.style.parent_interaction
+        || element.primary_message().is_some()
+        || element.navigation_scope.is_some()
+        || element.text_mapper.is_some()
+        || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
+        || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
+        || matches!(
+            element.kind,
+            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
+        );
+    if owns_state {
+        state.touch(id.clone());
+    }
+    if element
+        .navigation_scope
+        .as_ref()
+        .is_some_and(|scope| scope.pane && scope.default_pane)
+        && state.navigation().controller_pane().is_none()
+    {
+        state.navigation_mut().set_controller_pane(Some(id.clone()));
+    }
     let direct_dropdown_supported =
         matches!(&element.kind, Kind::Dropdown(dropdown) if dropdown.presentation.is_none());
     let direct_dropdown = if let Kind::Dropdown(dropdown) = &element.kind
@@ -2226,7 +1996,7 @@ fn capture_transient_state<Message>(
     } else {
         false
     };
-    let styled_dropdown_changes = if let Kind::Dropdown(dropdown) = &element.kind
+    if let Kind::Dropdown(dropdown) = &element.kind
         && dropdown.presentation.is_some()
         && dropdown_projection_needed(element, id, state, interaction_index)
     {
@@ -2267,11 +2037,9 @@ fn capture_transient_state<Message>(
                 .dropdown_presentations
                 .insert(id.clone(), presentation);
         }
-        true
     } else {
         overlay.dropdown_presentations.remove(id);
-        false
-    };
+    }
     if inherited_geometry_scale.to_bits() != 1.0f32.to_bits() {
         let patch = overlay.style_patches.entry(id.clone()).or_default();
         if let Length::Px(width) = element.style.width {
@@ -2391,32 +2159,12 @@ fn capture_transient_state<Message>(
                 42.0
             }));
     }
-    let style_can_change = false;
-    if style_can_change {
-        if !overlay.styles.contains_key(id) {
-            let original = std::mem::take(&mut element.style);
-            element.style = original.clone();
-            let (bytes, allocations) = style_clone_cost(&element.style);
-            overlay.whole_payload_clone_bytes =
-                overlay.whole_payload_clone_bytes.saturating_add(bytes);
-            overlay.whole_payload_clone_allocations = overlay
-                .whole_payload_clone_allocations
-                .saturating_add(allocations);
-            overlay.style_clone_bytes = overlay.style_clone_bytes.saturating_add(bytes);
-            overlay.style_clone_allocations =
-                overlay.style_clone_allocations.saturating_add(allocations);
-            overlay.styles.insert(id.clone(), original);
-        }
-    }
     let text_projection_changes = text_projection_needed(element, id, state);
     if text_projection_changes && let Some(patch) = project_text_state(element, id, state) {
         overlay.text_patches.insert(id.clone(), patch);
     } else {
         overlay.text_patches.remove(id);
     }
-    let dropdown_projection_changes = !direct_dropdown
-        && !styled_dropdown_changes
-        && dropdown_projection_needed(element, id, state, interaction_index);
     let vertical_scroll_projection_changes = vertical_scroll_projection_needed(element, id, state);
     if vertical_scroll_projection_changes {
         let offset = state
@@ -2440,22 +2188,6 @@ fn capture_transient_state<Message>(
     } else {
         overlay.slider_presentations.remove(id);
     }
-    if dropdown_projection_changes {
-        if !overlay.kinds.contains_key(id) {
-            let original = std::mem::replace(&mut element.kind, Kind::Layer);
-            element.kind = original.clone();
-            let (bytes, allocations) = kind_clone_cost(&element.kind);
-            overlay.whole_payload_clone_bytes =
-                overlay.whole_payload_clone_bytes.saturating_add(bytes);
-            overlay.whole_payload_clone_allocations = overlay
-                .whole_payload_clone_allocations
-                .saturating_add(allocations);
-            overlay.kind_clone_bytes = overlay.kind_clone_bytes.saturating_add(bytes);
-            overlay.kind_clone_allocations =
-                overlay.kind_clone_allocations.saturating_add(allocations);
-            overlay.kinds.insert(id.clone(), original);
-        }
-    }
     let child_text_paint = effective_text_paint;
     let magnified_child = element.style.proximity_magnification.and_then(|_| {
         let hovered = state.hovered()?.as_str();
@@ -2470,7 +2202,7 @@ fn capture_transient_state<Message>(
                 .then_some(index)
             })
     });
-    for (index, child) in element.children.iter_mut().enumerate() {
+    for (index, child) in element.children.iter().enumerate() {
         let child_id = resolved_child_id(id, child, index);
         let local_scale = element
             .style

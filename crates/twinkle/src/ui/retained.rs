@@ -1447,7 +1447,8 @@ fn exact_phase_matches<Message>(
     }
 }
 
-pub(super) fn transient_dirty_phases<Message>(
+#[cfg(test)]
+fn transient_dirty_phases<Message>(
     canonical: &Element<Message>,
     effective_style: &Style,
     effective_kind: &Kind,
