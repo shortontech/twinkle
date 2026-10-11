@@ -1193,6 +1193,40 @@ fn transient_overlay_restores_canonical_declaration_before_publication() {
 }
 
 #[test]
+fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
+    let mut state = UiStateStore::default();
+    state.set_hovered(Some(UiId::from("root/button")));
+    let mut declaration = Container::<TestMessage>::new()
+        .id("button")
+        .background(0x112233)
+        .hover_background(0x445566)
+        .message(TestMessage::Named("activate"))
+        .into_element();
+    let root_id = UiId::from("root").scoped("button");
+    let mut overlay = TransientStateJournal::default();
+
+    apply_transient_state_staged(&mut declaration, &root_id, &mut state, &mut overlay);
+    assert_eq!(
+        declaration.style.background,
+        Some(Background::Solid(0x445566))
+    );
+    overlay.detach_effective(&mut declaration, &root_id);
+
+    assert_eq!(
+        declaration.style.background,
+        Some(Background::Solid(0x112233))
+    );
+    assert_eq!(
+        overlay.style(&root_id, &declaration).background,
+        Some(Background::Solid(0x445566))
+    );
+    assert_eq!(
+        overlay.kind(&root_id, &declaration).name(),
+        declaration.kind.name()
+    );
+}
+
+#[test]
 fn transient_journal_preserves_canonical_kind_allocation_ownership() {
     let mut state = UiStateStore::default();
     let declaration = Dropdown::new(
@@ -1221,7 +1255,11 @@ fn transient_journal_preserves_canonical_kind_allocation_ownership() {
     };
 
     assert_eq!(retained_dropdown, original_dropdown);
-    assert!(frame.resource_diagnostics().transient_kind_overlay_count > 0);
+    assert_eq!(
+        frame.resource_diagnostics().transient_kind_overlay_count,
+        0,
+        "an unchanged closed dropdown needs no effective kind payload"
+    );
 }
 
 fn legacy_is_descendant_or_self<Message: Clone>(

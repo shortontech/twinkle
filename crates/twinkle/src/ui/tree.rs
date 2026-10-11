@@ -2188,6 +2188,7 @@ impl<Message: Clone> UiFrame<Message> {
         state.begin_geometry_animation_frame();
         let mut transient_overlay = TransientStateJournal::default();
         apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
+        transient_overlay.detach_effective(&mut root, &root_id);
         let mut tree = Self {
             // This property belongs to the immutable declaration, not the
             // pointer position. Re-evaluating it on motion walks offscreen and
@@ -2263,6 +2264,9 @@ impl<Message: Clone> UiFrame<Message> {
             tree.retained_nodes
                 .reconcile_against(&root, previous_declaration);
         }
+        tree.retained_nodes
+            .invalidate_transient_overlay(transient_overlay.affected_ids());
+        transient_overlay.attach_effective(&mut root, &root_id);
         layout_element(&root, &root_id, bounds, None, None, &mut tree, previous);
         let initial = tree
             .resolved

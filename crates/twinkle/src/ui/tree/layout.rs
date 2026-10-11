@@ -897,10 +897,72 @@ impl TransientStateJournal {
         self.kinds.len()
     }
 
+    pub(super) fn affected_ids(&self) -> impl Iterator<Item = &UiId> {
+        self.styles.keys().chain(self.kinds.keys())
+    }
+
     pub(super) fn restore<Message>(mut self, element: &mut Element<Message>, id: &UiId) {
         self.restore_tree(element, id);
         debug_assert!(self.styles.is_empty());
         debug_assert!(self.kinds.is_empty());
+    }
+
+    /// Restores the canonical declaration while retaining the effective
+    /// transient payloads in this side table. This creates the ownership
+    /// boundary needed for resolution to read through the table without
+    /// modifying the declaration it will publish.
+    pub(super) fn detach_effective<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
+        self.detach_effective_tree(element, id);
+    }
+
+    pub(super) fn attach_effective<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
+        self.detach_effective_tree(element, id);
+    }
+
+    fn detach_effective_tree<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
+        for (index, child) in element.children.iter_mut().enumerate() {
+            let child_id = resolved_child_id(id, child, index);
+            self.detach_effective_tree(child, &child_id);
+        }
+        if let Some(canonical) = self.styles.get_mut(id) {
+            std::mem::swap(canonical, &mut element.style);
+        }
+        if self
+            .styles
+            .get(id)
+            .is_some_and(|effective| *effective == element.style)
+        {
+            self.styles.remove(id);
+        }
+        if let Some(canonical) = self.kinds.get_mut(id) {
+            std::mem::swap(canonical, &mut element.kind);
+        }
+        if self
+            .kinds
+            .get(id)
+            .is_some_and(|effective| *effective == element.kind)
+        {
+            self.kinds.remove(id);
+        }
+        compact_kind_capacity(&mut element.kind);
+    }
+
+    #[cfg(test)]
+    pub(super) fn style<'a, Message>(
+        &'a self,
+        id: &UiId,
+        element: &'a Element<Message>,
+    ) -> &'a Style {
+        self.styles.get(id).unwrap_or(&element.style)
+    }
+
+    #[cfg(test)]
+    pub(super) fn kind<'a, Message>(
+        &'a self,
+        id: &UiId,
+        element: &'a Element<Message>,
+    ) -> &'a Kind {
+        self.kinds.get(id).unwrap_or(&element.kind)
     }
 
     fn restore_tree<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {

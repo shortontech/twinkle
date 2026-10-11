@@ -1643,6 +1643,38 @@ impl RetainedNodeArena {
             .map(|node| node.subtree_nodes)
     }
 
+    /// Applies state-overlay invalidation after canonical declaration
+    /// reconciliation. The temporary all-phase marker is conservative until
+    /// the property overlay carries exact per-phase masks.
+    pub(crate) fn invalidate_transient_overlay<'a>(
+        &mut self,
+        ids: impl IntoIterator<Item = &'a UiId>,
+    ) {
+        let mut pending = self.pending_commit.iter().copied().collect::<HashSet<_>>();
+        for id in ids {
+            let Some(mut current) = self.lookup_id(id).copied() else {
+                continue;
+            };
+            loop {
+                let parent = {
+                    let node = self.nodes.get_mut(&current).expect("retained overlay node");
+                    node.dirty.insert(DirtyPhases::ALL);
+                    node.subtree_dirty.insert(DirtyPhases::ALL);
+                    node.subtree_layout_clean = false;
+                    node.invalidate_dirty_phases();
+                    node.parent
+                };
+                if pending.insert(current) {
+                    self.pending_commit.push(current);
+                }
+                let Some(parent) = parent else {
+                    break;
+                };
+                current = parent;
+            }
+        }
+    }
+
     pub(crate) fn is_descendant_or_self(&self, ancestor: &UiId, candidate: &UiId) -> bool {
         let (Some(&ancestor), Some(mut candidate)) =
             (self.lookup_id(ancestor), self.lookup_id(candidate).copied())
