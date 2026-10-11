@@ -8095,21 +8095,31 @@ fn measure_element_effective<Message>(
             presentation: Some(parts),
             ..
         } if style.css_paint => {
-            let parts = context.map_or(parts.as_ref(), |(id, overlay)| {
-                overlay
-                    .slider_presentation(id, Some(parts.as_ref()))
-                    .expect("canonical slider presentation")
-            });
-            Size::new(
-                parts
-                    .iter()
-                    .map(|part| part.width + part.margin.width())
-                    .fold(0.0, f32::max),
-                parts
-                    .iter()
-                    .map(|part| part.height + part.margin.height())
-                    .fold(0.0, f32::max),
-            )
+            if let Some(resolved) =
+                context.and_then(|(id, overlay)| overlay.slider_presentation(id))
+            {
+                Size::new(
+                    resolved
+                        .iter()
+                        .map(|part| part.width + part.margin.width())
+                        .fold(0.0, f32::max),
+                    resolved
+                        .iter()
+                        .map(|part| part.height + part.margin.height())
+                        .fold(0.0, f32::max),
+                )
+            } else {
+                Size::new(
+                    parts
+                        .iter()
+                        .map(|part| part.width + part.margin.width())
+                        .fold(0.0, f32::max),
+                    parts
+                        .iter()
+                        .map(|part| part.height + part.margin.height())
+                        .fold(0.0, f32::max),
+                )
+            }
         }
         Kind::Slider { .. } => Size::new(120.0, 24.0),
         Kind::Dropdown(dropdown) => {

@@ -1524,7 +1524,7 @@ pub(super) struct TransientStateJournal {
     dropdown_expanded: std::collections::HashMap<UiId, bool>,
     text_patches: std::collections::HashMap<UiId, TransientTextPatch>,
     text_format_patches: std::collections::HashMap<UiId, TransientTextFormatPatch>,
-    slider_presentations: std::collections::HashMap<UiId, [DropdownPartStyle; 3]>,
+    slider_presentations: std::collections::HashMap<UiId, [ResolvedPartStyle; 3]>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1546,6 +1546,39 @@ struct TransientTextPatch {
 struct TransientTextFormatPatch {
     scale: Option<f32>,
     line_height: Option<f32>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ResolvedPartStyle {
+    pub(super) width: f32,
+    pub(super) height: f32,
+    pub(super) padding: Insets,
+    pub(super) margin: Insets,
+    pub(super) background: Option<Color>,
+    pub(super) foreground: Option<Color>,
+    pub(super) border_color: Option<Color>,
+    pub(super) border_width: f32,
+    pub(super) radius: f32,
+    pub(super) font_size: f32,
+    pub(super) line_height: f32,
+}
+
+impl From<DropdownPartStyle> for ResolvedPartStyle {
+    fn from(style: DropdownPartStyle) -> Self {
+        Self {
+            width: style.width,
+            height: style.height,
+            padding: style.padding,
+            margin: style.margin,
+            background: style.background,
+            foreground: style.foreground,
+            border_color: style.border_color,
+            border_width: style.border_width,
+            radius: style.radius,
+            font_size: style.font_size,
+            line_height: style.line_height,
+        }
+    }
 }
 
 impl TransientStateJournal {
@@ -1596,7 +1629,7 @@ impl TransientStateJournal {
             + self.text_format_patches.capacity()
                 * std::mem::size_of::<(UiId, TransientTextFormatPatch)>()
             + self.slider_presentations.capacity()
-                * std::mem::size_of::<(UiId, [DropdownPartStyle; 3])>()
+                * std::mem::size_of::<(UiId, [ResolvedPartStyle; 3])>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
@@ -1843,12 +1876,8 @@ impl TransientStateJournal {
             .or(canonical)
     }
 
-    pub(super) fn slider_presentation<'a>(
-        &'a self,
-        id: &UiId,
-        canonical: Option<&'a [DropdownPartStyle; 3]>,
-    ) -> Option<&'a [DropdownPartStyle; 3]> {
-        self.slider_presentations.get(id).or(canonical)
+    pub(super) fn slider_presentation(&self, id: &UiId) -> Option<&[ResolvedPartStyle; 3]> {
+        self.slider_presentations.get(id)
     }
 
     fn has_direct_slider_presentation(&self, id: &UiId) -> bool {
@@ -2273,7 +2302,7 @@ fn capture_transient_state<Message>(
     {
         overlay.slider_presentations.insert(
             id.clone(),
-            (*parts.as_ref()).map(|part| part.with_interaction(index)),
+            (*parts.as_ref()).map(|part| part.with_interaction(index).into()),
         );
     } else {
         overlay.slider_presentations.remove(id);

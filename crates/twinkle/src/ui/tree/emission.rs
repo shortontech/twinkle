@@ -1,3 +1,4 @@
+use super::layout::ResolvedPartStyle;
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,6 +30,26 @@ pub(super) fn paint_dropdown_part(
     commands: &mut Vec<PaintCommand>,
     rect: Rect,
     style: &DropdownPartStyle,
+    text: &str,
+    align: TextAlign,
+) {
+    paint_part_fields(commands, rect, ResolvedPartStyle::from(*style), text, align);
+}
+
+fn paint_resolved_part(
+    commands: &mut Vec<PaintCommand>,
+    rect: Rect,
+    style: &ResolvedPartStyle,
+    text: &str,
+    align: TextAlign,
+) {
+    paint_part_fields(commands, rect, *style, text, align);
+}
+
+fn paint_part_fields(
+    commands: &mut Vec<PaintCommand>,
+    rect: Rect,
+    style: ResolvedPartStyle,
     text: &str,
     align: TextAlign,
 ) {
@@ -147,7 +168,11 @@ fn translate_custom_command(mut command: PaintCommand, origin: Point) -> PaintCo
     command
 }
 
-fn slider_track_rect(content: Rect, style: &DropdownPartStyle) -> Rect {
+fn resolved_slider_track_rect(content: Rect, style: &ResolvedPartStyle) -> Rect {
+    slider_track_rect_fields(content, *style)
+}
+
+fn slider_track_rect_fields(content: Rect, style: ResolvedPartStyle) -> Rect {
     let available = content.inset(style.margin);
     Rect::new(
         available.origin.x,
@@ -207,10 +232,11 @@ pub(super) fn emit_element<Message: Clone>(
             presentation: Some(parts),
             ..
         } if style.css_paint => {
+            let canonical = (*parts.as_ref()).map(ResolvedPartStyle::from);
             let parts = overlay
-                .and_then(|overlay| overlay.slider_presentation(&node.id, Some(parts.as_ref())))
-                .unwrap_or(parts.as_ref());
-            let track = slider_track_rect(node.content, &parts[0]).inset(parts[0].padding);
+                .and_then(|overlay| overlay.slider_presentation(&node.id))
+                .unwrap_or(&canonical);
+            let track = resolved_slider_track_rect(node.content, &parts[0]).inset(parts[0].padding);
             Rect::new(
                 track.origin.x,
                 node.content.origin.y,
@@ -876,13 +902,16 @@ pub(super) fn emit_element<Message: Clone>(
             if !phases.paint {
                 return;
             }
+            let canonical = presentation
+                .as_ref()
+                .map(|parts| (*parts.as_ref()).map(ResolvedPartStyle::from));
             let presentation = overlay
-                .and_then(|overlay| overlay.slider_presentation(&node.id, presentation.as_deref()))
-                .or(presentation.as_deref());
+                .and_then(|overlay| overlay.slider_presentation(&node.id))
+                .or(canonical.as_ref());
             if let Some(parts) = presentation {
                 let track_style = &parts[0];
-                let track_rect = slider_track_rect(node.content, track_style);
-                paint_dropdown_part(
+                let track_rect = resolved_slider_track_rect(node.content, track_style);
+                paint_resolved_part(
                     &mut tree.commands,
                     track_rect,
                     track_style,
@@ -902,7 +931,7 @@ pub(super) fn emit_element<Message: Clone>(
                         fill_available.size.height
                     },
                 );
-                paint_dropdown_part(
+                paint_resolved_part(
                     &mut tree.commands,
                     fill_rect,
                     fill_style,
@@ -925,7 +954,7 @@ pub(super) fn emit_element<Message: Clone>(
                     width,
                     height,
                 );
-                paint_dropdown_part(
+                paint_resolved_part(
                     &mut tree.commands,
                     thumb_rect,
                     thumb_style,
