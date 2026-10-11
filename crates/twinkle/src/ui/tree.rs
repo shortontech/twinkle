@@ -549,18 +549,19 @@ pub struct FrameResourceDiagnostics {
     /// Inline payload bytes of navigation-scope declarations.
     pub declaration_navigation_sidecar_bytes: usize,
     /// Declaration nodes deep-cloned solely to stage transient state. Ordinary
-    /// resolution keeps this at zero by journaling only mutated style/kind
-    /// payloads and restoring the canonical declaration before publication.
+    /// resolution keeps this at zero by deriving compact patches from the
+    /// immutable canonical declaration.
     pub transient_declaration_nodes_cloned: usize,
-    /// Canonical style payloads journaled while transient state is active.
+    /// Nodes with compact transient style patches.
     pub transient_style_overlay_count: usize,
-    /// Canonical kind payloads journaled while transient state is active.
+    /// Nodes with compact typed kind-state patches.
     pub transient_kind_overlay_count: usize,
-    /// Bytes copied solely to construct whole-payload transient journal
-    /// entries, including inline payloads and directly owned nested storage.
+    /// Bytes copied solely to construct whole-payload transient overrides,
+    /// including inline payloads and directly owned nested storage. The compact
+    /// overlay path keeps this at zero; the counter guards against regressions.
     pub transient_whole_payload_clone_bytes: usize,
     /// Heap allocations performed by nested storage cloned solely for
-    /// whole-payload transient journal entries. Hash-table allocations are
+    /// whole-payload transient overrides. Overlay table allocations are
     /// reported separately below.
     pub transient_whole_payload_clone_allocations: usize,
     /// Portion of `transient_whole_payload_clone_bytes` attributable to
@@ -574,9 +575,9 @@ pub struct FrameResourceDiagnostics {
     /// Nested allocations attributable to complete `Kind` payload clones.
     pub transient_kind_clone_allocations: usize,
     /// Peak inline hash-table and retained payload storage of the transient
-    /// journal before it is dropped at publication.
+    /// overlay before it is dropped at publication.
     pub transient_overlay_storage_bytes: usize,
-    /// Hash-table allocations owned by the transient journal at its peak.
+    /// Hash-table allocations owned by the transient overlay at its peak.
     pub transient_overlay_table_allocations: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
