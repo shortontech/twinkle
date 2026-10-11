@@ -519,6 +519,13 @@ pub struct FrameResourceDiagnostics {
     /// allocator metadata, and allocations recursively owned by `Message` are
     /// excluded.
     pub declaration_allocation_count: usize,
+    /// Deduplicated allocation bytes for `UiId` payloads directly reachable
+    /// from declaration and resolved records, including Arc control storage
+    /// and string capacity. Frame-external state-store IDs are excluded.
+    pub ui_id_shared_storage_bytes: usize,
+    /// Deduplicated Arc and string-buffer allocations represented by
+    /// `ui_id_shared_storage_bytes`.
+    pub ui_id_shared_allocation_count: usize,
     /// Number of separately allocated event sidecars in the retained
     /// declaration. Each interactive element owns at most one sidecar even
     /// when it declares several handlers.
@@ -3978,6 +3985,77 @@ impl<Message: Clone> UiFrame<Message> {
             + self.diagnostics.capacity() * std::mem::size_of::<LayoutDiagnostic>()
     }
 
+    fn ui_id_shared_storage(&self) -> (usize, usize) {
+        fn record(
+            id: &UiId,
+            seen: &mut HashSet<usize>,
+            allocations: &mut usize,
+            bytes: &mut usize,
+        ) {
+            if seen.insert(id.allocation_identity()) {
+                *allocations = allocations.saturating_add(id.retained_allocation_count());
+                *bytes = bytes.saturating_add(id.retained_allocation_bytes());
+            }
+        }
+
+        fn navigation(
+            scope: &NavigationScope,
+            seen: &mut HashSet<usize>,
+            allocations: &mut usize,
+            bytes: &mut usize,
+        ) {
+            for id in [
+                scope.scroll_owner.as_ref(),
+                scope.neighbors.up.as_ref(),
+                scope.neighbors.down.as_ref(),
+                scope.neighbors.left.as_ref(),
+                scope.neighbors.right.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                record(id, seen, allocations, bytes);
+            }
+        }
+
+        fn declaration<Message>(
+            element: &Element<Message>,
+            seen: &mut HashSet<usize>,
+            allocations: &mut usize,
+            bytes: &mut usize,
+        ) {
+            if let Some(id) = &element.id {
+                record(id, seen, allocations, bytes);
+            }
+            if let Some(id) = &element.style.accessibility_controls {
+                record(id, seen, allocations, bytes);
+            }
+            if let Some(scope) = &element.navigation_scope {
+                navigation(scope, seen, allocations, bytes);
+            }
+            for child in &element.children {
+                declaration(child, seen, allocations, bytes);
+            }
+        }
+
+        let mut seen = HashSet::new();
+        let mut allocations = 0usize;
+        let mut bytes = 0usize;
+        if let Some(root) = &self.declaration_root {
+            declaration(root, &mut seen, &mut allocations, &mut bytes);
+        }
+        for node in &self.resolved.nodes {
+            record(&node.id, &mut seen, &mut allocations, &mut bytes);
+            if let Some(id) = &node.accessibility_controls {
+                record(id, &mut seen, &mut allocations, &mut bytes);
+            }
+            if let Some(scope) = &node.navigation_scope {
+                navigation(scope, &mut seen, &mut allocations, &mut bytes);
+            }
+        }
+        (allocations, bytes)
+    }
+
     pub fn resource_diagnostics(&self) -> FrameResourceDiagnostics {
         let vector_bytes = self.resource_vector_bytes();
         let node_children = self
@@ -4008,6 +4086,8 @@ impl<Message: Clone> UiFrame<Message> {
             .declaration_root
             .as_ref()
             .map_or(0, Self::declaration_allocation_count);
+        let (ui_id_shared_allocation_count, ui_id_shared_storage_bytes) =
+            self.ui_id_shared_storage();
         let (declaration_event_sidecar_count, declaration_event_sidecar_bytes) = self
             .declaration_root
             .as_ref()
@@ -4115,6 +4195,7 @@ impl<Message: Clone> UiFrame<Message> {
             + self.diagnostic_keys.capacity() * std::mem::size_of::<(DiagnosticKind, UiId)>()
             + self.seen_ids.capacity() * std::mem::size_of::<UiId>();
         let estimated_owned_bytes = declaration_tree_bytes
+            + ui_id_shared_storage_bytes
             + resolved_storage_bytes
             + retained_arena_bytes
             + accessibility_storage_bytes
@@ -4140,6 +4221,8 @@ impl<Message: Clone> UiFrame<Message> {
                 + self.retained_nodes.estimated_bytes(),
             declaration_tree_bytes,
             declaration_allocation_count,
+            ui_id_shared_storage_bytes,
+            ui_id_shared_allocation_count,
             declaration_event_sidecar_count,
             declaration_event_sidecar_bytes,
             declaration_kind_sidecar_count,

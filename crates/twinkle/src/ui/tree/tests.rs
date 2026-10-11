@@ -1702,6 +1702,7 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     assert_eq!(
         resources.estimated_owned_bytes,
         resources.declaration_tree_bytes
+            + resources.ui_id_shared_storage_bytes
             + resources.resolved_storage_bytes
             + resources.retained_arena_bytes
             + resources.accessibility_storage_bytes
@@ -1717,10 +1718,10 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
 #[test]
 #[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
 fn accessibility_projection_is_compact_and_materialized_only_on_demand() {
-    assert_eq!(std::mem::size_of::<super::ResolvedNode>(), 240);
-    assert_eq!(std::mem::size_of::<super::ResolvedNodeDetails>(), 416);
+    assert_eq!(std::mem::size_of::<super::ResolvedNode>(), 232);
+    assert_eq!(std::mem::size_of::<super::ResolvedNodeDetails>(), 360);
     assert_eq!(std::mem::size_of::<super::AccessibilityDescriptor>(), 72);
-    assert_eq!(std::mem::size_of::<super::AccessibilityNode>(), 280);
+    assert_eq!(std::mem::size_of::<super::AccessibilityNode>(), 256);
 
     let mut state = UiStateStore::default();
     let frame = UiFrame::resolve(

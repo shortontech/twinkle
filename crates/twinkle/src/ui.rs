@@ -3421,9 +3421,9 @@ mod background_policy_tests {
     #[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
     fn common_declaration_record_sizes_stay_compact() {
         assert_eq!(std::mem::size_of::<Kind>(), 64);
-        assert_eq!(std::mem::size_of::<Element<usize>>(), 464);
+        assert_eq!(std::mem::size_of::<Element<usize>>(), 456);
         assert_eq!(std::mem::size_of::<Style>(), 128);
-        assert_eq!(std::mem::size_of::<StyleDetails>(), 368);
+        assert_eq!(std::mem::size_of::<StyleDetails>(), 360);
         assert_eq!(std::mem::size_of::<DropdownKind>(), 88);
         assert_eq!(std::mem::size_of::<DropdownDetails>(), 96);
     }

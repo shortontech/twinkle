@@ -1,8 +1,9 @@
 //! Stable component identity and runtime-owned interaction state.
 
 use std::{
-    collections::HashMap,
-    sync::Arc,
+    collections::{HashMap, hash_map::RandomState},
+    hash::{BuildHasher, Hash, Hasher},
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -24,23 +25,81 @@ pub enum InputModality {
 }
 
 /// Stable component identity used to retain state across declarative rebuilds.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct UiId(Arc<str>);
+#[derive(Clone)]
+pub struct UiId(Arc<UiIdData>);
+
+struct UiIdData {
+    value: String,
+    fingerprint: u64,
+}
+
+fn ui_id_fingerprint(value: &str) -> u64 {
+    static RANDOM_STATE: OnceLock<RandomState> = OnceLock::new();
+    let mut hasher = RANDOM_STATE.get_or_init(RandomState::new).build_hasher();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
 
 impl UiId {
     /// Creates an identity from an application-stable string.
     pub fn new(value: impl Into<String>) -> Self {
-        Self(Arc::from(value.into()))
+        let value = value.into();
+        let fingerprint = ui_id_fingerprint(&value);
+        Self(Arc::new(UiIdData { value, fingerprint }))
     }
 
     /// Creates a descendant identity by appending a slash-separated segment.
     pub fn scoped(&self, child: impl AsRef<str>) -> Self {
-        Self::new(format!("{}/{}", self.0, child.as_ref()))
+        Self::new(format!("{}/{}", self.as_str(), child.as_ref()))
     }
 
     /// Returns the complete stable identity.
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.0.value
+    }
+
+    pub(crate) fn allocation_identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
+    pub(crate) fn retained_allocation_bytes(&self) -> usize {
+        2 * std::mem::size_of::<usize>() + std::mem::size_of::<UiIdData>() + self.0.value.capacity()
+    }
+
+    pub(crate) fn retained_allocation_count(&self) -> usize {
+        1 + usize::from(self.0.value.capacity() != 0)
+    }
+}
+
+impl std::fmt::Debug for UiId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("UiId").field(&self.as_str()).finish()
+    }
+}
+
+impl PartialEq for UiId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for UiId {}
+
+impl PartialOrd for UiId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for UiId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Hash for UiId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0.fingerprint);
     }
 }
 
@@ -1027,15 +1086,17 @@ mod tests {
         use std::hash::{Hash, Hasher};
         let id = UiId::new("files/toolbar/location");
         let cloned = id.clone();
+        let equal = UiId::new(id.as_str());
         assert!(Arc::ptr_eq(&id.0, &cloned.0));
-        assert_eq!(id, UiId::new(id.as_str()));
+        assert_eq!(id, equal);
         assert_eq!(id.scoped("child").as_str(), "files/toolbar/location/child");
         assert!(UiId::new("a") < UiId::new("b"));
         let mut id_hash = std::hash::DefaultHasher::new();
-        let mut text_hash = std::hash::DefaultHasher::new();
+        let mut equal_hash = std::hash::DefaultHasher::new();
         id.hash(&mut id_hash);
-        id.as_str().hash(&mut text_hash);
-        assert_eq!(id_hash.finish(), text_hash.finish());
+        equal.hash(&mut equal_hash);
+        assert_eq!(id_hash.finish(), equal_hash.finish());
+        assert_eq!(std::mem::size_of::<UiId>(), std::mem::size_of::<usize>());
     }
 
     #[test]

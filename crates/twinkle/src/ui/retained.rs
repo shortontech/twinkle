@@ -1303,7 +1303,7 @@ mod tests {
         eprintln!("element_inline_bytes small_message={small} large_message={large}");
         assert_eq!(std::mem::size_of::<RetainedNode>(), 128);
         assert_eq!(std::mem::size_of::<RetainedPhaseData>(), 56);
-        assert_eq!(std::mem::size_of::<RetainedNodeMetadata>(), 104);
+        assert_eq!(std::mem::size_of::<RetainedNodeMetadata>(), 88);
         assert!(
             small <= 1_032,
             "small-message Element grew to {small} bytes"
