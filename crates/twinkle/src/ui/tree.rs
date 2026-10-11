@@ -580,6 +580,7 @@ pub struct UiFrame<Message = String> {
     pointer_position_affects_geometry: bool,
     commands: Vec<PaintCommand>,
     paint_fragments: Vec<PaintFragment>,
+    paint_fragment_indices: HashMap<UiId, usize>,
     /// Logical old/new paint bounds for a proven-safe retained update. `None`
     /// means the presenter must derive damage conservatively from the complete
     /// display list.
@@ -647,6 +648,7 @@ impl<Message> Default for UiFrame<Message> {
             pointer_position_affects_geometry: false,
             commands: Vec::new(),
             paint_fragments: Vec::new(),
+            paint_fragment_indices: HashMap::new(),
             paint_damage: None,
             overlay_commands: Vec::new(),
             hits: Vec::new(),
@@ -725,16 +727,6 @@ fn pointer_position_affects_geometry<Message>(element: &Element<Message>) -> boo
             .children
             .iter()
             .any(pointer_position_affects_geometry)
-}
-
-fn independent_output_reuse_safe<Message>(element: &Element<Message>) -> bool {
-    !matches!(
-        element.kind,
-        Kind::VerticalScroll { .. } | Kind::Dropdown { .. }
-    ) && !matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
-        && !matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
-        && element.style.proximity_magnification.is_none()
-        && element.children.iter().all(independent_output_reuse_safe)
 }
 
 fn declared_child_matches(relative_target: &str, explicit_id: Option<&UiId>, index: usize) -> bool {
@@ -2071,6 +2063,9 @@ impl<Message: Clone> UiFrame<Message> {
             paint_fragments: Vec::with_capacity(
                 previous.map_or(0, |previous| previous.paint_fragments.len()),
             ),
+            paint_fragment_indices: HashMap::with_capacity(
+                previous.map_or(0, |previous| previous.paint_fragment_indices.len()),
+            ),
             hits: Vec::with_capacity(previous.map_or(0, |previous| previous.hits.len())),
             messages: Vec::with_capacity(previous.map_or(0, |previous| previous.messages.len())),
             accessibility: Vec::with_capacity(
@@ -2130,6 +2125,7 @@ impl<Message: Clone> UiFrame<Message> {
         tree.prepare_selection_paints(state);
         tree.reset_emission();
         tree.emit_incremental(&root, 0, None, previous, EmissionPhases::ALL);
+        tree.rebuild_paint_fragment_indices();
         tree.present_text_context(state);
         tree.append_scrollbars(Some(state));
         tree.commands.append(&mut tree.overlay_commands);
@@ -2264,6 +2260,7 @@ impl<Message: Clone> UiFrame<Message> {
         }
         let damage_rects = damage.len();
         self.paint_damage = Some(damage);
+        self.rebuild_paint_fragment_indices();
         self.validate_clip_commands();
         self.release_build_scratch();
         Some(RetainedPaintWork {
@@ -2289,7 +2286,10 @@ impl<Message: Clone> UiFrame<Message> {
             return;
         }
         let id = self.resolved.nodes[node_index].id.clone();
-        let translation = (previous.is_some() && independent_output_reuse_safe(element))
+        let independent_output_reuse_safe = self
+            .retained_nodes
+            .subtree_independent_output_reuse_safe(&id);
+        let translation = (previous.is_some() && independent_output_reuse_safe)
             .then(|| {
                 self.retained_layout
                     .get(&id)
@@ -2346,7 +2346,7 @@ impl<Message: Clone> UiFrame<Message> {
         }
         // Containers that synthesize or reorder output across phase boundaries
         // remain deliberately coupled until their topology has retained records.
-        if !independent_output_reuse_safe(element) {
+        if !independent_output_reuse_safe {
             execute = EmissionPhases::ALL;
         }
         if execute.paint {
@@ -2366,11 +2366,7 @@ impl<Message: Clone> UiFrame<Message> {
     }
 
     fn reuse_paint_subtree(&mut self, previous: &Self, id: &UiId, translation: Point) -> bool {
-        let Some(root_index) = previous
-            .paint_fragments
-            .iter()
-            .position(|fragment| &fragment.id == id)
-        else {
+        let Some(&root_index) = previous.paint_fragment_indices.get(id) else {
             return false;
         };
         let subtree_nodes = self.retained_nodes.subtree_node_count(id).unwrap_or(1);
@@ -3714,6 +3710,7 @@ impl<Message: Clone> UiFrame<Message> {
                 .values()
                 .map(|geometry| geometry.grid_tracks.capacity() * std::mem::size_of::<f32>())
                 .sum::<usize>()
+            + self.paint_fragment_indices.capacity() * std::mem::size_of::<(UiId, usize)>()
             + self.message_indices.capacity() * std::mem::size_of::<(UiId, Vec<usize>)>()
             + self
                 .message_indices
@@ -7237,6 +7234,7 @@ impl<Message: Clone> UiFrame<Message> {
     fn reset_emission(&mut self) {
         self.commands.clear();
         self.paint_fragments.clear();
+        self.paint_fragment_indices.clear();
         self.paint_damage = None;
         self.overlay_commands.clear();
         self.hits.clear();
@@ -7248,6 +7246,18 @@ impl<Message: Clone> UiFrame<Message> {
         for node in &mut self.resolved.nodes {
             node.hit_stack = None;
         }
+    }
+
+    fn rebuild_paint_fragment_indices(&mut self) {
+        self.paint_fragment_indices.clear();
+        self.paint_fragment_indices
+            .reserve(self.paint_fragments.len());
+        self.paint_fragment_indices.extend(
+            self.paint_fragments
+                .iter()
+                .enumerate()
+                .map(|(index, fragment)| (fragment.id.clone(), index)),
+        );
     }
 
     fn release_build_scratch(&mut self) {

@@ -169,7 +169,31 @@ pub(super) fn emit_element<Message: Clone>(
     previous: Option<&UiFrame<Message>>,
     phases: EmissionPhases,
 ) {
-    let node = tree.resolved.nodes[node_index].clone();
+    // Emission mutates output vectors and may recurse into `tree`, so holding a
+    // borrow of the resolved record is not possible across the whole function.
+    // Snapshot only the fields emission consumes instead of deep-cloning the
+    // full record (including semantic strings, actions, grid tracks and state).
+    struct EmissionNode {
+        id: UiId,
+        source: Option<SourceLocation>,
+        allocated: Rect,
+        content: Rect,
+        border_box: Rect,
+        clip: Option<Rect>,
+        children: Vec<usize>,
+    }
+    let node = {
+        let resolved = &tree.resolved.nodes[node_index];
+        EmissionNode {
+            id: resolved.id.clone(),
+            source: resolved.source,
+            allocated: resolved.allocated,
+            content: resolved.content,
+            border_box: resolved.border_box,
+            clip: resolved.clip,
+            children: resolved.children.clone(),
+        }
+    };
     let fragment_start = tree.commands.len();
     let rect = node.allocated;
     let value_bounds = match &element.kind {

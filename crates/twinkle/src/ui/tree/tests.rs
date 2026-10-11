@@ -578,6 +578,40 @@ fn retained_paint_resource_delta_matches_full_accounting_when_vectors_grow() {
 }
 
 #[test]
+fn retained_paint_fragment_index_covers_wide_reused_siblings() {
+    const SIBLINGS: usize = 512;
+    let view = || {
+        Column::new()
+            .children((0..SIBLINGS).map(|index| {
+                Text::<()>::new(format!("cell-{index}"))
+                    .id(format!("cell-{index}"))
+                    .content_revision(index as u64)
+                    .width(32.0)
+                    .height(16.0)
+            }))
+            .into_element()
+    };
+    let bounds = Rect::new(0.0, 0.0, 512.0, 8_192.0);
+    let mut state = UiStateStore::default();
+    let first = UiFrame::resolve(view(), FrameRequest::new(bounds, &mut state));
+    assert_eq!(
+        first.paint_fragment_indices.len(),
+        first.paint_fragments.len()
+    );
+    for (index, fragment) in first.paint_fragments.iter().enumerate() {
+        assert_eq!(first.paint_fragment_indices.get(&fragment.id), Some(&index));
+    }
+
+    let next = UiFrame::resolve_against(view(), FrameRequest::new(bounds, &mut state), &first);
+    assert_eq!(next.resource_diagnostics().paint_nodes_executed, 0);
+    assert_eq!(next.resource_diagnostics().paint_nodes_reused, SIBLINGS + 1);
+    assert_eq!(
+        next.paint_fragment_indices.len(),
+        next.paint_fragments.len()
+    );
+}
+
+#[test]
 fn local_paint_saves_only_affected_subtree_hit_records() {
     for count in [100, 1_000, 10_000] {
         let view = || {

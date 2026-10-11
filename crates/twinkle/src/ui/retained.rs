@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::{Rect, Size, UiId};
 
-use super::{Element, Kind, Length, PaintCommand, Style};
+use super::{Element, Kind, Length, Overflow, PaintCommand, Style};
 
 /// Stable native identity assigned independently of a node's current arena slot.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -80,6 +80,10 @@ pub(crate) struct RetainedNode {
     /// Whether resolved records can be copied without recreating auxiliary
     /// layout collections such as grids, scroll regions, or dropdown layers.
     subtree_bulk_resolved_reuse_safe: bool,
+    /// Whether paint and interaction output can be translated/reused without
+    /// rescanning descendants for scroll, dropdown, or geometry-dependent
+    /// emission behavior.
+    subtree_independent_output_reuse_safe: bool,
     /// Recomputed bottom-up during reconciliation, before layout reuse queries.
     subtree_layout_clean: bool,
     pub(crate) phases: RetainedPhaseData,
@@ -262,6 +266,15 @@ fn kind_tag(kind: &Kind) -> KindTag {
         Kind::Slider { .. } => KindTag::Slider,
         Kind::Dropdown { .. } => KindTag::Dropdown,
     }
+}
+
+fn node_independent_output_reuse_safe<Message>(element: &Element<Message>) -> bool {
+    !matches!(
+        element.kind,
+        Kind::VerticalScroll { .. } | Kind::Dropdown { .. }
+    ) && !matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
+        && !matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
+        && element.style.proximity_magnification.is_none()
 }
 
 fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
@@ -577,6 +590,13 @@ impl RetainedNodeArena {
             .is_some_and(|node| node.subtree_bulk_resolved_reuse_safe)
     }
 
+    pub(crate) fn subtree_independent_output_reuse_safe(&self, id: &UiId) -> bool {
+        self.by_ui_id
+            .get(id)
+            .and_then(|node| self.nodes.get(node))
+            .is_some_and(|node| node.subtree_independent_output_reuse_safe)
+    }
+
     pub(crate) fn subtree_node_count(&self, id: &UiId) -> Option<usize> {
         self.by_ui_id
             .get(id)
@@ -727,6 +747,10 @@ impl RetainedNodeArena {
         let children_layout_clean = children
             .iter()
             .all(|child| self.nodes[child].subtree_layout_clean);
+        let subtree_independent_output_reuse_safe = node_independent_output_reuse_safe(element)
+            && children
+                .iter()
+                .all(|child| self.nodes[child].subtree_independent_output_reuse_safe);
         let node = self.nodes.get_mut(&id).expect("validated retained node");
         node.signatures = current;
         node.dirty = dirty;
@@ -736,6 +760,7 @@ impl RetainedNodeArena {
             && !dirty.contains(DirtyPhases::PLACE)
             && node.phases.measured.is_some()
             && node.phases.allocated.is_some();
+        node.subtree_independent_output_reuse_safe = subtree_independent_output_reuse_safe;
         node.invalidate_dirty_phases();
         if subtree_dirty.is_empty() {
             self.last.clean += 1;
@@ -937,6 +962,10 @@ impl RetainedNodeArena {
                 && children
                     .iter()
                     .all(|child| self.nodes[child].subtree_bulk_resolved_reuse_safe);
+        let subtree_independent_output_reuse_safe = node_independent_output_reuse_safe(element)
+            && children
+                .iter()
+                .all(|child| self.nodes[child].subtree_independent_output_reuse_safe);
         let subtree_layout_clean = children
             .iter()
             .all(|child| self.nodes[child].subtree_layout_clean)
@@ -957,6 +986,7 @@ impl RetainedNodeArena {
             subtree_dirty,
             subtree_nodes,
             subtree_bulk_resolved_reuse_safe,
+            subtree_independent_output_reuse_safe,
             subtree_layout_clean,
             phases,
         };
