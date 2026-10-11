@@ -211,11 +211,13 @@ pub(super) fn emit_element<Message: Clone>(
         }
         _ => rect,
     };
-    if phases.interaction && (element.focus_message.is_some() || element.blur_message.is_some()) {
+    if phases.interaction
+        && (element.declared_focus_message().is_some() || element.declared_blur_message().is_some())
+    {
         tree.focus_messages.push((
             node.id.clone(),
-            element.focus_message.clone(),
-            element.blur_message.clone(),
+            element.declared_focus_message().cloned(),
+            element.declared_blur_message().cloned(),
         ));
     }
     if node
@@ -225,7 +227,7 @@ pub(super) fn emit_element<Message: Clone>(
         // Pointer hit regions are clipped, but semantic controller traversal
         // must retain off-screen actions so it can reveal them on selection.
         if phases.interaction
-            && let Some(message) = &element.message
+            && let Some(message) = element.primary_message()
         {
             tree.messages.push(MessageRegion {
                 id: node.id.clone(),
@@ -237,7 +239,7 @@ pub(super) fn emit_element<Message: Clone>(
             });
         }
         if phases.interaction
-            && let Some(message) = &element.context_message
+            && let Some(message) = element.declared_context_message()
         {
             tree.context_messages.push(MessageRegion {
                 id: node.id.clone(),
@@ -366,7 +368,7 @@ pub(super) fn emit_element<Message: Clone>(
         }
     }
     if phases.interaction
-        && let Some(message) = &element.message
+        && let Some(message) = element.primary_message()
     {
         tree.messages.push(MessageRegion {
             id: node.id.clone(),
@@ -391,16 +393,16 @@ pub(super) fn emit_element<Message: Clone>(
                 message: Some(message.clone()),
                 message_mapper: element.message_mapper,
                 seeded_value_mapper: element.seeded_value_mapper,
-                drag_seed: element.drag_seed.clone(),
+                drag_seed: element.declared_drag_seed().cloned(),
                 drag_mapper: element.drag_mapper,
-                drop_message: element.drop_message.clone(),
+                drop_message: element.declared_drop_message().cloned(),
                 drop_mapper: element.drop_mapper,
             });
         }
     }
     if phases.interaction
-        && element.message.is_none()
-        && element.context_message.is_none()
+        && element.primary_message().is_none()
+        && element.declared_context_message().is_none()
         && element.drop_mapper.is_some()
         && !is_scroll_container(element)
         && let Some(hit_rect) = node
@@ -419,12 +421,12 @@ pub(super) fn emit_element<Message: Clone>(
             seeded_value_mapper: None,
             drag_seed: None,
             drag_mapper: None,
-            drop_message: element.drop_message.clone(),
+            drop_message: element.declared_drop_message().cloned(),
             drop_mapper: element.drop_mapper,
         });
     }
     if phases.interaction
-        && let Some(message) = &element.context_message
+        && let Some(message) = element.declared_context_message()
     {
         tree.context_messages.push(MessageRegion {
             id: node.id.clone(),
@@ -434,7 +436,7 @@ pub(super) fn emit_element<Message: Clone>(
             message_mapper: None,
             seeded_value_mapper: None,
         });
-        if element.message.is_none()
+        if element.primary_message().is_none()
             && !is_scroll_container(element)
             && let Some(hit_rect) = node
                 .clip
@@ -450,17 +452,17 @@ pub(super) fn emit_element<Message: Clone>(
                 message: None,
                 message_mapper: None,
                 seeded_value_mapper: None,
-                drag_seed: element.drag_seed.clone(),
+                drag_seed: element.declared_drag_seed().cloned(),
                 drag_mapper: element.drag_mapper,
-                drop_message: element.drop_message.clone(),
+                drop_message: element.declared_drop_message().cloned(),
                 drop_mapper: element.drop_mapper,
             });
         }
     }
     if phases.interaction
-        && element.message.is_none()
-        && element.context_message.is_none()
-        && element.drag_seed.is_some()
+        && element.primary_message().is_none()
+        && element.declared_context_message().is_none()
+        && element.declared_drag_seed().is_some()
         && let Some(hit_rect) = node
             .clip
             .map(|clip| intersection(rect, clip))
@@ -475,9 +477,9 @@ pub(super) fn emit_element<Message: Clone>(
             message: None,
             message_mapper: None,
             seeded_value_mapper: None,
-            drag_seed: element.drag_seed.clone(),
+            drag_seed: element.declared_drag_seed().cloned(),
             drag_mapper: element.drag_mapper,
-            drop_message: element.drop_message.clone(),
+            drop_message: element.declared_drop_message().cloned(),
             drop_mapper: element.drop_mapper,
         });
     }
@@ -530,7 +532,7 @@ pub(super) fn emit_element<Message: Clone>(
                 radius: 7,
             },
         });
-        if element.message.is_none()
+        if element.primary_message().is_none()
             && let Some(hit_rect) = node
                 .clip
                 .map(|clip| intersection(rect, clip))

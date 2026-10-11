@@ -709,16 +709,14 @@ impl<Message> VerticalScroll<Message> {
                 controlled: false,
             },
             style: Style::default(),
-            message: Some(message),
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: Some(Box::new(ElementEvents {
+                message: Some(message),
+                ..ElementEvents::default()
+            })),
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -812,16 +810,11 @@ impl<Message> Grid<Message> {
                 columns: GridColumnSpec::Count(2),
             },
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -857,16 +850,11 @@ impl<Message> Grid<Message> {
                 columns: GridColumnSpec::Tracks(tracks),
             },
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -887,16 +875,11 @@ impl<Message> Grid<Message> {
                 columns: GridColumnSpec::AutoFit(track),
             },
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -1410,16 +1393,11 @@ impl<Message> StyledText<Message> {
                 accessibility_label: Some(value),
                 ..Style::default()
             },
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -1703,16 +1681,11 @@ impl<Message> CustomPaint<Message> {
             virtual_navigation: None,
             kind: Kind::CustomPaint { paint },
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -1732,16 +1705,11 @@ impl<Message> CustomPaint<Message> {
             virtual_navigation: None,
             kind: Kind::CustomPaintCommands { commands },
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -1851,16 +1819,11 @@ impl<Message> Image<Message> {
                 overflow_y: Overflow::Clip,
                 ..Style::default()
             },
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -2647,7 +2610,7 @@ impl<Message> Container<Message> {
 
     pub fn enabled(mut self, enabled: bool) -> Self {
         if !enabled {
-            self.0.message = None;
+            self.0.clear_primary_message();
         }
         self
     }
@@ -3138,7 +3101,7 @@ impl<Message> Button<Message> {
         self.0.0.style.focus_background_tint = Some(theme.borders.focus);
         self.0.0.style.controller_focus_background_tint = Some(theme.borders.controller_focus);
         if presentation == ButtonPresentation::Disabled {
-            self.0.0.message = None;
+            self.0.0.clear_primary_message();
         }
         if let Some(label) = self.0.0.children.first_mut() {
             label.style.foreground = Some(foreground);
@@ -3707,16 +3670,14 @@ impl<Message> Slider<Message> {
                 presentation: None,
             },
             style: Style::default(),
-            message: Some(message),
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: Some(Box::new(ElementEvents {
+                message: Some(message),
+                ..ElementEvents::default()
+            })),
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -3981,16 +3942,14 @@ impl<Message> Dropdown<Message> {
                 option_icons: Vec::new(),
             },
             style: Style::default(),
-            message: Some(toggle_message),
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: Some(Box::new(ElementEvents {
+                message: Some(toggle_message),
+                ..ElementEvents::default()
+            })),
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages,
@@ -4209,19 +4168,18 @@ impl<Message: Clone> Menu<Message> {
                 option_icons: Vec::new(),
             },
             style: Style::default(),
-            message: Some(toggle_message.clone()),
-            // A menu header is itself a valid context-menu affordance. Keep
-            // secondary-click, Shift+F10, controller menu, and accessibility
-            // invocation on the same typed transition as ordinary activation.
-            context_message: Some(toggle_message),
-            focus_message: None,
-            blur_message: None,
+            events: Some(Box::new(ElementEvents {
+                message: Some(toggle_message.clone()),
+                // A menu header is itself a valid context-menu affordance. Keep
+                // secondary-click, Shift+F10, controller menu, and accessibility
+                // invocation on the same typed transition as ordinary activation.
+                context_message: Some(toggle_message),
+                ..ElementEvents::default()
+            })),
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: items.into_iter().map(|item| item.message).collect(),
@@ -4575,7 +4533,7 @@ mod semantic_control_tests {
             assert_eq!(button.style.height, Length::Px(theme.sizing.control_height));
             assert_eq!(button.style.corner_radius, theme.radii.control);
             assert_eq!(button.children[0].style.foreground, Some(foreground));
-            assert_eq!(button.message, Some(Message::Activate));
+            assert_eq!(button.primary_message(), Some(&Message::Activate));
         }
     }
 

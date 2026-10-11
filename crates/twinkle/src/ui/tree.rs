@@ -3533,6 +3533,10 @@ impl<Message: Clone> UiFrame<Message> {
                 + element.option_messages.capacity() * std::mem::size_of::<Option<Message>>()
                 + element.inline_messages.capacity()
                     * std::mem::size_of::<(std::ops::Range<usize>, Message)>();
+            bytes += element
+                .events
+                .as_ref()
+                .map_or(0, |events| std::mem::size_of_val(events.as_ref()));
             bytes += [
                 element.style.accessibility_label.as_ref(),
                 element.style.accessibility_description.as_ref(),
@@ -7742,7 +7746,7 @@ fn collect_selection_regions<Message>(
             active
         };
         let excluded = excluded
-            || element.message.is_some() && !is_scroll_container(element)
+            || element.primary_message().is_some() && !is_scroll_container(element)
             || element.text_mapper.is_some()
             || matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown { .. });
         if let Some(region_index) = active

@@ -1275,16 +1275,11 @@ pub struct Element<Message = String> {
     virtual_navigation: Option<VirtualNavigation>,
     kind: Kind,
     style: Style,
-    message: Option<Message>,
-    context_message: Option<Message>,
-    focus_message: Option<Message>,
-    blur_message: Option<Message>,
+    events: Option<Box<ElementEvents<Message>>>,
     message_mapper: Option<fn(f32) -> Message>,
     seeded_value_mapper: Option<fn(Message, f32) -> Message>,
     scroll_extent_mapper: Option<fn(ScrollExtent) -> Message>,
-    drag_seed: Option<Message>,
     drag_mapper: Option<fn(Message, DragGesture) -> Message>,
-    drop_message: Option<Message>,
     drop_mapper: Option<fn(Message, DropGesture) -> Message>,
     text_mapper: Option<TextMessageMapper<Message>>,
     option_messages: Vec<Option<Message>>,
@@ -1294,7 +1289,91 @@ pub struct Element<Message = String> {
     adjustment_step: f32,
 }
 
+#[derive(Clone, Debug)]
+struct ElementEvents<Message> {
+    message: Option<Message>,
+    context_message: Option<Message>,
+    focus_message: Option<Message>,
+    blur_message: Option<Message>,
+    drag_seed: Option<Message>,
+    drop_message: Option<Message>,
+}
+
+impl<Message> Default for ElementEvents<Message> {
+    fn default() -> Self {
+        Self {
+            message: None,
+            context_message: None,
+            focus_message: None,
+            blur_message: None,
+            drag_seed: None,
+            drop_message: None,
+        }
+    }
+}
+
 impl<Message> Element<Message> {
+    fn events_mut(&mut self) -> &mut ElementEvents<Message> {
+        self.events
+            .get_or_insert_with(|| Box::new(ElementEvents::default()))
+    }
+
+    pub(crate) fn primary_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.message.as_ref())
+    }
+
+    pub(crate) fn declared_context_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.context_message.as_ref())
+    }
+
+    pub(crate) fn declared_focus_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.focus_message.as_ref())
+    }
+
+    pub(crate) fn declared_blur_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.blur_message.as_ref())
+    }
+
+    pub(crate) fn declared_drag_seed(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.drag_seed.as_ref())
+    }
+
+    pub(crate) fn declared_drop_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.drop_message.as_ref())
+    }
+
+    fn has_declared_events(&self) -> bool {
+        self.events.as_ref().is_some_and(|events| {
+            events.message.is_some()
+                || events.context_message.is_some()
+                || events.focus_message.is_some()
+                || events.blur_message.is_some()
+                || events.drag_seed.is_some()
+                || events.drop_message.is_some()
+        })
+    }
+
+    pub(crate) fn clear_primary_message(&mut self) {
+        if let Some(events) = &mut self.events {
+            events.message = None;
+        }
+        if !self.has_declared_events() {
+            self.events = None;
+        }
+    }
+
     fn flex(axis: Axis) -> Self {
         Self {
             kind: Kind::Flex(axis),
@@ -1303,16 +1382,11 @@ impl<Message> Element<Message> {
             content_revision: None,
             virtual_navigation: None,
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -1351,16 +1425,11 @@ impl<Message> Element<Message> {
             content_revision: None,
             virtual_navigation: None,
             style: Style::default(),
-            message: None,
-            context_message: None,
-            focus_message: None,
-            blur_message: None,
+            events: None,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: Vec::new(),
@@ -1420,12 +1489,7 @@ impl<Message> Element<Message> {
                 }
             )
             && self.text_mapper.is_none()
-            && self.message.is_none()
-            && self.context_message.is_none()
-            && self.focus_message.is_none()
-            && self.blur_message.is_none()
-            && self.drag_seed.is_none()
-            && self.drop_message.is_none()
+            && !self.has_declared_events()
             && self.option_messages.is_empty()
             && self.inline_messages.is_empty()
         {
@@ -1665,14 +1729,14 @@ impl<Message> Element<Message> {
     /// The seed message supplies target-specific typed data. Twinkle owns
     /// hit testing and pointer capture, then calls `map` for every drag phase.
     pub fn on_drag(mut self, seed: Message, map: fn(Message, DragGesture) -> Message) -> Self {
-        self.drag_seed = Some(seed);
+        self.events_mut().drag_seed = Some(seed);
         self.drag_mapper = Some(map);
         self
     }
 
     /// Accepts a release from a captured drag source over this element.
     pub fn on_drop(mut self, seed: Message, map: fn(Message, DropGesture) -> Message) -> Self {
-        self.drop_message = Some(seed);
+        self.events_mut().drop_message = Some(seed);
         self.drop_mapper = Some(map);
         self
     }
@@ -1708,22 +1772,22 @@ impl<Message> Element<Message> {
     }
 
     pub fn message(mut self, message: Message) -> Self {
-        self.message = Some(message);
+        self.events_mut().message = Some(message);
         self
     }
 
     pub fn context_message(mut self, message: Message) -> Self {
-        self.context_message = Some(message);
+        self.events_mut().context_message = Some(message);
         self
     }
 
     pub fn focus_message(mut self, message: Message) -> Self {
-        self.focus_message = Some(message);
+        self.events_mut().focus_message = Some(message);
         self
     }
 
     pub fn blur_message(mut self, message: Message) -> Self {
-        self.blur_message = Some(message);
+        self.events_mut().blur_message = Some(message);
         self
     }
 
@@ -1790,6 +1854,22 @@ impl<Message> Element<Message> {
                 && self.text_mapper.is_none(),
             "map value-producing messages at the control constructor"
         );
+        let events = self.events.and_then(|events| {
+            let events = *events;
+            let mapped = ElementEvents {
+                message: events.message.map(&mut *map),
+                context_message: events.context_message.map(&mut *map),
+                focus_message: events.focus_message.map(&mut *map),
+                blur_message: events.blur_message.map(&mut *map),
+                drag_seed: None,
+                drop_message: None,
+            };
+            (mapped.message.is_some()
+                || mapped.context_message.is_some()
+                || mapped.focus_message.is_some()
+                || mapped.blur_message.is_some())
+            .then(|| Box::new(mapped))
+        });
         Element {
             kind: self.kind,
             id: self.id,
@@ -1797,16 +1877,11 @@ impl<Message> Element<Message> {
             content_revision: self.content_revision,
             virtual_navigation: self.virtual_navigation,
             style: self.style,
-            message: self.message.map(&mut *map),
-            context_message: self.context_message.map(&mut *map),
-            focus_message: self.focus_message.map(&mut *map),
-            blur_message: self.blur_message.map(&mut *map),
+            events,
             message_mapper: None,
             seeded_value_mapper: None,
             scroll_extent_mapper: None,
-            drag_seed: None,
             drag_mapper: None,
-            drop_message: None,
             drop_mapper: None,
             text_mapper: None,
             option_messages: self

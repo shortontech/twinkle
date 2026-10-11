@@ -284,12 +284,12 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
     let mut semantics = CompactHasher::default();
     let mut measure_content_sensitive = false;
     let mut paint_content_sensitive = false;
-    let interaction_content_sensitive = element.message.is_some()
-        || element.context_message.is_some()
-        || element.focus_message.is_some()
-        || element.blur_message.is_some()
-        || element.drag_seed.is_some()
-        || element.drop_message.is_some()
+    let interaction_content_sensitive = element.primary_message().is_some()
+        || element.declared_context_message().is_some()
+        || element.declared_focus_message().is_some()
+        || element.declared_blur_message().is_some()
+        || element.declared_drag_seed().is_some()
+        || element.declared_drop_message().is_some()
         || element.text_mapper.is_some()
         || !element.option_messages.is_empty()
         || !element.inline_messages.is_empty();
@@ -447,10 +447,10 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
 
     let mut interaction = CompactHasher::default();
     interaction.add(&element.virtual_navigation);
-    interaction.add(&element.message.is_some());
-    interaction.add(&element.context_message.is_some());
-    interaction.add(&element.focus_message.is_some());
-    interaction.add(&element.blur_message.is_some());
+    interaction.add(&element.primary_message().is_some());
+    interaction.add(&element.declared_context_message().is_some());
+    interaction.add(&element.declared_focus_message().is_some());
+    interaction.add(&element.declared_blur_message().is_some());
     interaction.add(&element.message_mapper.map(|callback| callback as usize));
     interaction.add(
         &element
@@ -1136,6 +1136,46 @@ impl RetainedNodeArena {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declarative_element_inline_size_does_not_regress() {
+        let small = std::mem::size_of::<Element<usize>>();
+        let large = std::mem::size_of::<Element<[u8; 64]>>();
+        eprintln!("element_inline_bytes small_message={small} large_message={large}");
+        assert!(
+            small <= 1_032,
+            "small-message Element grew to {small} bytes"
+        );
+        assert!(
+            large <= 1_032,
+            "large-message Element grew to {large} bytes"
+        );
+    }
+
+    #[test]
+    fn declarative_event_sidecar_is_absent_until_needed_and_maps_messages() {
+        let empty = Element::<u32>::flex(super::super::Axis::Vertical);
+        assert!(empty.events.is_none());
+
+        let mapped = empty
+            .message(7)
+            .context_message(9)
+            .focus_message(11)
+            .map_message(|message| message.to_string());
+        assert_eq!(mapped.primary_message().map(String::as_str), Some("7"));
+        assert_eq!(
+            mapped.declared_context_message().map(String::as_str),
+            Some("9")
+        );
+        assert_eq!(
+            mapped.declared_focus_message().map(String::as_str),
+            Some("11")
+        );
+
+        let mut cleared = Element::<u32>::flex(super::super::Axis::Vertical).message(1);
+        cleared.clear_primary_message();
+        assert!(cleared.events.is_none());
+    }
 
     #[test]
     fn streamed_signature_formatting_matches_allocated_string_hashing() {

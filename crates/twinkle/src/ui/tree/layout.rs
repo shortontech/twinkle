@@ -74,7 +74,8 @@ pub(super) fn layout_element<Message: Clone>(
     }
     let node_index = tree.resolved.nodes.len();
     let interaction = InteractionState {
-        interactive: (element.message.is_some() || element.context_message.is_some())
+        interactive: (element.primary_message().is_some()
+            || element.declared_context_message().is_some())
             && !is_scroll_container(element)
             || element.text_mapper.is_some(),
         ..InteractionState::default()
@@ -143,10 +144,10 @@ pub(super) fn layout_element<Message: Clone>(
                     actions.push(ActionKind::SetValue);
                 } else if element.text_mapper.is_some() {
                     actions.push(ActionKind::SetValue);
-                } else if element.message.is_some() && !is_scroll_container(element) {
+                } else if element.primary_message().is_some() && !is_scroll_container(element) {
                     actions.push(ActionKind::Activate);
                 }
-                if element.context_message.is_some() {
+                if element.declared_context_message().is_some() {
                     actions.push(ActionKind::ContextMenu);
                 }
                 actions
@@ -226,7 +227,7 @@ pub(super) fn layout_element<Message: Clone>(
             "percentage length resolved against indefinite parent space",
         );
     }
-    if element.message.is_some()
+    if element.primary_message().is_some()
         && !is_scroll_container(element)
         && inherited_clip.is_some_and(|clip| {
             intersection(rect, clip).is_none_or(|visible| !approximately_same_rect(visible, rect))
@@ -500,7 +501,7 @@ pub(super) fn layout_element<Message: Clone>(
                 configure_scroll_semantics(&mut tree.resolved.nodes[node_index], extent);
                 tree.scrolls.push(ScrollRegion {
                     id: id.clone(),
-                    message: element.message.clone(),
+                    message: element.primary_message().cloned(),
                     offset_mapper: element.message_mapper,
                     extent_mapper: element.scroll_extent_mapper,
                     rect: scroll_rect,
@@ -524,7 +525,7 @@ pub(super) fn layout_element<Message: Clone>(
                 configure_scroll_semantics(&mut tree.resolved.nodes[node_index], extent);
                 tree.scrolls.push(ScrollRegion {
                     id: id.clone(),
-                    message: element.message.clone(),
+                    message: element.primary_message().cloned(),
                     offset_mapper: element.message_mapper,
                     extent_mapper: element.scroll_extent_mapper,
                     rect: scroll_rect,
@@ -636,7 +637,7 @@ pub(super) fn layout_element<Message: Clone>(
                 };
                 tree.resolved.nodes[node_index].scroll = Some(extent);
                 configure_scroll_semantics(&mut tree.resolved.nodes[node_index], extent);
-                if let Some(message) = &element.message {
+                if let Some(message) = element.primary_message() {
                     tree.scrolls.push(ScrollRegion {
                         id: id.clone(),
                         message: Some(message.clone()),
@@ -777,7 +778,7 @@ pub(super) fn layout_element<Message: Clone>(
                 tree.resolved.nodes[node_index].scroll = Some(extent);
                 tree.scrolls.push(ScrollRegion {
                     id: id.clone(),
-                    message: element.message.clone(),
+                    message: element.primary_message().cloned(),
                     offset_mapper: element.message_mapper,
                     extent_mapper: element.scroll_extent_mapper,
                     rect: scroll_rect,
@@ -898,7 +899,7 @@ fn apply_transient_state_with_parent<Message>(
         direct_interaction
     };
     let owns_state = element.style.parent_interaction
-        || element.message.is_some()
+        || element.primary_message().is_some()
         || element.navigation_scope.is_some()
         || element.text_mapper.is_some()
         || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
