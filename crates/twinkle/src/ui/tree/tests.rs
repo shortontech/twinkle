@@ -1221,9 +1221,16 @@ fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution(
         Some(Background::Solid(0x112233))
     );
     assert_eq!(
-        overlay.style(&root_id, &declaration).background,
+        overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))
     );
+    let staged_bytes = overlay.storage_bytes();
+    overlay.release_staged_styles();
+    assert_eq!(
+        overlay.style(&root_id, &declaration).background(),
+        Some(Background::Solid(0x445566))
+    );
+    assert!(overlay.storage_bytes() < staged_bytes);
     assert_eq!(
         overlay.kind(&root_id, &declaration).name(),
         declaration.kind.name()

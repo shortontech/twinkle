@@ -195,7 +195,10 @@ pub(super) fn emit_element<Message: Clone>(
             children: resolved.children.clone(),
         }
     };
-    let style = overlay.map_or(&element.style, |overlay| overlay.style(&node.id, element));
+    let style = overlay.map_or_else(
+        || EffectiveStyle::canonical(&element.style),
+        |overlay| overlay.style(&node.id, element),
+    );
     let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(&node.id, element));
     let fragment_start = tree.commands.len();
     let rect = node.allocated;
@@ -253,7 +256,7 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_value_mapper: None,
             });
         }
-        let foreground = style.foreground.or(inherited_foreground);
+        let foreground = style.foreground().or(inherited_foreground);
         if matches!(kind, Kind::Flex(_) | Kind::Grid { .. } | Kind::Layer) {
             for (&child_index, child) in node.children.iter().zip(&element.children) {
                 tree.emit_incremental(child, child_index, foreground, overlay, previous, phases);
@@ -268,9 +271,9 @@ pub(super) fn emit_element<Message: Clone>(
         }
         return;
     }
-    let rounded_solid_border = match (style.background, style.border) {
+    let rounded_solid_border = match (style.background(), style.border()) {
         (Some(Background::Solid(background)), Some(border))
-            if style.corner_radius > 0.0 && style.border_width > 0.0 =>
+            if style.corner_radius() > 0.0 && style.border_width() > 0.0 =>
         {
             Some((background, border))
         }
@@ -282,7 +285,7 @@ pub(super) fn emit_element<Message: Clone>(
     {
         tree.commands.push(PaintCommand::BackdropBlur {
             rect,
-            radius: style.corner_radius,
+            radius: style.corner_radius(),
             blur,
         });
     }
@@ -307,36 +310,35 @@ pub(super) fn emit_element<Message: Clone>(
                     rect.size.height + expansion * 2.0,
                 ),
                 color,
-                radius: style.corner_radius + expansion,
+                radius: style.corner_radius() + expansion,
             });
         }
     }
     if phases.paint
         && let Some((background, border)) = rounded_solid_border
     {
-        let width = element
-            .style
-            .border_width
+        let width = style
+            .border_width()
             .min(rect.size.width / 2.0)
             .min(rect.size.height / 2.0);
         tree.commands.push(PaintCommand::RoundedFill {
             rect,
             color: border,
-            radius: style.corner_radius,
+            radius: style.corner_radius(),
         });
         tree.commands.push(PaintCommand::RoundedFill {
             rect: rect.inset(Insets::all(width)),
             color: background,
-            radius: (style.corner_radius - width).max(0.0),
+            radius: (style.corner_radius() - width).max(0.0),
         });
     } else if phases.paint {
-        if let Some(background) = style.background {
+        if let Some(background) = style.background() {
             tree.commands.push(match background {
-                Background::Solid(color) if style.corner_radius > 0.0 => {
+                Background::Solid(color) if style.corner_radius() > 0.0 => {
                     PaintCommand::RoundedFill {
                         rect,
                         color,
-                        radius: style.corner_radius,
+                        radius: style.corner_radius(),
                     }
                 }
                 Background::Solid(color) if style.top_corner_radius > 0.0 => {
@@ -350,19 +352,19 @@ pub(super) fn emit_element<Message: Clone>(
                 Background::LinearGradient(gradient) => PaintCommand::Gradient { rect, gradient },
             });
         }
-        if let Some(color) = style.border {
-            tree.commands.push(if style.corner_radius > 0.0 {
+        if let Some(color) = style.border() {
+            tree.commands.push(if style.corner_radius() > 0.0 {
                 PaintCommand::RoundedStroke {
                     rect,
                     color,
-                    width: style.border_width,
-                    radius: style.corner_radius,
+                    width: style.border_width(),
+                    radius: style.corner_radius(),
                 }
             } else {
                 PaintCommand::Stroke {
                     rect,
                     color,
-                    width: style.border_width,
+                    width: style.border_width(),
                 }
             });
         }
@@ -511,11 +513,11 @@ pub(super) fn emit_element<Message: Clone>(
             secure,
             context_menu_presentation: style.editing_menu.clone(),
             context_menu_style: crate::OverlayStyle {
-                background: match style.background {
+                background: match style.background() {
                     Some(Background::Solid(color)) => color,
                     _ => crate::theme::FALLBACK_FOCUS_SURFACE,
                 },
-                foreground: style.foreground.unwrap_or(0xe8edf4),
+                foreground: style.foreground().unwrap_or(0xe8edf4),
                 border: element
                     .style
                     .focus_background_tint
@@ -551,7 +553,7 @@ pub(super) fn emit_element<Message: Clone>(
         }
     }
 
-    let foreground = style.foreground.or(inherited_foreground);
+    let foreground = style.foreground().or(inherited_foreground);
     let clips_descendants =
         style.overflow_x != Overflow::Visible || style.overflow_y != Overflow::Visible;
     if phases.paint && clips_descendants {
@@ -1282,13 +1284,13 @@ pub(super) fn emit_element<Message: Clone>(
     // own track or header cannot cover the selection indicator.
     if phases.paint
         && matches!(kind, Kind::Slider { .. } | Kind::Dropdown(_))
-        && let Some(color) = style.border
-        && style.border_width > 0.0
+        && let Some(color) = style.border()
+        && style.border_width() > 0.0
     {
         tree.commands.push(PaintCommand::Stroke {
             rect,
             color,
-            width: style.border_width,
+            width: style.border_width(),
         });
     }
     if phases.paint && clips_descendants {

@@ -27,7 +27,10 @@ pub(super) fn layout_element<Message: Clone>(
     tree: &mut UiFrame<Message>,
     previous: Option<&UiFrame<Message>>,
 ) -> usize {
-    let style = overlay.map_or(&element.style, |overlay| overlay.style(id, element));
+    let style = overlay.map_or_else(
+        || EffectiveStyle::canonical(&element.style),
+        |overlay| overlay.style(id, element),
+    );
     let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(id, element));
     let reusable = geometry_reuse_safe(element)
         .then(|| tree.reusable_geometry(id, bounds, inherited_clip))
@@ -227,8 +230,8 @@ pub(super) fn layout_element<Message: Clone>(
             format!("allocated rectangle is {rect:?}"),
         );
     }
-    if matches!(style.width, Length::Percent(_)) && !rect.size.width.is_finite()
-        || matches!(style.height, Length::Percent(_)) && !rect.size.height.is_finite()
+    if matches!(style.width(), Length::Percent(_)) && !rect.size.width.is_finite()
+        || matches!(style.height(), Length::Percent(_)) && !rect.size.height.is_finite()
     {
         tree.diagnostic(
             DiagnosticKind::IndefinitePercentage,
@@ -305,7 +308,7 @@ pub(super) fn layout_element<Message: Clone>(
         }
     }
     let mut child_indices = Vec::new();
-    let foreground = style.foreground.or(inherited_foreground);
+    let foreground = style.foreground().or(inherited_foreground);
     let clips_descendants =
         style.overflow_x != Overflow::Visible || style.overflow_y != Overflow::Visible;
     let descendant_clip = if clips_descendants {
@@ -493,30 +496,32 @@ pub(super) fn layout_element<Message: Clone>(
             );
             let maximum_offset_x = (content_extent.width - content.size.width).max(0.0);
             let scroll_offset_x = if scrollable_x {
-                style.scroll_offset_x.clamp(0.0, maximum_offset_x)
+                style.scroll_offset_x().clamp(0.0, maximum_offset_x)
             } else {
                 0.0
             };
-            if scrollable_x && (style.scroll_offset_x - scroll_offset_x).abs() > f32::EPSILON {
+            if scrollable_x && (style.scroll_offset_x() - scroll_offset_x).abs() > f32::EPSILON {
                 tree.diagnostic(
                     DiagnosticKind::ScrollOffsetClamped,
                     id,
                     format!(
                         "horizontal offset {:.2} clamped to {:.2}",
-                        style.scroll_offset_x, scroll_offset_x
+                        style.scroll_offset_x(),
+                        scroll_offset_x
                     ),
                 );
             }
             let maximum_offset = (content_extent.height - content.size.height).max(0.0);
             let scroll_offset = if scrollable_y {
-                let clamped = style.scroll_offset.clamp(0.0, maximum_offset);
-                if (style.scroll_offset - clamped).abs() > f32::EPSILON {
+                let clamped = style.scroll_offset().clamp(0.0, maximum_offset);
+                if (style.scroll_offset() - clamped).abs() > f32::EPSILON {
                     tree.diagnostic(
                         DiagnosticKind::ScrollOffsetClamped,
                         id,
                         format!(
                             "offset {:.2} clamped to {:.2}",
-                            style.scroll_offset, clamped
+                            style.scroll_offset(),
+                            clamped
                         ),
                     );
                 }
@@ -794,15 +799,16 @@ pub(super) fn layout_element<Message: Clone>(
             } else {
                 0.0
             };
-            if scrollable_x && (offset_x - style.scroll_offset_x).abs() > f32::EPSILON
-                || scrollable_y && (offset_y - style.scroll_offset).abs() > f32::EPSILON
+            if scrollable_x && (offset_x - style.scroll_offset_x()).abs() > f32::EPSILON
+                || scrollable_y && (offset_y - style.scroll_offset()).abs() > f32::EPSILON
             {
                 tree.diagnostic(
                     DiagnosticKind::ScrollOffsetClamped,
                     id,
                     format!(
                         "grid offset ({:.2},{:.2}) clamped to ({offset_x:.2},{offset_y:.2})",
-                        style.scroll_offset_x, style.scroll_offset
+                        style.scroll_offset_x(),
+                        style.scroll_offset()
                     ),
                 );
             }
@@ -1095,9 +1101,130 @@ fn kind_clone_cost(kind: &Kind) -> (usize, usize) {
     )
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct TransientStylePatch {
+    background: Option<Option<Background>>,
+    border: Option<Option<Color>>,
+    border_width: Option<f32>,
+    foreground: Option<Option<Color>>,
+    corner_radius: Option<f32>,
+    width: Option<Length>,
+    height: Option<Length>,
+    scroll_offset_x: Option<f32>,
+    scroll_offset: Option<f32>,
+}
+
+impl TransientStylePatch {
+    fn between(canonical: &Style, effective: &Style) -> Option<Self> {
+        let patch = Self {
+            background: (canonical.background != effective.background)
+                .then_some(effective.background),
+            border: (canonical.border != effective.border).then_some(effective.border),
+            border_width: (canonical.border_width != effective.border_width)
+                .then_some(effective.border_width),
+            foreground: (canonical.foreground != effective.foreground)
+                .then_some(effective.foreground),
+            corner_radius: (canonical.corner_radius != effective.corner_radius)
+                .then_some(effective.corner_radius),
+            width: (canonical.width != effective.width).then_some(effective.width),
+            height: (canonical.height != effective.height).then_some(effective.height),
+            scroll_offset_x: (canonical.scroll_offset_x != effective.scroll_offset_x)
+                .then_some(effective.scroll_offset_x),
+            scroll_offset: (canonical.scroll_offset != effective.scroll_offset)
+                .then_some(effective.scroll_offset),
+        };
+        (patch != Self::default()).then_some(patch)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct EffectiveStyle<'a> {
+    canonical: &'a Style,
+    patch: Option<&'a TransientStylePatch>,
+}
+
+impl<'a> EffectiveStyle<'a> {
+    pub(super) const fn canonical(style: &'a Style) -> Self {
+        Self {
+            canonical: style,
+            patch: None,
+        }
+    }
+
+    fn patched(style: &'a Style, patch: Option<&'a TransientStylePatch>) -> Self {
+        Self {
+            canonical: style,
+            patch,
+        }
+    }
+
+    pub(super) fn background(self) -> Option<Background> {
+        self.patch
+            .and_then(|patch| patch.background)
+            .unwrap_or(self.canonical.background)
+    }
+
+    pub(super) fn border(self) -> Option<Color> {
+        self.patch
+            .and_then(|patch| patch.border)
+            .unwrap_or(self.canonical.border)
+    }
+
+    pub(super) fn border_width(self) -> f32 {
+        self.patch
+            .and_then(|patch| patch.border_width)
+            .unwrap_or(self.canonical.border_width)
+    }
+
+    pub(super) fn foreground(self) -> Option<Color> {
+        self.patch
+            .and_then(|patch| patch.foreground)
+            .unwrap_or(self.canonical.foreground)
+    }
+
+    pub(super) fn corner_radius(self) -> f32 {
+        self.patch
+            .and_then(|patch| patch.corner_radius)
+            .unwrap_or(self.canonical.corner_radius)
+    }
+
+    pub(super) fn width(self) -> Length {
+        self.patch
+            .and_then(|patch| patch.width)
+            .unwrap_or(self.canonical.width)
+    }
+
+    pub(super) fn height(self) -> Length {
+        self.patch
+            .and_then(|patch| patch.height)
+            .unwrap_or(self.canonical.height)
+    }
+
+    pub(super) fn scroll_offset_x(self) -> f32 {
+        self.patch
+            .and_then(|patch| patch.scroll_offset_x)
+            .unwrap_or(self.canonical.scroll_offset_x)
+    }
+
+    pub(super) fn scroll_offset(self) -> f32 {
+        self.patch
+            .and_then(|patch| patch.scroll_offset)
+            .unwrap_or(self.canonical.scroll_offset)
+    }
+}
+
+impl std::ops::Deref for EffectiveStyle<'_> {
+    type Target = Style;
+
+    fn deref(&self) -> &Self::Target {
+        self.canonical
+    }
+}
+
 #[derive(Default)]
 pub(super) struct TransientStateJournal {
     styles: std::collections::HashMap<UiId, Style>,
+    style_patches: std::collections::HashMap<UiId, TransientStylePatch>,
     kinds: std::collections::HashMap<UiId, Kind>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
@@ -1106,7 +1233,7 @@ pub(super) struct TransientStateJournal {
 
 impl TransientStateJournal {
     pub(super) fn style_count(&self) -> usize {
-        self.styles.len()
+        self.style_patches.len()
     }
 
     pub(super) fn kind_count(&self) -> usize {
@@ -1123,6 +1250,7 @@ impl TransientStateJournal {
 
     pub(super) fn storage_bytes(&self) -> usize {
         self.styles.capacity() * std::mem::size_of::<(UiId, Style)>()
+            + self.style_patches.capacity() * std::mem::size_of::<(UiId, TransientStylePatch)>()
             + self.kinds.capacity() * std::mem::size_of::<(UiId, Kind)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
@@ -1132,6 +1260,7 @@ impl TransientStateJournal {
 
     pub(super) fn table_allocations(&self) -> usize {
         usize::from(self.styles.capacity() != 0)
+            + usize::from(self.style_patches.capacity() != 0)
             + usize::from(self.kinds.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
@@ -1147,17 +1276,28 @@ impl TransientStateJournal {
     /// boundary needed for resolution to read through the table without
     /// modifying the declaration it will publish.
     pub(super) fn detach_effective<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
-        self.detach_effective_tree(element, id);
+        self.detach_effective_tree(element, id, true);
     }
 
     pub(super) fn attach_effective<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
-        self.detach_effective_tree(element, id);
+        self.detach_effective_tree(element, id, false);
     }
 
-    fn detach_effective_tree<Message>(&mut self, element: &mut Element<Message>, id: &UiId) {
+    /// Drops the Stage A whole-style bridge after the final detach. All later
+    /// consumers read the compact field patch against the canonical style.
+    pub(super) fn release_staged_styles(&mut self) {
+        self.styles = std::collections::HashMap::new();
+    }
+
+    fn detach_effective_tree<Message>(
+        &mut self,
+        element: &mut Element<Message>,
+        id: &UiId,
+        derive_patches: bool,
+    ) {
         for (index, child) in element.children.iter_mut().enumerate() {
             let child_id = resolved_child_id(id, child, index);
-            self.detach_effective_tree(child, &child_id);
+            self.detach_effective_tree(child, &child_id, derive_patches);
         }
         if let Some(canonical) = self.styles.get_mut(id) {
             std::mem::swap(canonical, &mut element.style);
@@ -1178,6 +1318,13 @@ impl TransientStateJournal {
             self.kinds.remove(id);
         }
         let effective_style = self.styles.get(id).unwrap_or(&element.style);
+        if derive_patches {
+            if let Some(patch) = TransientStylePatch::between(&element.style, effective_style) {
+                self.style_patches.insert(id.clone(), patch);
+            } else {
+                self.style_patches.remove(id);
+            }
+        }
         let effective_kind = self.kinds.get(id).unwrap_or(&element.kind);
         let dirty = super::super::retained::transient_dirty_phases(
             element,
@@ -1196,8 +1343,8 @@ impl TransientStateJournal {
         &'a self,
         id: &UiId,
         element: &'a Element<Message>,
-    ) -> &'a Style {
-        self.styles.get(id).unwrap_or(&element.style)
+    ) -> EffectiveStyle<'a> {
+        EffectiveStyle::patched(&element.style, self.style_patches.get(id))
     }
 
     pub(super) fn kind<'a, Message>(
@@ -2001,8 +2148,8 @@ fn flex_bounds<Message>(
             let preferred = style.basis.resolve(
                 parent,
                 match axis {
-                    Axis::Horizontal => style.width.resolve(parent, intrinsic),
-                    Axis::Vertical => style.height.resolve(parent, intrinsic),
+                    Axis::Horizontal => style.width().resolve(parent, intrinsic),
+                    Axis::Vertical => style.height().resolve(parent, intrinsic),
                 },
             );
             FlexItem::flex(
@@ -2077,7 +2224,8 @@ fn flex_bounds<Message>(
             Axis::Horizontal => {
                 rect.origin.x += main_offset;
                 let cross = measured.height.min(content.size.height);
-                if alignment != Align::Stretch || (style.css_paint && style.height != Length::Auto)
+                if alignment != Align::Stretch
+                    || (style.css_paint && style.height() != Length::Auto)
                 {
                     rect.size.height = cross;
                     rect.origin.y += match alignment {
@@ -2091,7 +2239,8 @@ fn flex_bounds<Message>(
             Axis::Vertical => {
                 rect.origin.y += main_offset;
                 let cross = measured.width.min(content.size.width);
-                if alignment != Align::Stretch || (style.css_paint && style.width != Length::Auto) {
+                if alignment != Align::Stretch || (style.css_paint && style.width() != Length::Auto)
+                {
                     rect.size.width = cross;
                     rect.origin.x += match alignment {
                         Align::Center => (content.size.width - cross) / 2.0,

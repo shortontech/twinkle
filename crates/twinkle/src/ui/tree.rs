@@ -7,8 +7,8 @@ mod scrollbar;
 mod selection;
 use emission::{EmissionPhases, emit_element};
 use layout::{
-    TransientStateJournal, apply_transient_state, apply_transient_state_staged, explicit_px,
-    layout_element, resolve_grid_columns, scale_explicit_geometry,
+    EffectiveStyle, TransientStateJournal, apply_transient_state, apply_transient_state_staged,
+    explicit_px, layout_element, resolve_grid_columns, scale_explicit_geometry,
 };
 pub use scrollbar::ScrollExtent;
 #[cfg(test)]
@@ -2324,6 +2324,7 @@ impl<Message: Clone> UiFrame<Message> {
             apply_transient_state_staged(&mut root, &root_id, state, &mut transient_overlay);
         }
         transient_overlay.detach_effective(&mut root, &root_id);
+        transient_overlay.release_staged_styles();
         tree.selection_regions =
             collect_selection_regions(&root, &tree.resolved, Some(&transient_overlay));
         for region in &tree.selection_regions {
@@ -7964,13 +7965,13 @@ fn effective_child_style<'a, Message>(
     child: &'a Element<Message>,
     parent: Option<(&UiId, &'a TransientStateJournal)>,
     index: usize,
-) -> &'a Style {
+) -> EffectiveStyle<'a> {
     match parent {
         Some((parent_id, overlay)) => {
             let child_id = layout::resolved_child_id(parent_id, child, index);
             overlay.style(&child_id, child)
         }
-        None => &child.style,
+        None => EffectiveStyle::canonical(&child.style),
     }
 }
 
@@ -7979,7 +7980,10 @@ fn measure_element_effective<Message>(
     context: Option<(&UiId, &TransientStateJournal)>,
     constraints: Constraints,
 ) -> Size {
-    let style = context.map_or(&element.style, |(id, overlay)| overlay.style(id, element));
+    let style = context.map_or_else(
+        || EffectiveStyle::canonical(&element.style),
+        |(id, overlay)| overlay.style(id, element),
+    );
     let kind = context.map_or(&element.kind, |(id, overlay)| overlay.kind(id, element));
     // A definite box does not depend on its children's intrinsic size. Grid
     // and flex measurement can visit a subtree repeatedly before placement;
@@ -7992,8 +7996,8 @@ fn measure_element_effective<Message>(
         _ => None,
     };
     if let (Some(width), Some(height)) = (
-        definite(style.width, constraints.max.width),
-        definite(style.height, constraints.max.height),
+        definite(style.width(), constraints.max.width),
+        definite(style.height(), constraints.max.height),
     ) {
         let min_width = style.min_width.max(0.0);
         let min_height = style.min_height.max(0.0);
@@ -8042,7 +8046,7 @@ fn measure_element_effective<Message>(
             } else {
                 Size::new(image.width() as f32, image.height() as f32)
             };
-            match (explicit_px(style.width), explicit_px(style.height)) {
+            match (explicit_px(style.width()), explicit_px(style.height())) {
                 (Some(width), None) if intrinsic.width > 0.0 => {
                     Size::new(width, width * intrinsic.height / intrinsic.width)
                 }
@@ -8289,7 +8293,7 @@ fn measure_element_effective<Message>(
             })
             .unwrap_or_default(),
     };
-    let intrinsic_width = match (kind, style.width) {
+    let intrinsic_width = match (kind, style.width()) {
         (
             Kind::Text {
                 value, scale, bold, ..
@@ -8316,9 +8320,9 @@ fn measure_element_effective<Message>(
         _ => content.width + horizontal_padding,
     };
     let horizontal_scrollbar_gutter = match style.overflow_x {
-        Overflow::Scroll => scrollbar::scrollbar_gutter(style),
+        Overflow::Scroll => scrollbar::scrollbar_gutter(&style),
         Overflow::Auto if content.width > child_max.width + 0.01 => {
-            scrollbar::scrollbar_gutter(style)
+            scrollbar::scrollbar_gutter(&style)
         }
         _ => 0.0,
     };
@@ -8331,7 +8335,9 @@ fn measure_element_effective<Message>(
     let max_width = style.max_width.max(min_width);
     let max_height = style.max_height.max(min_height);
     let resolved = Size::new(
-        style.width.resolve(constraints.max.width, intrinsic.width),
+        style
+            .width()
+            .resolve(constraints.max.width, intrinsic.width),
         style
             .height
             .resolve(constraints.max.height, intrinsic.height),
@@ -8363,7 +8369,10 @@ fn collect_selection_regions<Message>(
         overlay: Option<&TransientStateJournal>,
     ) {
         let node = &resolved.nodes[node_index];
-        let style = overlay.map_or(&element.style, |overlay| overlay.style(&node.id, element));
+        let style = overlay.map_or_else(
+            || EffectiveStyle::canonical(&element.style),
+            |overlay| overlay.style(&node.id, element),
+        );
         let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(&node.id, element));
         let active = if style.selection_region {
             builders.push(SelectionRegionBuilder {
