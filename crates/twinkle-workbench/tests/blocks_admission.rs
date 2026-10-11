@@ -321,6 +321,8 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
                 "declarationNavigationSidecarBytes": resources.declaration_navigation_sidecar_bytes,
                 "resolvedSidecars": resources.resolved_sidecar_count,
                 "resolvedSidecarBytes": resources.resolved_sidecar_bytes,
+                "retainedMetadataSidecars": resources.retained_metadata_sidecar_count,
+                "retainedMetadataSidecarBytes": resources.retained_metadata_sidecar_bytes,
                 "accessibilityProjectionBytes": resources.accessibility_projection_bytes,
                 "estimatedOwnedBytes": resources.estimated_owned_bytes,
             },

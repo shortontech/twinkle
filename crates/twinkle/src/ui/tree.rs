@@ -546,6 +546,12 @@ pub struct FrameResourceDiagnostics {
     pub resolved_sidecar_bytes: usize,
     /// Retained reconciliation arena storage, including cached paint buffers.
     pub retained_arena_bytes: usize,
+    /// Mandatory cold metadata records owned separately from the compact hot
+    /// retained nodes.
+    pub retained_metadata_sidecar_count: usize,
+    /// Inline bytes of retained metadata sidecars; allocator metadata is not
+    /// included.
+    pub retained_metadata_sidecar_bytes: usize,
     /// Accessibility records and their directly owned strings/action buffers.
     pub accessibility_storage_bytes: usize,
     /// Lazily materialized public accessibility adapter snapshot. This is zero
@@ -3918,6 +3924,8 @@ impl<Message: Clone> UiFrame<Message> {
                 .sum::<usize>()
             + self.grids.capacity() * std::mem::size_of::<ResolvedGrid>();
         let retained_arena_bytes = self.retained_nodes.estimated_bytes();
+        let (retained_metadata_sidecar_count, retained_metadata_sidecar_bytes) =
+            self.retained_nodes.metadata_sidecars();
         let accessibility_storage_bytes = self.accessibility.capacity()
             * std::mem::size_of::<AccessibilityDescriptor>()
             + accessibility_projection_bytes;
@@ -4007,6 +4015,8 @@ impl<Message: Clone> UiFrame<Message> {
             resolved_sidecar_count,
             resolved_sidecar_bytes,
             retained_arena_bytes,
+            retained_metadata_sidecar_count,
+            retained_metadata_sidecar_bytes,
             accessibility_storage_bytes,
             accessibility_projection_bytes,
             paint_storage_bytes,

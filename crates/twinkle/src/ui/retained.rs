@@ -5,7 +5,7 @@ use crate::{Rect, Size, UiId};
 
 use super::{
     BoxShadow, DropdownPartStyle, Element, GridColumnSpec, InteractionPaint, Kind, Length,
-    Overflow, PaintCommand, Style, Track,
+    Overflow, Style, Track,
 };
 
 /// Stable native identity assigned independently of a node's current arena slot.
@@ -51,9 +51,6 @@ pub(crate) struct RetainedPhaseData {
     measured_constraints: Option<[u32; 2]>,
     scroll_measurements: Option<Box<ScrollMeasurementCache>>,
     pub(crate) allocated: Option<Rect>,
-    pub(crate) paint: Vec<PaintCommand>,
-    pub(crate) interaction_revision: u64,
-    pub(crate) semantics_revision: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -71,11 +68,7 @@ pub(crate) struct ReconcileStats {
 pub(crate) struct RetainedNode {
     id: RetainedNodeId,
     parent: Option<RetainedNodeId>,
-    identity: ChildIdentity,
-    #[cfg_attr(not(test), allow(dead_code))]
-    ui_id: UiId,
     kind: KindTag,
-    signatures: PhaseSignatures,
     dirty: DirtyPhases,
     children: Vec<RetainedNodeId>,
     subtree_dirty: DirtyPhases,
@@ -90,6 +83,33 @@ pub(crate) struct RetainedNode {
     /// Recomputed bottom-up during reconciliation, before layout reuse queries.
     subtree_layout_clean: bool,
     pub(crate) phases: RetainedPhaseData,
+    metadata: Option<Box<RetainedNodeMetadata>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RetainedNodeMetadata {
+    identity: ChildIdentity,
+    #[cfg_attr(not(test), allow(dead_code))]
+    ui_id: UiId,
+    signatures: PhaseSignatures,
+}
+
+impl std::ops::Deref for RetainedNode {
+    type Target = RetainedNodeMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        self.metadata
+            .as_deref()
+            .expect("live retained node has metadata")
+    }
+}
+
+impl std::ops::DerefMut for RetainedNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.metadata
+            .as_deref_mut()
+            .expect("live retained node has metadata")
+    }
 }
 
 impl RetainedNode {
@@ -113,15 +133,6 @@ impl RetainedNode {
         }
         if self.dirty.contains(DirtyPhases::PLACE) {
             self.phases.allocated = None;
-        }
-        if self.dirty.contains(DirtyPhases::PAINT) {
-            self.phases.paint.clear();
-        }
-        if self.dirty.contains(DirtyPhases::INTERACTION) {
-            self.phases.interaction_revision = 0;
-        }
-        if self.dirty.contains(DirtyPhases::SEMANTICS) {
-            self.phases.semantics_revision = 0;
         }
     }
 }
@@ -973,13 +984,20 @@ impl RetainedNodeArena {
             .as_mut()
             .filter(|node| node.kind == kind && node.identity == identity);
         let current = signatures(element);
-        let (id, mut phases, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
+        let (id, mut phases, mut metadata, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
             consumed.insert(old.id);
             self.last.reused += 1;
             let dirty = changed_phases(current, old.signatures);
             // The prior arena is already owned by this reconciliation. Move
             // retained resources instead of cloning buffers before invalidation.
-            (old.id, std::mem::take(&mut old.phases), dirty)
+            (
+                old.id,
+                std::mem::take(&mut old.phases),
+                old.metadata
+                    .take()
+                    .expect("reusable retained node has metadata"),
+                dirty,
+            )
         } else {
             if had_old {
                 self.last.replaced += 1;
@@ -988,7 +1006,16 @@ impl RetainedNodeArena {
             let id = RetainedNodeId(self.next_id);
             self.next_id += 1;
             self.last.created += 1;
-            (id, RetainedPhaseData::default(), DirtyPhases::ALL)
+            (
+                id,
+                RetainedPhaseData::default(),
+                Box::new(RetainedNodeMetadata {
+                    identity: identity.clone(),
+                    ui_id: ui_id.clone(),
+                    signatures: current,
+                }),
+                DirtyPhases::ALL,
+            )
         };
 
         let old_children = reusable
@@ -1095,13 +1122,13 @@ impl RetainedNodeArena {
             && phases.measured.is_some()
             && phases.allocated.is_some();
         self.by_ui_id.entry(ui_id.clone()).or_insert(id);
+        metadata.identity = identity;
+        metadata.ui_id = ui_id;
+        metadata.signatures = current;
         let mut node = RetainedNode {
             id,
             parent,
-            identity,
-            ui_id,
             kind,
-            signatures: current,
             dirty,
             children,
             subtree_dirty,
@@ -1110,6 +1137,7 @@ impl RetainedNodeArena {
             subtree_independent_output_reuse_safe,
             subtree_layout_clean,
             phases,
+            metadata: Some(metadata),
         };
         node.invalidate_dirty_phases();
         if !node.subtree_dirty.is_empty() {
@@ -1230,6 +1258,15 @@ impl RetainedNodeArena {
         self.nodes.len()
     }
 
+    pub(crate) fn metadata_sidecars(&self) -> (usize, usize) {
+        (
+            self.nodes.len(),
+            self.nodes
+                .len()
+                .saturating_mul(std::mem::size_of::<RetainedNodeMetadata>()),
+        )
+    }
+
     pub(crate) fn last(&self) -> ReconcileStats {
         self.last.clone()
     }
@@ -1237,13 +1274,13 @@ impl RetainedNodeArena {
     pub(crate) fn estimated_bytes(&self) -> usize {
         self.nodes.capacity()
             * (std::mem::size_of::<RetainedNodeId>() + std::mem::size_of::<RetainedNode>())
+            + self.nodes.len() * std::mem::size_of::<RetainedNodeMetadata>()
             + self
                 .nodes
                 .values()
                 .map(|node| {
                     let _parent = node.parent();
                     node.children.capacity() * std::mem::size_of::<RetainedNodeId>()
-                        + node.phases.paint.capacity() * std::mem::size_of::<PaintCommand>()
                         + node
                             .phases
                             .scroll_measurements
@@ -1257,12 +1294,16 @@ impl RetainedNodeArena {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PaintCommand;
 
     #[test]
     fn declarative_element_inline_size_does_not_regress() {
         let small = std::mem::size_of::<Element<usize>>();
         let large = std::mem::size_of::<Element<[u8; 64]>>();
         eprintln!("element_inline_bytes small_message={small} large_message={large}");
+        assert_eq!(std::mem::size_of::<RetainedNode>(), 128);
+        assert_eq!(std::mem::size_of::<RetainedPhaseData>(), 56);
+        assert_eq!(std::mem::size_of::<RetainedNodeMetadata>(), 104);
         assert!(
             small <= 1_032,
             "small-message Element grew to {small} bytes"
@@ -1562,7 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_moves_retained_buffers_instead_of_cloning_them() {
+    fn reconciliation_moves_retained_scroll_cache_instead_of_cloning_it() {
         let mut arena = RetainedNodeArena::default();
         let view = keyed_text("leaf", "same");
         arena.reconcile(&view);
@@ -1570,26 +1611,24 @@ mod tests {
         let leaf = arena.nodes.values_mut().next().unwrap();
         leaf.phases.measured = Some(bounds.size);
         leaf.phases.allocated = Some(bounds);
-        leaf.phases.paint.push(PaintCommand::Fill {
-            rect: bounds,
-            color: 0xff12_3456,
-        });
         leaf.phases.scroll_measurements = Some(Box::new([
             Some(([80.0f32.to_bits(), f32::INFINITY.to_bits()], bounds.size)),
             None,
         ]));
-        let paint_storage = leaf.phases.paint.as_ptr();
+        let metadata_storage = leaf.metadata.as_deref().unwrap() as *const RetainedNodeMetadata;
         let measurement_storage = leaf.phases.scroll_measurements.as_deref().unwrap() as *const _;
         let stats = arena.reconcile(&view);
         assert_eq!(stats.reused, 1);
         assert_eq!(stats.removed, 0);
         let leaf = arena.nodes().next().unwrap();
-        assert_eq!(leaf.phases.paint.as_ptr(), paint_storage);
+        assert_eq!(
+            leaf.metadata.as_deref().unwrap() as *const RetainedNodeMetadata,
+            metadata_storage
+        );
         assert_eq!(
             leaf.phases.scroll_measurements.as_deref().unwrap() as *const _,
             measurement_storage
         );
-        assert_eq!(leaf.phases.paint.len(), 1);
     }
 
     #[test]
@@ -1628,10 +1667,6 @@ mod tests {
         let leaf = arena.nodes.values_mut().next().unwrap();
         leaf.phases.measured = Some(cached_size);
         leaf.phases.allocated = Some(cached_bounds);
-        leaf.phases.paint.push(PaintCommand::Fill {
-            rect: cached_bounds,
-            color: 0xff12_3456,
-        });
         arena.reconcile(&keyed_text("leaf", "a much longer label"));
         let leaf = arena.nodes().next().unwrap();
         assert!(!leaf.dirty().contains(DirtyPhases::MEASURE));
@@ -1640,7 +1675,6 @@ mod tests {
         assert!(leaf.dirty().contains(DirtyPhases::SEMANTICS));
         assert_eq!(leaf.phases.measured, Some(cached_size));
         assert_eq!(leaf.phases.allocated, Some(cached_bounds));
-        assert!(leaf.phases.paint.is_empty());
     }
 
     #[test]
