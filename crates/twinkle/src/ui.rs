@@ -1146,6 +1146,45 @@ impl Default for Style {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct TextDetails {
+    outline: Option<(Color, f32)>,
+    selection_x: Option<(f32, f32)>,
+    caret_position: Option<Point>,
+    input_value: Option<String>,
+    input_placeholder: Option<String>,
+    input_mask: Option<char>,
+}
+
+#[derive(Clone, Debug)]
+struct DropdownKind {
+    selected: String,
+    options: Vec<String>,
+    expanded: bool,
+    open_generation: u64,
+    overlay: bool,
+    background: Color,
+    option_background: Color,
+    foreground: Color,
+    presentation: Option<Box<[DropdownPartStyle; 3]>>,
+    details: Option<Box<DropdownDetails>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DropdownDetails {
+    option_presentations: Vec<DropdownPartStyle>,
+    resolved_options: Vec<DropdownPartStyle>,
+    selected_icon: Option<(u16, Arc<RgbaImage>, u64)>,
+    option_icons: Vec<Option<(u16, Arc<RgbaImage>, u64)>>,
+}
+
+impl DropdownKind {
+    fn details_mut(&mut self) -> &mut DropdownDetails {
+        self.details
+            .get_or_insert_with(|| Box::new(DropdownDetails::default()))
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Kind {
     Flex(Axis),
@@ -1169,14 +1208,9 @@ enum Kind {
         bold: bool,
         wrap: bool,
         line_height: Option<f32>,
-        max_lines: Option<usize>,
+        max_lines: Option<std::num::NonZeroUsize>,
         ellipsis: bool,
-        outline: Option<(Color, f32)>,
-        selection_x: Option<(f32, f32)>,
-        caret_position: Option<Point>,
-        input_value: Option<String>,
-        input_placeholder: Option<String>,
-        input_mask: Option<char>,
+        details: Option<Box<TextDetails>>,
     },
     StyledText {
         value: String,
@@ -1201,21 +1235,7 @@ enum Kind {
         geometry: [f32; 6],
         presentation: Option<Box<[DropdownPartStyle; 3]>>,
     },
-    Dropdown {
-        selected: String,
-        options: Vec<String>,
-        expanded: bool,
-        open_generation: u64,
-        overlay: bool,
-        background: Color,
-        option_background: Color,
-        foreground: Color,
-        presentation: Option<Box<[DropdownPartStyle; 3]>>,
-        option_presentations: Vec<DropdownPartStyle>,
-        resolved_options: Vec<DropdownPartStyle>,
-        selected_icon: Option<(u16, Arc<RgbaImage>, u64)>,
-        option_icons: Vec<Option<(u16, Arc<RgbaImage>, u64)>>,
-    },
+    Dropdown(Box<DropdownKind>),
 }
 
 impl Kind {
@@ -1231,7 +1251,25 @@ impl Kind {
             Self::StyledText { .. } => "StyledText",
             Self::Image { .. } => "Image",
             Self::Slider { .. } => "Slider",
-            Self::Dropdown { .. } => "Dropdown",
+            Self::Dropdown(_) => "Dropdown",
+        }
+    }
+
+    fn text_details(&self) -> Option<&TextDetails> {
+        match self {
+            Self::Text { details, .. } => details.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn text_details_mut(&mut self) -> Option<&mut TextDetails> {
+        match self {
+            Self::Text { details, .. } => Some(
+                details
+                    .get_or_insert_with(|| Box::new(TextDetails::default()))
+                    .as_mut(),
+            ),
+            _ => None,
         }
     }
 }
@@ -1413,12 +1451,7 @@ impl<Message> Element<Message> {
                 line_height: None,
                 max_lines: None,
                 ellipsis: false,
-                outline: None,
-                selection_x: None,
-                caret_position: None,
-                input_value: None,
-                input_placeholder: None,
-                input_mask: None,
+                details: None,
             },
             id: None,
             source: None,
@@ -1481,13 +1514,11 @@ impl<Message> Element<Message> {
             || self.style.selection_document.is_some();
         if !selection_region
             && self.content_revision.is_none()
-            && matches!(
-                self.kind,
-                Kind::Text {
-                    input_value: None,
-                    ..
-                }
-            )
+            && matches!(self.kind, Kind::Text { .. })
+            && self
+                .kind
+                .text_details()
+                .is_none_or(|details| details.input_value.is_none())
             && self.text_mapper.is_none()
             && !self.has_declared_events()
             && self.option_messages.is_empty()
@@ -3324,6 +3355,30 @@ mod background_policy_tests {
                 rect: Rect::new(0.0, 0.0, 10.0, 10.0),
                 color: 0xffffff,
             }],
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
+    fn common_declaration_record_sizes_stay_compact() {
+        assert_eq!(std::mem::size_of::<Kind>(), 64);
+        assert_eq!(std::mem::size_of::<Element<usize>>(), 920);
+        assert_eq!(std::mem::size_of::<Style>(), 480);
+        assert_eq!(std::mem::size_of::<DropdownKind>(), 88);
+        assert_eq!(std::mem::size_of::<DropdownDetails>(), 96);
+    }
+
+    #[test]
+    fn ordinary_text_does_not_allocate_editing_details() {
+        let mut text = Element::<usize>::text("ordinary", 1.0);
+        assert!(text.kind.text_details().is_none());
+
+        text.kind.text_details_mut().unwrap().input_value = Some("editable".into());
+        assert_eq!(
+            text.kind
+                .text_details()
+                .and_then(|details| details.input_value.as_deref()),
+            Some("editable")
         );
     }
 }

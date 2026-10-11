@@ -161,17 +161,22 @@ pub(super) fn layout_element<Message: Clone>(
                 step: f64::from(element.adjustment_step),
             }),
             Kind::Text {
-                input_value: Some(value),
-                input_mask: Some(_),
+                details: Some(details),
                 ..
-            } => Some(SemanticValueSnapshot::ProtectedText {
-                character_count: value.chars().count(),
-            }),
+            } if details.input_value.is_some() && details.input_mask.is_some() => {
+                Some(SemanticValueSnapshot::ProtectedText {
+                    character_count: details.input_value.as_ref().unwrap().chars().count(),
+                })
+            }
             Kind::Text {
-                input_value: Some(value),
+                details: Some(details),
                 ..
-            } => Some(SemanticValueSnapshot::Text(value.clone())),
-            Kind::Dropdown { selected, .. } => Some(SemanticValueSnapshot::Text(selected.clone())),
+            } if details.input_value.is_some() => Some(SemanticValueSnapshot::Text(
+                details.input_value.as_ref().unwrap().clone(),
+            )),
+            Kind::Dropdown(dropdown) => {
+                Some(SemanticValueSnapshot::Text(dropdown.selected.clone()))
+            }
             _ => None,
         },
         children: Vec::new(),
@@ -261,7 +266,7 @@ pub(super) fn layout_element<Message: Clone>(
                     *bold,
                     *wrap,
                     *line_height,
-                    *max_lines,
+                    max_lines.map(std::num::NonZeroUsize::get),
                     if *wrap {
                         rect.size.width.max(0.0)
                     } else {
@@ -360,7 +365,7 @@ pub(super) fn layout_element<Message: Clone>(
         | Kind::CustomPaintCommands { .. }
         | Kind::Image { .. }
         | Kind::Slider { .. }
-        | Kind::Dropdown { .. } => {}
+        | Kind::Dropdown(_) => {}
         Kind::Layer => {
             let content = rect.inset(element.style.padding);
             for (index, child) in element.children.iter().enumerate() {
@@ -834,7 +839,7 @@ pub(super) fn layout_element<Message: Clone>(
 
 fn geometry_reuse_safe<Message>(element: &Element<Message>) -> bool {
     let owns_auxiliary_layout_records = matches!(element.kind, Kind::VerticalScroll { .. })
-        || matches!(element.kind, Kind::Dropdown { .. })
+        || matches!(element.kind, Kind::Dropdown(_))
         || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
         || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto);
     // Reused geometry still recursively lays out every child. A descendant
@@ -906,7 +911,7 @@ fn apply_transient_state_with_parent<Message>(
         || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
         || matches!(
             element.kind,
-            Kind::VerticalScroll { .. } | Kind::Dropdown { .. }
+            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
         );
     if owns_state {
         let focus_foreground = element.style.foreground.or_else(|| {
@@ -1023,13 +1028,8 @@ fn apply_transient_state_with_parent<Message>(
         let transparent_editor = element.text_mapper.is_some()
             && matches!(element.kind, Kind::Text { .. })
             && element.style.background.is_none();
-        let css_dropdown = matches!(
-            element.kind,
-            Kind::Dropdown {
-                presentation: Some(_),
-                ..
-            }
-        );
+        let css_dropdown =
+            matches!(&element.kind, Kind::Dropdown(dropdown) if dropdown.presentation.is_some());
         let active_focus_tint = if scope_background_active
             || exact_focus_background.is_some()
             || css_dropdown
@@ -1075,9 +1075,7 @@ fn apply_transient_state_with_parent<Message>(
             });
         }
         let requested_open_generation = match &element.kind {
-            Kind::Dropdown {
-                open_generation, ..
-            } => Some(*open_generation),
+            Kind::Dropdown(dropdown) => Some(dropdown.open_generation),
             _ => None,
         };
         let (scroll_offset_x, scroll_offset, scroll_at_end, dropdown_open) = {
@@ -1127,16 +1125,8 @@ fn apply_transient_state_with_parent<Message>(
                     }
                 }
             }
-            Kind::Dropdown {
-                expanded,
-                options,
-                overlay,
-                presentation,
-                option_presentations,
-                resolved_options,
-                ..
-            } => {
-                *expanded = dropdown_open;
+            Kind::Dropdown(dropdown) => {
+                dropdown.expanded = dropdown_open;
                 let owner_paint = interaction_index
                     .map(|index| {
                         element
@@ -1146,7 +1136,7 @@ fn apply_transient_state_with_parent<Message>(
                             .map_or(InteractionPaint::default(), |paints| paints[index])
                     })
                     .unwrap_or_default();
-                if let Some(parts) = presentation.as_mut() {
+                if let Some(parts) = dropdown.presentation.as_mut() {
                     for part in parts.iter_mut() {
                         *part = part.inherited_paint(owner_paint);
                     }
@@ -1170,10 +1160,14 @@ fn apply_transient_state_with_parent<Message>(
                     };
                     parts[0] = resolved(parts[0], id);
                     parts[2] = resolved(parts[2], id);
-                    *resolved_options = (0..options.len())
+                    let details = dropdown
+                        .details
+                        .get_or_insert_with(|| Box::new(DropdownDetails::default()));
+                    details.resolved_options = (0..dropdown.options.len())
                         .map(|index| {
                             resolved(
-                                option_presentations
+                                details
+                                    .option_presentations
                                     .get(index)
                                     .copied()
                                     .unwrap_or(parts[1])
@@ -1183,12 +1177,15 @@ fn apply_transient_state_with_parent<Message>(
                         })
                         .collect();
                 }
-                let height = presentation.as_ref().map(|parts| {
+                let height = dropdown.presentation.as_ref().map(|parts| {
                     parts[0].height
                         + parts[0].margin.height()
-                        + if *expanded && !*overlay {
-                            resolved_options
-                                .iter()
+                        + if dropdown.expanded && !dropdown.overlay {
+                            dropdown
+                                .details
+                                .as_ref()
+                                .into_iter()
+                                .flat_map(|details| details.resolved_options.iter())
                                 .map(|part| part.height + part.margin.height())
                                 .sum::<f32>()
                         } else {
@@ -1197,10 +1194,10 @@ fn apply_transient_state_with_parent<Message>(
                 });
                 if !element.style.css_paint {
                     element.style.height = Length::Px(height.unwrap_or({
-                        if *overlay {
+                        if dropdown.overlay {
                             30.0
-                        } else if *expanded {
-                            42.0 + options.len() as f32 * 36.0
+                        } else if dropdown.expanded {
+                            42.0 + dropdown.options.len() as f32 * 36.0
                         } else {
                             42.0
                         }
@@ -1214,32 +1211,31 @@ fn apply_transient_state_with_parent<Message>(
                 value,
                 scale,
                 bold,
-                selection_x,
-                caret_position,
-                input_value,
-                input_placeholder,
-                input_mask,
                 line_height,
+                details,
                 ..
             } = &mut element.kind
         {
+            let details = details
+                .get_or_insert_with(|| Box::new(TextDetails::default()))
+                .as_mut();
             // A text field may paint a placeholder while its editable value is
             // intentionally empty. Reconciliation must seed the editor from
             // that canonical input value, not from presentation text.
-            let initial = input_value.clone().unwrap_or_else(|| value.clone());
+            let initial = details.input_value.clone().unwrap_or_else(|| value.clone());
             let focused = state.focused() == Some(id);
             let caret_visible = state.caret_visible();
             let editor = state.editor(id.clone(), &initial);
             if editor.text() != initial {
                 editor.set_text(initial);
             }
-            *input_value = Some(editor.text().to_owned());
-            *selection_x = focused
+            details.input_value = Some(editor.text().to_owned());
+            details.selection_x = focused
                 .then(|| editor.selection())
                 .flatten()
                 .map(|selection| {
                     let width = |end| {
-                        let visible = input_mask.map_or_else(
+                        let visible = details.input_mask.map_or_else(
                             || editor.text()[..end].to_owned(),
                             |mask| mask_text(&editor.text()[..end], mask),
                         );
@@ -1251,14 +1247,16 @@ fn apply_transient_state_with_parent<Message>(
                             None,
                             Some(1),
                             f32::INFINITY,
-                            input_mask.map_or(TextRetention::Public, TextRetention::Masked),
+                            details
+                                .input_mask
+                                .map_or(TextRetention::Public, TextRetention::Masked),
                         )
                         .width
                     };
                     (width(selection.start), width(selection.end))
                 });
-            *caret_position = (focused && caret_visible).then(|| {
-                let prefix = input_mask.map_or_else(
+            details.caret_position = (focused && caret_visible).then(|| {
+                let prefix = details.input_mask.map_or_else(
                     || editor.display_caret_prefix(),
                     |mask| mask_text(&editor.display_caret_prefix(), mask),
                 );
@@ -1279,7 +1277,9 @@ fn apply_transient_state_with_parent<Message>(
                     None,
                     Some(1),
                     f32::INFINITY,
-                    input_mask.map_or(TextRetention::Public, TextRetention::Masked),
+                    details
+                        .input_mask
+                        .map_or(TextRetention::Public, TextRetention::Masked),
                 )
                 .width;
                 let height = line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3);
@@ -1289,9 +1289,9 @@ fn apply_transient_state_with_parent<Message>(
                 }
             });
             *value = if editor.text().is_empty() && editor.preedit().is_empty() {
-                input_placeholder.clone().unwrap_or_default()
-            } else if let Some(mask) = input_mask {
-                mask_text(&editor.display_text_with_caret(""), *mask)
+                details.input_placeholder.clone().unwrap_or_default()
+            } else if let Some(mask) = details.input_mask {
+                mask_text(&editor.display_text_with_caret(""), mask)
             } else {
                 editor.display_text_with_caret("")
             };

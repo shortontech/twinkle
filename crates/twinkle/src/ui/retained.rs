@@ -344,14 +344,14 @@ fn kind_tag(kind: &Kind) -> KindTag {
         Kind::StyledText { .. } => KindTag::StyledText,
         Kind::Image { .. } => KindTag::Image,
         Kind::Slider { .. } => KindTag::Slider,
-        Kind::Dropdown { .. } => KindTag::Dropdown,
+        Kind::Dropdown(_) => KindTag::Dropdown,
     }
 }
 
 fn node_independent_output_reuse_safe<Message>(element: &Element<Message>) -> bool {
     !matches!(
         element.kind,
-        Kind::VerticalScroll { .. } | Kind::Dropdown { .. }
+        Kind::VerticalScroll { .. } | Kind::Dropdown(_)
     ) && !matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
         && !matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
         && element.style.proximity_magnification.is_none()
@@ -390,10 +390,7 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
             line_height,
             max_lines,
             ellipsis,
-            outline,
-            input_value,
-            input_placeholder,
-            input_mask,
+            details,
             ..
         } => {
             let _ = value;
@@ -406,10 +403,23 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
             content_measure.add(&line_height.map(bits));
             content_measure.add(max_lines);
             paint.add(ellipsis);
-            paint.add(&outline.map(|(color, width)| (color, bits(width))));
-            paint.add(&input_value.is_some());
-            paint.add(&input_placeholder.is_some());
-            paint.add(&input_mask);
+            paint.add(
+                &details
+                    .as_ref()
+                    .and_then(|details| details.outline)
+                    .map(|(color, width)| (color, bits(width))),
+            );
+            paint.add(
+                &details
+                    .as_ref()
+                    .is_some_and(|details| details.input_value.is_some()),
+            );
+            paint.add(
+                &details
+                    .as_ref()
+                    .is_some_and(|details| details.input_placeholder.is_some()),
+            );
+            paint.add(&details.as_ref().and_then(|details| details.input_mask));
         }
         Kind::StyledText {
             value,
@@ -476,36 +486,37 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
                 }
             }
         }
-        Kind::Dropdown {
-            selected,
-            options,
-            expanded,
-            open_generation,
-            overlay,
-            background,
-            option_background,
-            foreground,
-            presentation,
-            option_presentations,
-            resolved_options,
-            selected_icon,
-            option_icons,
-        } => {
-            let _ = (selected, options, option_presentations, resolved_options);
+        Kind::Dropdown(dropdown) => {
+            let _ = (
+                &dropdown.selected,
+                &dropdown.options,
+                dropdown
+                    .details
+                    .as_ref()
+                    .map(|details| &details.option_presentations),
+                dropdown
+                    .details
+                    .as_ref()
+                    .map(|details| &details.resolved_options),
+            );
             measure_content_sensitive = true;
             paint_content_sensitive = true;
             semantics_content_sensitive = true;
-            for icon in std::iter::once(selected_icon).chain(option_icons.iter()) {
-                paint.add(&icon.as_ref().map(|(id, _, generation)| (*id, *generation)));
+            if let Some(details) = &dropdown.details {
+                for icon in
+                    std::iter::once(&details.selected_icon).chain(details.option_icons.iter())
+                {
+                    paint.add(&icon.as_ref().map(|(id, _, generation)| (*id, *generation)));
+                }
             }
-            paint.add(expanded);
-            paint.add(open_generation);
-            paint.add(overlay);
-            paint.add(background);
-            paint.add(option_background);
-            paint.add(foreground);
-            paint.add(&presentation.is_some());
-            if let Some(parts) = presentation {
+            paint.add(&dropdown.expanded);
+            paint.add(&dropdown.open_generation);
+            paint.add(&dropdown.overlay);
+            paint.add(&dropdown.background);
+            paint.add(&dropdown.option_background);
+            paint.add(&dropdown.foreground);
+            paint.add(&dropdown.presentation.is_some());
+            if let Some(parts) = &dropdown.presentation {
                 for part in parts.as_ref() {
                     dropdown_part(&mut paint, part);
                 }

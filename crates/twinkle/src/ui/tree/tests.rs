@@ -1602,6 +1602,8 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
         resources.declaration_event_sidecar_bytes,
         std::mem::size_of::<super::super::ElementEvents<TestMessage>>()
     );
+    assert_eq!(resources.declaration_kind_sidecar_count, 0);
+    assert_eq!(resources.declaration_kind_sidecar_bytes, 0);
     assert!(resources.resolved_storage_bytes > 0);
     assert!(resources.retained_arena_bytes > 0);
     assert!(resources.accessibility_storage_bytes > 0);
@@ -1621,6 +1623,26 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     );
     assert!(resources.estimated_owned_bytes > resources.estimated_retained_bytes);
     assert_eq!(resources.retained_build_scratch_bytes, 0);
+}
+
+#[test]
+fn ordinary_dropdown_accounts_for_only_its_compact_kind_sidecar() {
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        Dropdown::new(
+            TestMessage::Named("toggle"),
+            "One",
+            [("One", TestMessage::Named("one"))],
+        ),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+
+    assert_eq!(resources.declaration_kind_sidecar_count, 1);
+    assert_eq!(
+        resources.declaration_kind_sidecar_bytes,
+        std::mem::size_of::<super::super::DropdownKind>()
+    );
 }
 
 #[test]

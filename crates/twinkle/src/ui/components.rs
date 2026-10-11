@@ -1214,10 +1214,11 @@ impl<Message> FilePlaneItem<Message> {
     }
 
     pub fn label_outline(mut self, color: Color, width: f32) -> Self {
-        if let Some(label) = self.label_box_mut()
-            && let Kind::Text { outline, .. } = &mut label.kind
+        if let Some(details) = self
+            .label_box_mut()
+            .and_then(|label| label.kind.text_details_mut())
         {
-            *outline = (width > 0.0).then_some((color, width.max(0.5)));
+            details.outline = (width > 0.0).then_some((color, width.max(0.5)));
         }
         self
     }
@@ -1516,8 +1517,8 @@ impl<Message> Text<Message> {
     /// Paint a glyph outline behind this text without introducing a label
     /// backplate. This is intended for text over photographic/mixed imagery.
     pub fn outline(mut self, color: Color, width: f32) -> Self {
-        if let Kind::Text { outline, .. } = &mut self.0.kind {
-            *outline = (width > 0.0).then_some((color, width.max(0.5)));
+        if let Some(details) = self.0.kind.text_details_mut() {
+            details.outline = (width > 0.0).then_some((color, width.max(0.5)));
         }
         self
     }
@@ -1555,7 +1556,7 @@ impl<Message> Text<Message> {
 
     pub fn max_lines(mut self, lines: usize) -> Self {
         if let Kind::Text { max_lines, .. } = &mut self.0.kind {
-            *max_lines = Some(lines.max(1));
+            *max_lines = std::num::NonZeroUsize::new(lines.max(1));
         }
         self
     }
@@ -1999,8 +2000,8 @@ impl<Message> TextField<Message> {
             displayed: value.to_owned(),
             single_line_height: None,
         };
-        if let Kind::Text { input_value, .. } = &mut field.text.0.kind {
-            *input_value = Some(value.to_owned());
+        if let Some(details) = field.text.0.kind.text_details_mut() {
+            details.input_value = Some(value.to_owned());
         }
         field.text.0.text_mapper = Some(TextMessageMapper::Function(map));
         field
@@ -2045,14 +2046,9 @@ impl<Message> TextField<Message> {
             displayed,
             single_line_height: None,
         };
-        if let Kind::Text {
-            input_value,
-            input_placeholder,
-            ..
-        } = &mut field.text.0.kind
-        {
-            *input_value = Some(value.to_owned());
-            *input_placeholder = Some(placeholder);
+        if let Some(details) = field.text.0.kind.text_details_mut() {
+            details.input_value = Some(value.to_owned());
+            details.input_placeholder = Some(placeholder);
         }
         field
     }
@@ -2066,14 +2062,9 @@ impl<Message> TextField<Message> {
             displayed,
             single_line_height: None,
         };
-        if let Kind::Text {
-            input_value,
-            input_mask,
-            ..
-        } = &mut field.text.0.kind
-        {
-            *input_value = Some(value.to_owned());
-            *input_mask = Some(mask);
+        if let Some(details) = field.text.0.kind.text_details_mut() {
+            details.input_value = Some(value.to_owned());
+            details.input_mask = Some(mask);
         }
         field.text.0.text_mapper = Some(TextMessageMapper::Function(map));
         field
@@ -2106,16 +2097,10 @@ impl<Message> TextField<Message> {
             displayed,
             single_line_height: None,
         };
-        if let Kind::Text {
-            input_value,
-            input_placeholder,
-            input_mask,
-            ..
-        } = &mut field.text.0.kind
-        {
-            *input_value = Some(value.to_owned());
-            *input_placeholder = Some(placeholder);
-            *input_mask = Some(mask);
+        if let Some(details) = field.text.0.kind.text_details_mut() {
+            details.input_value = Some(value.to_owned());
+            details.input_placeholder = Some(placeholder);
+            details.input_mask = Some(mask);
         }
         field
     }
@@ -3205,7 +3190,7 @@ impl<Message> Button<Message> {
             } = &mut label.kind
         {
             *wrap = true;
-            *max_lines = Some(lines.max(1));
+            *max_lines = std::num::NonZeroUsize::new(lines.max(1));
             *ellipsis = false;
         }
         self
@@ -3237,7 +3222,7 @@ impl<Message> Button<Message> {
             } = &mut label.kind
         {
             *wrap = !ellipsis;
-            *max_lines = ellipsis.then_some(1);
+            *max_lines = ellipsis.then_some(std::num::NonZeroUsize::MIN);
             *value = ellipsis;
         }
         self
@@ -3926,7 +3911,7 @@ impl<Message> Dropdown<Message> {
             source: None,
             content_revision: None,
             virtual_navigation: None,
-            kind: Kind::Dropdown {
+            kind: Kind::Dropdown(Box::new(DropdownKind {
                 selected: selected.into(),
                 options,
                 expanded: false,
@@ -3936,11 +3921,8 @@ impl<Message> Dropdown<Message> {
                 option_background: 0x34445f,
                 foreground: 0xf4f7ff,
                 presentation: None,
-                option_presentations: Vec::new(),
-                resolved_options: Vec::new(),
-                selected_icon: None,
-                option_icons: Vec::new(),
-            },
+                details: None,
+            })),
             style: Style::default(),
             events: Some(Box::new(ElementEvents {
                 message: Some(toggle_message),
@@ -3970,12 +3952,8 @@ impl<Message> Dropdown<Message> {
         selected: Option<(u16, Arc<RgbaImage>)>,
         options: impl IntoIterator<Item = Option<(u16, Arc<RgbaImage>)>>,
     ) -> Self {
-        if let Kind::Dropdown {
-            selected_icon,
-            option_icons,
-            ..
-        } = &mut self.0.kind
-        {
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            let details = dropdown.details_mut();
             let artwork = |(id, image): (u16, Arc<RgbaImage>)| {
                 use std::hash::{Hash, Hasher};
                 let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
@@ -3984,19 +3962,16 @@ impl<Message> Dropdown<Message> {
                 image.as_raw().hash(&mut fingerprint);
                 (id, image, fingerprint.finish())
             };
-            *selected_icon = selected.map(artwork);
-            *option_icons = options.into_iter().map(|icon| icon.map(artwork)).collect();
+            details.selected_icon = selected.map(artwork);
+            details.option_icons = options.into_iter().map(|icon| icon.map(artwork)).collect();
         }
         self
     }
 
     pub fn option_parts(mut self, styles: impl IntoIterator<Item = DropdownPartStyle>) -> Self {
-        if let Kind::Dropdown {
-            option_presentations,
-            ..
-        } = &mut self.0.kind
-        {
-            *option_presentations = styles.into_iter().map(DropdownPartStyle::bounded).collect();
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.details_mut().option_presentations =
+                styles.into_iter().map(DropdownPartStyle::bounded).collect();
         }
         self
     }
@@ -4011,8 +3986,8 @@ impl<Message> Dropdown<Message> {
     ) -> Self {
         let parts = [header.bounded(), option.bounded(), indicator.bounded()];
         self.0.style.height = Length::Px(parts[0].height + parts[0].margin.height());
-        if let Kind::Dropdown { presentation, .. } = &mut self.0.kind {
-            *presentation = Some(Box::new(parts));
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.presentation = Some(Box::new(parts));
         }
         self
     }
@@ -4035,12 +4010,8 @@ impl<Message> Dropdown<Message> {
     /// Paint options in the transient overlay layer instead of growing the
     /// surrounding layout when the choice list opens.
     pub fn overlay(mut self, overlay: bool) -> Self {
-        if let Kind::Dropdown {
-            overlay: is_overlay,
-            ..
-        } = &mut self.0.kind
-        {
-            *is_overlay = overlay;
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.overlay = overlay;
             self.0.style.height = Length::Px(if overlay { 30.0 } else { 42.0 });
         }
         self
@@ -4048,26 +4019,18 @@ impl<Message> Dropdown<Message> {
 
     /// Requests one opening transition for a new application-owned generation.
     pub fn open_generation(mut self, generation: u64) -> Self {
-        if let Kind::Dropdown {
-            open_generation, ..
-        } = &mut self.0.kind
-        {
-            *open_generation = generation;
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.open_generation = generation;
         }
         self
     }
 
     pub fn expanded(mut self, expanded: bool) -> Self {
-        if let Kind::Dropdown {
-            expanded: is_expanded,
-            options,
-            ..
-        } = &mut self.0.kind
-        {
-            *is_expanded = expanded;
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.expanded = expanded;
             self.0.style.height = Length::Px(
                 42.0 + if expanded {
-                    options.len() as f32 * 36.0
+                    dropdown.options.len() as f32 * 36.0
                 } else {
                     0.0
                 },
@@ -4082,16 +4045,10 @@ impl<Message> Dropdown<Message> {
         option_background: Color,
         foreground: Color,
     ) -> Self {
-        if let Kind::Dropdown {
-            background: dropdown_background,
-            option_background: dropdown_option_background,
-            foreground: dropdown_foreground,
-            ..
-        } = &mut self.0.kind
-        {
-            *dropdown_background = background;
-            *dropdown_option_background = option_background;
-            *dropdown_foreground = foreground;
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.background = background;
+            dropdown.option_background = option_background;
+            dropdown.foreground = foreground;
         }
         self
     }
@@ -4152,7 +4109,7 @@ impl<Message: Clone> Menu<Message> {
             source: None,
             content_revision: None,
             virtual_navigation: None,
-            kind: Kind::Dropdown {
+            kind: Kind::Dropdown(Box::new(DropdownKind {
                 selected: label.into(),
                 options: items.iter().map(|item| item.label.clone()).collect(),
                 expanded: false,
@@ -4162,11 +4119,8 @@ impl<Message: Clone> Menu<Message> {
                 option_background: 0x202630,
                 foreground: 0xe8edf4,
                 presentation: None,
-                option_presentations: Vec::new(),
-                resolved_options: Vec::new(),
-                selected_icon: None,
-                option_icons: Vec::new(),
-            },
+                details: None,
+            })),
             style: Style::default(),
             events: Some(Box::new(ElementEvents {
                 message: Some(toggle_message.clone()),
@@ -4209,16 +4163,11 @@ impl<Message: Clone> Menu<Message> {
     }
 
     pub fn expanded(mut self, expanded: bool) -> Self {
-        if let Kind::Dropdown {
-            expanded: is_expanded,
-            options,
-            ..
-        } = &mut self.0.kind
-        {
-            *is_expanded = expanded;
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.expanded = expanded;
             self.0.style.height = Length::Px(
                 30.0 + if expanded {
-                    options.len() as f32 * 36.0
+                    dropdown.options.len() as f32 * 36.0
                 } else {
                     0.0
                 },
@@ -4233,16 +4182,10 @@ impl<Message: Clone> Menu<Message> {
         option_background: Color,
         foreground: Color,
     ) -> Self {
-        if let Kind::Dropdown {
-            background: header,
-            option_background: options,
-            foreground: text,
-            ..
-        } = &mut self.0.kind
-        {
-            *header = background;
-            *options = option_background;
-            *text = foreground;
+        if let Kind::Dropdown(dropdown) = &mut self.0.kind {
+            dropdown.background = background;
+            dropdown.option_background = option_background;
+            dropdown.foreground = foreground;
         }
         self
     }

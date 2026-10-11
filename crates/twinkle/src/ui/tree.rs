@@ -411,6 +411,12 @@ pub struct FrameResourceDiagnostics {
     /// Inline payload bytes owned by declaration event sidecars. Allocator
     /// metadata and allocations owned recursively by `Message` are excluded.
     pub declaration_event_sidecar_bytes: usize,
+    /// Separately allocated kind/detail records in the declaration. This
+    /// includes dropdown, text-editing, and fixed boxed presentation payloads,
+    /// but not vector/string buffers owned inside them.
+    pub declaration_kind_sidecar_count: usize,
+    /// Inline payload bytes of the declaration kind sidecars counted above.
+    pub declaration_kind_sidecar_bytes: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
     /// Retained reconciliation arena storage, including cached paint buffers.
@@ -695,7 +701,7 @@ impl<Message> Default for UiFrame<Message> {
 fn paint_refresh_preserves_geometry<Message>(element: &Element<Message>) -> bool {
     // Expanded dropdown options are currently materialized during emission and
     // therefore do not yet have reusable resolved topology.
-    if matches!(element.kind, Kind::Dropdown { .. })
+    if matches!(element.kind, Kind::Dropdown(_))
         || element.text_mapper.is_some()
         || element.style.proximity_magnification.is_some()
     {
@@ -3582,15 +3588,16 @@ impl<Message: Clone> UiFrame<Message> {
                 Kind::CustomPaintCommands { commands } => {
                     commands.capacity() * std::mem::size_of::<PaintCommand>()
                 }
-                Kind::Text {
-                    value,
-                    input_value,
-                    input_placeholder,
-                    ..
-                } => {
+                Kind::Text { value, details, .. } => {
                     value.capacity()
-                        + input_value.as_ref().map_or(0, String::capacity)
-                        + input_placeholder.as_ref().map_or(0, String::capacity)
+                        + details.as_ref().map_or(0, |details| {
+                            std::mem::size_of_val(details.as_ref())
+                                + details.input_value.as_ref().map_or(0, String::capacity)
+                                + details
+                                    .input_placeholder
+                                    .as_ref()
+                                    .map_or(0, String::capacity)
+                        })
                 }
                 Kind::StyledText { value, spans, .. } => {
                     value.capacity() + spans.capacity() * std::mem::size_of::<StyledTextSpan>()
@@ -3598,25 +3605,26 @@ impl<Message: Clone> UiFrame<Message> {
                 Kind::Slider { presentation, .. } => presentation
                     .as_ref()
                     .map_or(0, |value| std::mem::size_of_val(value.as_ref())),
-                Kind::Dropdown {
-                    selected,
-                    options,
-                    presentation,
-                    option_presentations,
-                    resolved_options,
-                    option_icons,
-                    ..
-                } => {
-                    selected.capacity()
-                        + options.capacity() * std::mem::size_of::<String>()
-                        + options.iter().map(String::capacity).sum::<usize>()
-                        + presentation
+                Kind::Dropdown(dropdown) => {
+                    std::mem::size_of_val(dropdown.as_ref())
+                        + dropdown.selected.capacity()
+                        + dropdown.options.capacity() * std::mem::size_of::<String>()
+                        + dropdown.options.iter().map(String::capacity).sum::<usize>()
+                        + dropdown
+                            .presentation
                             .as_ref()
                             .map_or(0, |value| std::mem::size_of_val(value.as_ref()))
-                        + option_presentations.capacity() * std::mem::size_of::<DropdownPartStyle>()
-                        + resolved_options.capacity() * std::mem::size_of::<DropdownPartStyle>()
-                        + option_icons.capacity()
-                            * std::mem::size_of::<Option<(u16, std::sync::Arc<RgbaImage>, u64)>>()
+                        + dropdown.details.as_ref().map_or(0, |details| {
+                            std::mem::size_of_val(details.as_ref())
+                                + details.option_presentations.capacity()
+                                    * std::mem::size_of::<DropdownPartStyle>()
+                                + details.resolved_options.capacity()
+                                    * std::mem::size_of::<DropdownPartStyle>()
+                                + details.option_icons.capacity()
+                                    * std::mem::size_of::<
+                                        Option<(u16, std::sync::Arc<RgbaImage>, u64)>,
+                                    >()
+                        })
                 }
                 Kind::Flex(_)
                 | Kind::Layer
@@ -3642,6 +3650,43 @@ impl<Message: Clone> UiFrame<Message> {
             count,
             count.saturating_mul(std::mem::size_of::<super::ElementEvents<Message>>()),
         )
+    }
+
+    fn declaration_kind_sidecars(root: &Element<Message>) -> (usize, usize) {
+        fn nested<Message>(element: &Element<Message>) -> (usize, usize) {
+            let (mut count, mut bytes): (usize, usize) = match &element.kind {
+                Kind::Text {
+                    details: Some(details),
+                    ..
+                } => (1, std::mem::size_of_val(details.as_ref())),
+                Kind::Slider {
+                    presentation: Some(presentation),
+                    ..
+                } => (1, std::mem::size_of_val(presentation.as_ref())),
+                Kind::Dropdown(dropdown) => {
+                    let mut count = 1;
+                    let mut bytes = std::mem::size_of_val(dropdown.as_ref());
+                    if let Some(presentation) = &dropdown.presentation {
+                        count += 1;
+                        bytes += std::mem::size_of_val(presentation.as_ref());
+                    }
+                    if let Some(details) = &dropdown.details {
+                        count += 1;
+                        bytes += std::mem::size_of_val(details.as_ref());
+                    }
+                    (count, bytes)
+                }
+                _ => (0, 0),
+            };
+            for child in &element.children {
+                let (child_count, child_bytes) = nested(child);
+                count = count.saturating_add(child_count);
+                bytes = bytes.saturating_add(child_bytes);
+            }
+            (count, bytes)
+        }
+
+        nested(root)
     }
 
     // A retained paint refresh may grow output-vector capacity, but it does not
@@ -3688,6 +3733,10 @@ impl<Message: Clone> UiFrame<Message> {
             .declaration_root
             .as_ref()
             .map_or((0, 0), Self::declaration_event_sidecars);
+        let (declaration_kind_sidecar_count, declaration_kind_sidecar_bytes) = self
+            .declaration_root
+            .as_ref()
+            .map_or((0, 0), Self::declaration_kind_sidecars);
         let resolved_storage_bytes = self.resolved.nodes.capacity()
             * std::mem::size_of::<ResolvedNode>()
             + self
@@ -3795,6 +3844,8 @@ impl<Message: Clone> UiFrame<Message> {
             declaration_tree_bytes,
             declaration_event_sidecar_count,
             declaration_event_sidecar_bytes,
+            declaration_kind_sidecar_count,
+            declaration_kind_sidecar_bytes,
             resolved_storage_bytes,
             retained_arena_bytes,
             accessibility_storage_bytes,
@@ -7439,7 +7490,7 @@ pub(super) fn measure_element<Message>(
             *bold,
             *wrap,
             *line_height,
-            *max_lines,
+            max_lines.map(std::num::NonZeroUsize::get),
             child_max.width,
         ),
         Kind::StyledText {
@@ -7482,16 +7533,23 @@ pub(super) fn measure_element<Message>(
                 .fold(0.0, f32::max),
         ),
         Kind::Slider { .. } => Size::new(120.0, 24.0),
-        Kind::Dropdown {
-            selected,
-            options,
-            expanded,
-            overlay,
-            presentation,
-            option_presentations,
-            resolved_options,
-            ..
-        } => {
+        Kind::Dropdown(dropdown) => {
+            let DropdownKind {
+                selected,
+                options,
+                expanded,
+                overlay,
+                presentation,
+                ..
+            } = dropdown.as_ref();
+            let option_presentations = dropdown
+                .details
+                .as_ref()
+                .map_or(&[][..], |details| details.option_presentations.as_slice());
+            let resolved_options = dropdown
+                .details
+                .as_ref()
+                .map_or(&[][..], |details| details.resolved_options.as_slice());
             if let Some(parts) = presentation {
                 let header = &parts[0];
                 let text_width = if header.font_size > 0.0 {
@@ -7774,7 +7832,7 @@ fn collect_selection_regions<Message>(
         let excluded = excluded
             || element.primary_message().is_some() && !is_scroll_container(element)
             || element.text_mapper.is_some()
-            || matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown { .. });
+            || matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown(_));
         if let Some(region_index) = active
             && !excluded
             && element.style.selectable != Some(false)
@@ -7802,7 +7860,7 @@ fn collect_selection_regions<Message>(
                 *bold,
                 *wrap,
                 *line_height,
-                *max_lines,
+                max_lines.map(std::num::NonZeroUsize::get),
                 element.style.text_align,
             );
             builders[region_index].logical_runs.push(SelectionRun {
@@ -7970,10 +8028,10 @@ fn derive_accessible_name<Message>(element: &Element<Message>) -> Option<String>
     {
         return Some(value.clone());
     }
-    if let Kind::Dropdown { selected, .. } = &element.kind
-        && !selected.is_empty()
+    if let Kind::Dropdown(dropdown) = &element.kind
+        && !dropdown.selected.is_empty()
     {
-        return Some(selected.clone());
+        return Some(dropdown.selected.clone());
     }
     element
         .style
@@ -8003,7 +8061,9 @@ fn derive_descendant_accessible_name<Message>(element: &Element<Message>) -> Opt
         .cloned()
         .or_else(|| match &element.kind {
             Kind::Text { value, .. } if !value.is_empty() => Some(value.clone()),
-            Kind::Dropdown { selected, .. } if !selected.is_empty() => Some(selected.clone()),
+            Kind::Dropdown(dropdown) if !dropdown.selected.is_empty() => {
+                Some(dropdown.selected.clone())
+            }
             _ => None,
         })
         .or_else(|| {

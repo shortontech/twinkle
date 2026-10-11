@@ -486,31 +486,27 @@ pub(super) fn emit_element<Message: Clone>(
     if phases.interaction
         && let Some(map) = &element.text_mapper
         && let Kind::Text {
-            value, input_value, ..
-        } = &element.kind
-    {
-        let (scale, bold, line_height, secure) = match &element.kind {
-            Kind::Text {
-                scale,
-                bold,
-                line_height,
-                input_mask,
-                ..
-            } => (
-                *scale,
-                *bold,
-                line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
-                input_mask.is_some(),
-            ),
-            _ => unreachable!(),
-        };
-        tree.text_inputs.push(TextInputRegion {
-            id: node.id.clone(),
-            content: node.content,
+            value,
             scale,
             bold,
             line_height,
-            initial: input_value.clone().unwrap_or_else(|| value.clone()),
+            details,
+            ..
+        } = &element.kind
+    {
+        let input_value = details
+            .as_ref()
+            .and_then(|details| details.input_value.as_ref());
+        let secure = details
+            .as_ref()
+            .is_some_and(|details| details.input_mask.is_some());
+        tree.text_inputs.push(TextInputRegion {
+            id: node.id.clone(),
+            content: node.content,
+            scale: *scale,
+            bold: *bold,
+            line_height: line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
+            initial: input_value.cloned().unwrap_or_else(|| value.clone()),
             map: map.clone(),
             secure,
             context_menu_presentation: element.style.editing_menu.clone(),
@@ -579,9 +575,10 @@ pub(super) fn emit_element<Message: Clone>(
         && let Kind::Text {
             scale,
             line_height,
-            selection_x: Some((start, end)),
+            details: Some(details),
             ..
         } = &element.kind
+        && let Some((start, end)) = details.selection_x
     {
         let color = element
             .style
@@ -595,9 +592,9 @@ pub(super) fn emit_element<Message: Clone>(
                 .as_ref()
                 .map_or(0.0, |parts| parts[1].radius);
             let selection_rect = Rect::new(
-                text_rect.origin.x + *start,
+                text_rect.origin.x + start,
                 text_rect.origin.y,
-                (*end - *start).max(1.0),
+                (end - start).max(1.0),
                 line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
             );
             tree.commands.push(if radius > 0.0 {
@@ -618,9 +615,10 @@ pub(super) fn emit_element<Message: Clone>(
         && let Kind::Text {
             scale,
             line_height,
-            caret_position: Some(caret_position),
+            details: Some(details),
             ..
         } = &element.kind
+        && let Some(caret_position) = details.caret_position
     {
         let parts = element.style.editing_parts.as_ref();
         let color = parts.map_or_else(
@@ -686,14 +684,14 @@ pub(super) fn emit_element<Message: Clone>(
             bold,
             wrap,
             ellipsis,
-            outline,
+            details,
             ..
         } => {
             if !phases.paint {
                 return;
             }
             let text = text_for_bounds(value, *scale, *bold, *ellipsis, text_rect.size.width);
-            if let Some((color, width)) = outline {
+            if let Some((color, width)) = details.as_ref().and_then(|details| details.outline) {
                 for (x, y) in [
                     (-1.0, -1.0),
                     (0.0, -1.0),
@@ -706,14 +704,14 @@ pub(super) fn emit_element<Message: Clone>(
                 ] {
                     tree.commands.push(PaintCommand::Text {
                         bounds: Rect::new(
-                            text_rect.origin.x + x * *width,
-                            text_rect.origin.y + y * *width,
+                            text_rect.origin.x + x * width,
+                            text_rect.origin.y + y * width,
                             text_rect.size.width,
                             text_rect.size.height,
                         ),
                         text: text.clone(),
                         scale: *scale,
-                        color: *color,
+                        color,
                         align: element.style.text_align,
                         bold: *bold,
                         wrap: *wrap,
@@ -972,21 +970,34 @@ pub(super) fn emit_element<Message: Clone>(
                 }
             }
         }
-        Kind::Dropdown {
-            selected,
-            options,
-            expanded,
-            overlay,
-            background,
-            option_background,
-            foreground,
-            presentation,
-            option_presentations,
-            resolved_options,
-            selected_icon,
-            option_icons,
-            ..
-        } => {
+        Kind::Dropdown(dropdown) => {
+            let DropdownKind {
+                selected,
+                options,
+                expanded,
+                overlay,
+                background,
+                option_background,
+                foreground,
+                presentation,
+                ..
+            } = dropdown.as_ref();
+            let option_presentations = dropdown
+                .details
+                .as_ref()
+                .map_or(&[][..], |details| details.option_presentations.as_slice());
+            let resolved_options = dropdown
+                .details
+                .as_ref()
+                .map_or(&[][..], |details| details.resolved_options.as_slice());
+            let selected_icon = dropdown
+                .details
+                .as_ref()
+                .and_then(|details| details.selected_icon.as_ref());
+            let option_icons = dropdown
+                .details
+                .as_ref()
+                .map_or(&[][..], |details| details.option_icons.as_slice());
             let rect = node.content;
             let header_height = presentation
                 .as_ref()
@@ -1286,7 +1297,7 @@ pub(super) fn emit_element<Message: Clone>(
     // style layer. Repeat an active/focused border in the foreground so their
     // own track or header cannot cover the selection indicator.
     if phases.paint
-        && matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown { .. })
+        && matches!(element.kind, Kind::Slider { .. } | Kind::Dropdown(_))
         && let Some(color) = element.style.border
         && element.style.border_width > 0.0
     {
