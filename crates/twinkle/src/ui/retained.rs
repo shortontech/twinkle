@@ -623,15 +623,606 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
     }
 }
 
+// Fingerprints reject unequal metadata cheaply, but never authorize reuse by
+// themselves. This exact comparison deliberately includes a superset of the
+// phase inputs: an uncommon change may invalidate more phases than strictly
+// necessary, while a forced fingerprint collision can never preserve stale
+// output. Content payloads with an explicit source revision remain governed by
+// that revision in `phase_matches`.
+fn exact_metadata_equal<Message>(current: &Element<Message>, previous: &Element<Message>) -> bool {
+    fn optional_f32_equal(current: Option<f32>, previous: Option<f32>) -> bool {
+        current.map(f32::to_bits) == previous.map(f32::to_bits)
+    }
+
+    fn text_mapper_equal<Message>(
+        current: Option<&super::TextMessageMapper<Message>>,
+        previous: Option<&super::TextMessageMapper<Message>>,
+    ) -> bool {
+        use super::TextMessageMapper;
+        match (current, previous) {
+            (None, None) => true,
+            (
+                Some(TextMessageMapper::Function(current)),
+                Some(TextMessageMapper::Function(previous)),
+            ) => *current as usize == *previous as usize,
+            (
+                Some(TextMessageMapper::Closure(current)),
+                Some(TextMessageMapper::Closure(previous)),
+            ) => std::sync::Arc::ptr_eq(current, previous),
+            _ => false,
+        }
+    }
+
+    fn dropdown_equal(current: &super::DropdownKind, previous: &super::DropdownKind) -> bool {
+        fn icon_equal(
+            current: &Option<(u16, std::sync::Arc<image::RgbaImage>, u64)>,
+            previous: &Option<(u16, std::sync::Arc<image::RgbaImage>, u64)>,
+        ) -> bool {
+            match (current, previous) {
+                (
+                    Some((current_id, _, current_generation)),
+                    Some((previous_id, _, previous_generation)),
+                ) => current_id == previous_id && current_generation == previous_generation,
+                (None, None) => true,
+                _ => false,
+            }
+        }
+
+        current.selected == previous.selected
+            && current.options == previous.options
+            && current.expanded == previous.expanded
+            && current.open_generation == previous.open_generation
+            && current.overlay == previous.overlay
+            && current.background == previous.background
+            && current.option_background == previous.option_background
+            && current.foreground == previous.foreground
+            && current.presentation == previous.presentation
+            && match (&current.details, &previous.details) {
+                (Some(current), Some(previous)) => {
+                    current.option_presentations == previous.option_presentations
+                        && current.resolved_options == previous.resolved_options
+                        && icon_equal(&current.selected_icon, &previous.selected_icon)
+                        && current.option_icons.len() == previous.option_icons.len()
+                        && current
+                            .option_icons
+                            .iter()
+                            .zip(&previous.option_icons)
+                            .all(|(current, previous)| icon_equal(current, previous))
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    fn kind_equal(current: &Kind, previous: &Kind) -> bool {
+        match (current, previous) {
+            (Kind::Flex(current), Kind::Flex(previous)) => current == previous,
+            (Kind::Layer, Kind::Layer) => true,
+            (
+                Kind::VerticalScroll {
+                    offset: current_offset,
+                    controlled: current_controlled,
+                },
+                Kind::VerticalScroll {
+                    offset: previous_offset,
+                    controlled: previous_controlled,
+                },
+            ) => {
+                current_offset.to_bits() == previous_offset.to_bits()
+                    && current_controlled == previous_controlled
+            }
+            (Kind::Grid { columns: current }, Kind::Grid { columns: previous }) => {
+                current == previous
+            }
+            (Kind::CustomPaint { paint: current }, Kind::CustomPaint { paint: previous }) => {
+                *current as usize == *previous as usize
+            }
+            (Kind::CustomPaintCommands { .. }, Kind::CustomPaintCommands { .. }) => true,
+            (
+                Kind::Text {
+                    scale: current_scale,
+                    bold: current_bold,
+                    wrap: current_wrap,
+                    line_height: current_line_height,
+                    max_lines: current_max_lines,
+                    ellipsis: current_ellipsis,
+                    details: current_details,
+                    ..
+                },
+                Kind::Text {
+                    scale: previous_scale,
+                    bold: previous_bold,
+                    wrap: previous_wrap,
+                    line_height: previous_line_height,
+                    max_lines: previous_max_lines,
+                    ellipsis: previous_ellipsis,
+                    details: previous_details,
+                    ..
+                },
+            ) => {
+                current_scale.to_bits() == previous_scale.to_bits()
+                    && current_bold == previous_bold
+                    && current_wrap == previous_wrap
+                    && optional_f32_equal(*current_line_height, *previous_line_height)
+                    && current_max_lines == previous_max_lines
+                    && current_ellipsis == previous_ellipsis
+                    && match (current_details, previous_details) {
+                        (Some(current), Some(previous)) => {
+                            current
+                                .outline
+                                .map(|(color, width)| (color, width.to_bits()))
+                                == previous
+                                    .outline
+                                    .map(|(color, width)| (color, width.to_bits()))
+                                && current
+                                    .selection_x
+                                    .map(|(start, end)| (start.to_bits(), end.to_bits()))
+                                    == previous
+                                        .selection_x
+                                        .map(|(start, end)| (start.to_bits(), end.to_bits()))
+                                && current
+                                    .caret_position
+                                    .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                                    == previous
+                                        .caret_position
+                                        .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                                && current.input_value.is_some() == previous.input_value.is_some()
+                                && current.input_placeholder.is_some()
+                                    == previous.input_placeholder.is_some()
+                                && current.input_mask == previous.input_mask
+                        }
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            (
+                Kind::StyledText {
+                    scale: current_scale,
+                    wrap: current_wrap,
+                    line_height: current_line_height,
+                    ..
+                },
+                Kind::StyledText {
+                    scale: previous_scale,
+                    wrap: previous_wrap,
+                    line_height: previous_line_height,
+                    ..
+                },
+            ) => {
+                current_scale.to_bits() == previous_scale.to_bits()
+                    && current_wrap == previous_wrap
+                    && optional_f32_equal(*current_line_height, *previous_line_height)
+            }
+            (
+                Kind::Image {
+                    id: current_id,
+                    generation: current_generation,
+                    presentation: current_presentation,
+                    ..
+                },
+                Kind::Image {
+                    id: previous_id,
+                    generation: previous_generation,
+                    presentation: previous_presentation,
+                    ..
+                },
+            ) => {
+                current_id == previous_id
+                    && current_generation == previous_generation
+                    && current_presentation == previous_presentation
+            }
+            (
+                Kind::Slider {
+                    value: current_value,
+                    track: current_track,
+                    fill: current_fill,
+                    thumb: current_thumb,
+                    thumb_border: current_thumb_border,
+                    geometry: current_geometry,
+                    presentation: current_presentation,
+                },
+                Kind::Slider {
+                    value: previous_value,
+                    track: previous_track,
+                    fill: previous_fill,
+                    thumb: previous_thumb,
+                    thumb_border: previous_thumb_border,
+                    geometry: previous_geometry,
+                    presentation: previous_presentation,
+                },
+            ) => {
+                current_value.to_bits() == previous_value.to_bits()
+                    && current_track == previous_track
+                    && current_fill == previous_fill
+                    && current_thumb == previous_thumb
+                    && current_thumb_border == previous_thumb_border
+                    && current_geometry.map(f32::to_bits) == previous_geometry.map(f32::to_bits)
+                    && current_presentation == previous_presentation
+            }
+            (Kind::Dropdown(current), Kind::Dropdown(previous)) => {
+                dropdown_equal(current, previous)
+            }
+            _ => false,
+        }
+    }
+
+    current.style == previous.style
+        && kind_equal(&current.kind, &previous.kind)
+        && current.virtual_navigation == previous.virtual_navigation
+        && current.primary_message().is_some() == previous.primary_message().is_some()
+        && current.declared_context_message().is_some()
+            == previous.declared_context_message().is_some()
+        && current.declared_focus_message().is_some() == previous.declared_focus_message().is_some()
+        && current.declared_blur_message().is_some() == previous.declared_blur_message().is_some()
+        && current.declared_drag_seed().is_some() == previous.declared_drag_seed().is_some()
+        && current.declared_drop_message().is_some() == previous.declared_drop_message().is_some()
+        && current.message_mapper.map(|mapper| mapper as usize)
+            == previous.message_mapper.map(|mapper| mapper as usize)
+        && current.seeded_value_mapper.map(|mapper| mapper as usize)
+            == previous.seeded_value_mapper.map(|mapper| mapper as usize)
+        && current.scroll_extent_mapper.map(|mapper| mapper as usize)
+            == previous.scroll_extent_mapper.map(|mapper| mapper as usize)
+        && current.drag_mapper.map(|mapper| mapper as usize)
+            == previous.drag_mapper.map(|mapper| mapper as usize)
+        && current.drop_mapper.map(|mapper| mapper as usize)
+            == previous.drop_mapper.map(|mapper| mapper as usize)
+        && text_mapper_equal(current.text_mapper.as_ref(), previous.text_mapper.as_ref())
+        && current.option_messages.len() == previous.option_messages.len()
+        && current.inline_messages.len() == previous.inline_messages.len()
+        && current.navigation_scope == previous.navigation_scope
+        && current.adjustment_step.to_bits() == previous.adjustment_step.to_bits()
+}
+
+#[derive(Clone, Copy)]
+struct ExactPhaseMatches {
+    measure: bool,
+    place: bool,
+    paint: bool,
+    interaction: bool,
+    semantics: bool,
+}
+
+impl ExactPhaseMatches {
+    const ALL: Self = Self {
+        measure: true,
+        place: true,
+        paint: true,
+        interaction: true,
+        semantics: true,
+    };
+}
+
+fn exact_optional_f32(current: Option<f32>, previous: Option<f32>) -> bool {
+    current.map(f32::to_bits) == previous.map(f32::to_bits)
+}
+
+fn exact_length(current: Length, previous: Length) -> bool {
+    match (current, previous) {
+        (Length::Px(current), Length::Px(previous))
+        | (Length::Percent(current), Length::Percent(previous))
+        | (Length::Fraction(current), Length::Fraction(previous)) => {
+            current.to_bits() == previous.to_bits()
+        }
+        (Length::Auto, Length::Auto)
+        | (Length::Fill, Length::Fill)
+        | (Length::MinContent, Length::MinContent)
+        | (Length::MaxContent, Length::MaxContent) => true,
+        _ => false,
+    }
+}
+
+fn exact_measure_style(current: &Style, previous: &Style) -> bool {
+    current.padding.top.to_bits() == previous.padding.top.to_bits()
+        && current.padding.right.to_bits() == previous.padding.right.to_bits()
+        && current.padding.bottom.to_bits() == previous.padding.bottom.to_bits()
+        && current.padding.left.to_bits() == previous.padding.left.to_bits()
+        && current.gap.to_bits() == previous.gap.to_bits()
+        && exact_length(current.width, previous.width)
+        && exact_length(current.height, previous.height)
+        && exact_length(current.basis, previous.basis)
+        && current.min_width.to_bits() == previous.min_width.to_bits()
+        && current.min_height.to_bits() == previous.min_height.to_bits()
+        && current.max_width.to_bits() == previous.max_width.to_bits()
+        && current.max_height.to_bits() == previous.max_height.to_bits()
+        && current.grow.to_bits() == previous.grow.to_bits()
+        && current.shrink.to_bits() == previous.shrink.to_bits()
+        && current.align_self == previous.align_self
+        && current.align_items == previous.align_items
+        && current.justify_content == previous.justify_content
+}
+
+fn exact_measure_kind(current: &Kind, previous: &Kind) -> bool {
+    match (current, previous) {
+        (Kind::Flex(current), Kind::Flex(previous)) => current == previous,
+        (Kind::Layer, Kind::Layer)
+        | (Kind::VerticalScroll { .. }, Kind::VerticalScroll { .. })
+        | (Kind::CustomPaint { .. }, Kind::CustomPaint { .. })
+        | (Kind::CustomPaintCommands { .. }, Kind::CustomPaintCommands { .. })
+        | (Kind::Slider { .. }, Kind::Slider { .. })
+        | (Kind::Dropdown(_), Kind::Dropdown(_)) => true,
+        (Kind::Grid { columns: current }, Kind::Grid { columns: previous }) => current == previous,
+        (
+            Kind::Text {
+                scale: current_scale,
+                bold: current_bold,
+                wrap: current_wrap,
+                line_height: current_line_height,
+                max_lines: current_max_lines,
+                ..
+            },
+            Kind::Text {
+                scale: previous_scale,
+                bold: previous_bold,
+                wrap: previous_wrap,
+                line_height: previous_line_height,
+                max_lines: previous_max_lines,
+                ..
+            },
+        ) => {
+            current_scale.to_bits() == previous_scale.to_bits()
+                && current_bold == previous_bold
+                && current_wrap == previous_wrap
+                && exact_optional_f32(*current_line_height, *previous_line_height)
+                && current_max_lines == previous_max_lines
+        }
+        (
+            Kind::StyledText {
+                scale: current_scale,
+                wrap: current_wrap,
+                line_height: current_line_height,
+                ..
+            },
+            Kind::StyledText {
+                scale: previous_scale,
+                wrap: previous_wrap,
+                line_height: previous_line_height,
+                ..
+            },
+        ) => {
+            current_scale.to_bits() == previous_scale.to_bits()
+                && current_wrap == previous_wrap
+                && exact_optional_f32(*current_line_height, *previous_line_height)
+        }
+        (
+            Kind::Image {
+                id: current_id,
+                generation: current_generation,
+                presentation: current_presentation,
+                ..
+            },
+            Kind::Image {
+                id: previous_id,
+                generation: previous_generation,
+                presentation: previous_presentation,
+                ..
+            },
+        ) => {
+            current_id == previous_id
+                && current_generation == previous_generation
+                && current_presentation == previous_presentation
+        }
+        _ => false,
+    }
+}
+
+fn exact_paint_style(current: &Style, previous: &Style) -> bool {
+    current.background == previous.background
+        && current.border == previous.border
+        && current.border_width.to_bits() == previous.border_width.to_bits()
+        && current.foreground == previous.foreground
+        && current.box_shadow == previous.box_shadow
+        && exact_optional_f32(current.backdrop_blur, previous.backdrop_blur)
+        && current.corner_radius.to_bits() == previous.corner_radius.to_bits()
+        && current.top_corner_radius.to_bits() == previous.top_corner_radius.to_bits()
+        && current.interaction_paints == previous.interaction_paints
+        && current.text_align == previous.text_align
+        && current.css_paint == previous.css_paint
+        && current.editing_parts == previous.editing_parts
+        && current.editing_menu == previous.editing_menu
+        && current.focus_background_tint == previous.focus_background_tint
+}
+
+fn exact_paint_kind<Message>(current: &Element<Message>, previous: &Element<Message>) -> bool {
+    match (&current.kind, &previous.kind) {
+        (Kind::Flex(current), Kind::Flex(previous)) => current == previous,
+        (Kind::Layer, Kind::Layer) | (Kind::Grid { .. }, Kind::Grid { .. }) => true,
+        (
+            Kind::VerticalScroll {
+                offset: current_offset,
+                controlled: current_controlled,
+            },
+            Kind::VerticalScroll {
+                offset: previous_offset,
+                controlled: previous_controlled,
+            },
+        ) => {
+            current_offset.to_bits() == previous_offset.to_bits()
+                && current_controlled == previous_controlled
+        }
+        (Kind::CustomPaint { paint: current }, Kind::CustomPaint { paint: previous }) => {
+            *current as usize == *previous as usize
+        }
+        (Kind::CustomPaintCommands { .. }, Kind::CustomPaintCommands { .. }) => true,
+        (
+            Kind::Text {
+                ellipsis: current_ellipsis,
+                details: current_details,
+                ..
+            },
+            Kind::Text {
+                ellipsis: previous_ellipsis,
+                details: previous_details,
+                ..
+            },
+        ) => {
+            current_ellipsis == previous_ellipsis
+                && match (current_details, previous_details) {
+                    (Some(current), Some(previous)) => {
+                        current
+                            .outline
+                            .map(|(color, width)| (color, width.to_bits()))
+                            == previous
+                                .outline
+                                .map(|(color, width)| (color, width.to_bits()))
+                            && current
+                                .selection_x
+                                .map(|(start, end)| (start.to_bits(), end.to_bits()))
+                                == previous
+                                    .selection_x
+                                    .map(|(start, end)| (start.to_bits(), end.to_bits()))
+                            && current
+                                .caret_position
+                                .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                                == previous
+                                    .caret_position
+                                    .map(|point| (point.x.to_bits(), point.y.to_bits()))
+                            && current.input_value.is_some() == previous.input_value.is_some()
+                            && current.input_placeholder.is_some()
+                                == previous.input_placeholder.is_some()
+                            && current.input_mask == previous.input_mask
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        (Kind::StyledText { .. }, Kind::StyledText { .. }) => true,
+        (
+            Kind::Image {
+                id: current_id,
+                generation: current_generation,
+                presentation: current_presentation,
+                ..
+            },
+            Kind::Image {
+                id: previous_id,
+                generation: previous_generation,
+                presentation: previous_presentation,
+                ..
+            },
+        ) => {
+            current_id == previous_id
+                && current_generation == previous_generation
+                && current_presentation == previous_presentation
+        }
+        (
+            Kind::Slider {
+                value: current_value,
+                track: current_track,
+                fill: current_fill,
+                thumb: current_thumb,
+                thumb_border: current_thumb_border,
+                geometry: current_geometry,
+                presentation: current_presentation,
+            },
+            Kind::Slider {
+                value: previous_value,
+                track: previous_track,
+                fill: previous_fill,
+                thumb: previous_thumb,
+                thumb_border: previous_thumb_border,
+                geometry: previous_geometry,
+                presentation: previous_presentation,
+            },
+        ) => {
+            current_value.to_bits() == previous_value.to_bits()
+                && current_track == previous_track
+                && current_fill == previous_fill
+                && current_thumb == previous_thumb
+                && current_thumb_border == previous_thumb_border
+                && current_geometry.map(f32::to_bits) == previous_geometry.map(f32::to_bits)
+                && current_presentation == previous_presentation
+        }
+        (Kind::Dropdown(_), Kind::Dropdown(_)) => exact_metadata_equal(current, previous),
+        _ => false,
+    }
+}
+
+fn exact_text_mapper<Message>(
+    current: Option<&super::TextMessageMapper<Message>>,
+    previous: Option<&super::TextMessageMapper<Message>>,
+) -> bool {
+    use super::TextMessageMapper;
+    match (current, previous) {
+        (None, None) => true,
+        (
+            Some(TextMessageMapper::Function(current)),
+            Some(TextMessageMapper::Function(previous)),
+        ) => *current as usize == *previous as usize,
+        (Some(TextMessageMapper::Closure(current)), Some(TextMessageMapper::Closure(previous))) => {
+            std::sync::Arc::ptr_eq(current, previous)
+        }
+        _ => false,
+    }
+}
+
+fn exact_phase_matches<Message>(
+    current: &Element<Message>,
+    previous: &Element<Message>,
+) -> ExactPhaseMatches {
+    let current_fixed = current.children.is_empty()
+        && matches!(current.style.width, Length::Px(_))
+        && matches!(current.style.height, Length::Px(_));
+    let previous_fixed = previous.children.is_empty()
+        && matches!(previous.style.width, Length::Px(_))
+        && matches!(previous.style.height, Length::Px(_));
+    ExactPhaseMatches {
+        measure: current_fixed == previous_fixed
+            && exact_measure_style(&current.style, &previous.style)
+            && (current_fixed || exact_measure_kind(&current.kind, &previous.kind)),
+        place: current.style.overflow_x == previous.style.overflow_x
+            && current.style.overflow_y == previous.style.overflow_y
+            && current.style.absolute_position == previous.style.absolute_position
+            && current.style.follow_scroll_end == previous.style.follow_scroll_end,
+        paint: exact_paint_style(&current.style, &previous.style)
+            && exact_paint_kind(current, previous),
+        interaction: current.virtual_navigation == previous.virtual_navigation
+            && current.primary_message().is_some() == previous.primary_message().is_some()
+            && current.declared_context_message().is_some()
+                == previous.declared_context_message().is_some()
+            && current.declared_focus_message().is_some()
+                == previous.declared_focus_message().is_some()
+            && current.declared_blur_message().is_some()
+                == previous.declared_blur_message().is_some()
+            && current.declared_drag_seed().is_some() == previous.declared_drag_seed().is_some()
+            && current.declared_drop_message().is_some()
+                == previous.declared_drop_message().is_some()
+            && current.message_mapper.map(|mapper| mapper as usize)
+                == previous.message_mapper.map(|mapper| mapper as usize)
+            && current.seeded_value_mapper.map(|mapper| mapper as usize)
+                == previous.seeded_value_mapper.map(|mapper| mapper as usize)
+            && current.scroll_extent_mapper.map(|mapper| mapper as usize)
+                == previous.scroll_extent_mapper.map(|mapper| mapper as usize)
+            && current.drag_mapper.map(|mapper| mapper as usize)
+                == previous.drag_mapper.map(|mapper| mapper as usize)
+            && current.drop_mapper.map(|mapper| mapper as usize)
+                == previous.drop_mapper.map(|mapper| mapper as usize)
+            && exact_text_mapper(current.text_mapper.as_ref(), previous.text_mapper.as_ref())
+            && current.option_messages.len() == previous.option_messages.len()
+            && current.inline_messages.len() == previous.inline_messages.len()
+            && current.navigation_scope == previous.navigation_scope
+            && current.adjustment_step.to_bits() == previous.adjustment_step.to_bits(),
+        semantics: current.style.accessibility_label == previous.style.accessibility_label
+            && current.style.accessibility_description == previous.style.accessibility_description
+            && current.style.accessibility_role == previous.style.accessibility_role
+            && current.style.accessibility_state == previous.style.accessibility_state
+            && current.style.accessibility_controls == previous.style.accessibility_controls
+            && current.style.semantic_role == previous.style.semantic_role
+            && current.style.accessibility_hidden == previous.style.accessibility_hidden
+            && current.style.semantic_decorative == previous.style.semantic_decorative,
+    }
+}
+
 fn phase_matches(
     current_metadata: u64,
     previous_metadata: u64,
+    exact_metadata_equal: bool,
     current_sensitive: bool,
     previous_sensitive: bool,
     current_revision: Option<u64>,
     previous_revision: Option<u64>,
 ) -> bool {
     current_metadata == previous_metadata
+        && exact_metadata_equal
         && current_sensitive == previous_sensitive
         && (!current_sensitive
             || current_revision
@@ -639,11 +1230,16 @@ fn phase_matches(
                 .is_some_and(|(current, previous)| current == previous))
 }
 
-fn changed_phases(current: PhaseSignatures, previous: PhaseSignatures) -> DirtyPhases {
+fn changed_phases(
+    current: PhaseSignatures,
+    previous: PhaseSignatures,
+    exact: ExactPhaseMatches,
+) -> DirtyPhases {
     let mut dirty = DirtyPhases::default();
     if !phase_matches(
         current.measure,
         previous.measure,
+        exact.measure,
         current.measure_content_sensitive,
         previous.measure_content_sensitive,
         current.content_revision,
@@ -651,12 +1247,13 @@ fn changed_phases(current: PhaseSignatures, previous: PhaseSignatures) -> DirtyP
     ) {
         dirty.insert(DirtyPhases::MEASURE.union(DirtyPhases::PLACE));
     }
-    if current.place != previous.place {
+    if current.place != previous.place || !exact.place {
         dirty.insert(DirtyPhases::PLACE);
     }
     if !phase_matches(
         current.paint,
         previous.paint,
+        exact.paint,
         current.paint_content_sensitive,
         previous.paint_content_sensitive,
         current.content_revision,
@@ -667,6 +1264,7 @@ fn changed_phases(current: PhaseSignatures, previous: PhaseSignatures) -> DirtyP
     if !phase_matches(
         current.interaction,
         previous.interaction,
+        exact.interaction,
         current.interaction_content_sensitive,
         previous.interaction_content_sensitive,
         current.content_revision,
@@ -677,6 +1275,7 @@ fn changed_phases(current: PhaseSignatures, previous: PhaseSignatures) -> DirtyP
     if !phase_matches(
         current.semantics,
         previous.semantics,
+        exact.semantics,
         current.semantics_content_sensitive,
         previous.semantics_content_sensitive,
         current.content_revision,
@@ -754,20 +1353,72 @@ impl RetainedNodeArena {
         }
     }
 
-    pub(crate) fn reconcile<Message>(&mut self, root: &Element<Message>) -> ReconcileStats {
-        self.reconcile_impl(root, None)
+    pub(crate) fn reconcile_against<Message>(
+        &mut self,
+        root: &Element<Message>,
+        previous: Option<&Element<Message>>,
+    ) -> ReconcileStats {
+        self.reconcile_impl(root, previous, None, false)
     }
 
-    pub(crate) fn reconcile_changed<Message>(
+    pub(crate) fn reconcile_changed_against<Message>(
+        &mut self,
+        root: &Element<Message>,
+        previous: Option<&Element<Message>>,
+        changed: &[UiId],
+    ) -> ReconcileStats {
+        let mut ancestry = HashSet::new();
+        let mut changed_nodes = HashSet::new();
+        for id in changed {
+            let Some(mut node) = self.by_ui_id.get(id).copied() else {
+                return self.reconcile_against(root, previous);
+            };
+            changed_nodes.insert(node);
+            loop {
+                ancestry.insert(node);
+                let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) else {
+                    break;
+                };
+                node = parent;
+            }
+        }
+        let Some(root_id) = self.root else {
+            return self.reconcile_against(root, previous);
+        };
+        let root_ui_id = root.id.as_ref().map_or_else(
+            || UiId::from("root"),
+            |id| UiId::from("root").scoped(id.as_str()),
+        );
+        if !self.changed_shape_matches(root, root_id, &root_ui_id, &ancestry) {
+            return self.reconcile_against(root, previous);
+        }
+        self.last = ReconcileStats::default();
+        self.pending_commit.clear();
+        self.reconcile_changed_node(root, previous, root_id, &ancestry, &changed_nodes, false);
+        self.last.clone()
+    }
+
+    #[cfg(test)]
+    fn reconcile<Message>(&mut self, root: &Element<Message>) -> ReconcileStats {
+        self.reconcile_impl(root, None, None, true)
+    }
+
+    #[cfg(test)]
+    fn reconcile_changed<Message>(
         &mut self,
         root: &Element<Message>,
         changed: &[UiId],
     ) -> ReconcileStats {
+        // Existing arena-focused tests exercise topology and work accounting
+        // without retaining declaration fixtures. Production always supplies
+        // the prior declaration through `reconcile_changed_against`.
         let mut ancestry = HashSet::new();
+        let mut changed_nodes = HashSet::new();
         for id in changed {
             let Some(mut node) = self.by_ui_id.get(id).copied() else {
                 return self.reconcile(root);
             };
+            changed_nodes.insert(node);
             loop {
                 ancestry.insert(node);
                 let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent) else {
@@ -788,7 +1439,7 @@ impl RetainedNodeArena {
         }
         self.last = ReconcileStats::default();
         self.pending_commit.clear();
-        self.reconcile_changed_node(root, root_id, &ancestry);
+        self.reconcile_changed_node(root, None, root_id, &ancestry, &changed_nodes, true);
         self.last.clone()
     }
 
@@ -839,8 +1490,11 @@ impl RetainedNodeArena {
     fn reconcile_changed_node<Message>(
         &mut self,
         element: &Element<Message>,
+        previous_element: Option<&Element<Message>>,
         id: RetainedNodeId,
         ancestry: &HashSet<RetainedNodeId>,
+        changed_nodes: &HashSet<RetainedNodeId>,
+        trust_fingerprint_for_test: bool,
     ) {
         self.last.visited += 1;
         self.last.reused += 1;
@@ -849,10 +1503,33 @@ impl RetainedNodeArena {
             (node.signatures, node.children.clone())
         };
         let current = signatures(element);
-        let mut dirty = changed_phases(current, previous);
-        for (child, child_id) in element.children.iter().zip(&children) {
+        let exact = if trust_fingerprint_for_test || !changed_nodes.contains(&id) {
+            ExactPhaseMatches::ALL
+        } else {
+            previous_element.map_or(
+                ExactPhaseMatches {
+                    measure: false,
+                    place: false,
+                    paint: false,
+                    interaction: false,
+                    semantics: false,
+                },
+                |previous| exact_phase_matches(element, previous),
+            )
+        };
+        let mut dirty = changed_phases(current, previous, exact);
+        for (index, (child, child_id)) in element.children.iter().zip(&children).enumerate() {
             if ancestry.contains(child_id) {
-                self.reconcile_changed_node(child, *child_id, ancestry);
+                let previous_child =
+                    previous_element.and_then(|previous| previous.children.get(index));
+                self.reconcile_changed_node(
+                    child,
+                    previous_child,
+                    *child_id,
+                    ancestry,
+                    changed_nodes,
+                    trust_fingerprint_for_test,
+                );
             }
         }
         let mut descendants = DirtyPhases::default();
@@ -921,7 +1598,9 @@ impl RetainedNodeArena {
     fn reconcile_impl<Message>(
         &mut self,
         root: &Element<Message>,
+        previous_root: Option<&Element<Message>>,
         changed_ancestry: Option<&HashSet<RetainedNodeId>>,
+        trust_fingerprint_for_test: bool,
     ) -> ReconcileStats {
         let mut old_nodes = std::mem::take(&mut self.nodes);
         let old_count = old_nodes.len();
@@ -934,6 +1613,7 @@ impl RetainedNodeArena {
         let mut consumed = HashSet::new();
         let root_id = self.reconcile_node(
             root,
+            previous_root,
             None,
             ChildIdentity::Root,
             root.id.as_ref().map_or_else(
@@ -945,6 +1625,7 @@ impl RetainedNodeArena {
             &mut old_nodes,
             &mut consumed,
             changed_ancestry,
+            trust_fingerprint_for_test,
         );
         self.root = Some(root_id);
         self.last.removed = old_count.saturating_sub(consumed.len());
@@ -955,6 +1636,7 @@ impl RetainedNodeArena {
     fn reconcile_node<Message>(
         &mut self,
         element: &Element<Message>,
+        previous_element: Option<&Element<Message>>,
         parent: Option<RetainedNodeId>,
         identity: ChildIdentity,
         ui_id: UiId,
@@ -963,6 +1645,7 @@ impl RetainedNodeArena {
         old_nodes: &mut HashMap<RetainedNodeId, RetainedNode>,
         consumed: &mut HashSet<RetainedNodeId>,
         changed_ancestry: Option<&HashSet<RetainedNodeId>>,
+        trust_fingerprint_for_test: bool,
     ) -> RetainedNodeId {
         self.last.visited += 1;
         let kind = kind_tag(&element.kind);
@@ -987,7 +1670,21 @@ impl RetainedNodeArena {
         let (id, mut phases, mut metadata, mut dirty) = if let Some(old) = reusable.as_deref_mut() {
             consumed.insert(old.id);
             self.last.reused += 1;
-            let dirty = changed_phases(current, old.signatures);
+            let exact = if trust_fingerprint_for_test {
+                ExactPhaseMatches::ALL
+            } else {
+                previous_element.map_or(
+                    ExactPhaseMatches {
+                        measure: false,
+                        place: false,
+                        paint: false,
+                        interaction: false,
+                        semantics: false,
+                    },
+                    |previous| exact_phase_matches(element, previous),
+                )
+            };
+            let dirty = changed_phases(current, old.signatures, exact);
             // The prior arena is already owned by this reconciliation. Move
             // retained resources instead of cloning buffers before invalidation.
             (
@@ -1064,6 +1761,20 @@ impl RetainedNodeArena {
             }
             children.push(self.reconcile_node(
                 child,
+                previous_element.and_then(|previous| {
+                    let aligned = previous.children.get(index).filter(|previous_child| {
+                        previous_child.id == child.id
+                            || (previous_child.id.is_none() && child.id.is_none())
+                    });
+                    aligned.or_else(|| {
+                        child.id.as_ref().and_then(|id| {
+                            previous
+                                .children
+                                .iter()
+                                .find(|previous_child| previous_child.id.as_ref() == Some(id))
+                        })
+                    })
+                }),
                 Some(id),
                 child_identity,
                 child_ui_id,
@@ -1072,6 +1783,7 @@ impl RetainedNodeArena {
                 old_nodes,
                 consumed,
                 changed_ancestry,
+                trust_fingerprint_for_test,
             ));
         }
         if reusable.is_some_and(|old| old.children != children) {
@@ -1379,6 +2091,41 @@ mod tests {
         let mut element = base;
         element.style.editing_menu = Some(Box::default());
         assert_changes(element);
+    }
+
+    #[test]
+    fn forced_phase_fingerprint_collisions_cannot_authorize_reuse() {
+        let baseline = Element::<()>::flex(super::super::Axis::Vertical);
+        let fingerprints = signatures(&baseline);
+        let forced_dirty = |mutated: &Element<()>| {
+            changed_phases(
+                fingerprints,
+                fingerprints,
+                exact_phase_matches(mutated, &baseline),
+            )
+        };
+
+        let mut measure = baseline.clone();
+        measure.style.width = Length::Px(42.0);
+        assert!(forced_dirty(&measure).contains(DirtyPhases::MEASURE));
+
+        let mut place = baseline.clone();
+        place.style.overflow_x = Overflow::Clip;
+        assert!(forced_dirty(&place).contains(DirtyPhases::PLACE));
+
+        let mut paint = baseline.clone();
+        paint.style.background = Some(0xff12_3456.into());
+        assert!(forced_dirty(&paint).contains(DirtyPhases::PAINT));
+
+        let interaction = baseline.clone().message(());
+        assert!(
+            forced_dirty(&interaction).contains(DirtyPhases::INTERACTION),
+            "exact handler metadata must defeat a colliding interaction fingerprint"
+        );
+
+        let mut semantics = baseline.clone();
+        semantics.style.semantic_role = Some(super::super::SemanticRole::Group);
+        assert!(forced_dirty(&semantics).contains(DirtyPhases::SEMANTICS));
     }
     use crate::{
         Column, Component, ComponentBuilderExt, CustomPaint, FrameRequest, Grid, Rect, Row,

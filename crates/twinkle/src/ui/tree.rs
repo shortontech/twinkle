@@ -2228,10 +2228,13 @@ impl<Message: Clone> UiFrame<Message> {
             },
             ..Self::default()
         };
+        let previous_declaration = previous.and_then(|previous| previous.declaration_root.as_ref());
         if let Some(changed) = changed_view_ids.filter(|changed| !changed.is_empty()) {
-            tree.retained_nodes.reconcile_changed(&root, changed);
+            tree.retained_nodes
+                .reconcile_changed_against(&root, previous_declaration, changed);
         } else {
-            tree.retained_nodes.reconcile(&root);
+            tree.retained_nodes
+                .reconcile_against(&root, previous_declaration);
         }
         layout_element(&root, &root_id, bounds, None, None, &mut tree, previous);
         let initial = tree
