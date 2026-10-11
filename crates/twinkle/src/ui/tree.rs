@@ -589,6 +589,10 @@ pub struct FrameResourceDiagnostics {
     /// Expanded owned-storage estimate formed from the categorized fields.
     /// This retains explicit exclusions and is not allocator-exact RSS/PSS.
     pub estimated_owned_bytes: usize,
+    /// Estimated peak while the candidate and still-owned parts of the prior
+    /// published generation overlap. Resources transferred into the candidate
+    /// are counted once. This is an ownership estimate, not allocator RSS.
+    pub peak_overlapping_generation_bytes: usize,
     pub retained_build_scratch_bytes: usize,
     /// Stable native nodes retained across declarative frame reconciliation.
     pub retained_node_count: usize,
@@ -747,6 +751,7 @@ pub struct UiFrame<Message = String> {
     declaration_root_id: Option<UiId>,
     transient_style_overlay_count: usize,
     transient_kind_overlay_count: usize,
+    overlap_previous_owned_bytes: usize,
     pointer_position_affects_geometry: bool,
     commands: Vec<PaintCommand>,
     paint_fragments: Vec<PaintFragment>,
@@ -818,6 +823,7 @@ impl<Message> Default for UiFrame<Message> {
             declaration_root_id: None,
             transient_style_overlay_count: 0,
             transient_kind_overlay_count: 0,
+            overlap_previous_owned_bytes: 0,
             pointer_position_affects_geometry: false,
             commands: Vec::new(),
             paint_fragments: Vec::new(),
@@ -2078,6 +2084,7 @@ impl<Message: Clone> UiFrame<Message> {
             None,
             None,
             None,
+            0,
         )
     }
 
@@ -2088,6 +2095,7 @@ impl<Message: Clone> UiFrame<Message> {
         diagnostics: bool,
         previous: &Self,
     ) -> Self {
+        let overlap_previous_owned_bytes = previous.resource_diagnostics().estimated_owned_bytes;
         Self::layout_with_state_and_diagnostics_impl(
             root,
             bounds,
@@ -2097,6 +2105,7 @@ impl<Message: Clone> UiFrame<Message> {
             None,
             None,
             None,
+            overlap_previous_owned_bytes,
         )
     }
 
@@ -2109,6 +2118,7 @@ impl<Message: Clone> UiFrame<Message> {
     ) -> Self {
         let retained_nodes = std::mem::take(&mut previous.retained_nodes);
         let retained_layout = std::mem::take(&mut previous.retained_layout);
+        let overlap_previous_owned_bytes = previous.resource_diagnostics().estimated_owned_bytes;
         Self::layout_with_state_and_diagnostics_impl(
             root,
             request.viewport,
@@ -2118,6 +2128,7 @@ impl<Message: Clone> UiFrame<Message> {
             Some(retained_nodes),
             Some(retained_layout),
             None,
+            overlap_previous_owned_bytes,
         )
     }
 
@@ -2131,6 +2142,7 @@ impl<Message: Clone> UiFrame<Message> {
     ) -> Self {
         let retained_nodes = std::mem::take(&mut previous.retained_nodes);
         let retained_layout = std::mem::take(&mut previous.retained_layout);
+        let overlap_previous_owned_bytes = previous.resource_diagnostics().estimated_owned_bytes;
         Self::layout_with_state_and_diagnostics_impl(
             root,
             request.viewport,
@@ -2140,6 +2152,7 @@ impl<Message: Clone> UiFrame<Message> {
             Some(retained_nodes),
             Some(retained_layout),
             Some(changed),
+            overlap_previous_owned_bytes,
         )
     }
 
@@ -2152,6 +2165,7 @@ impl<Message: Clone> UiFrame<Message> {
         retained_nodes: Option<super::retained::RetainedNodeArena>,
         retained_layout: Option<HashMap<UiId, RetainedGeometry>>,
         changed_view_ids: Option<&[UiId]>,
+        overlap_previous_owned_bytes: usize,
     ) -> Self {
         let mut root = root.into_element();
         let root_id = root.id.as_ref().map_or_else(
@@ -2221,6 +2235,7 @@ impl<Message: Clone> UiFrame<Message> {
             navigation_depths: Vec::with_capacity(
                 previous.map_or(0, |previous| previous.navigation_depths.len()),
             ),
+            overlap_previous_owned_bytes,
             resolved: ResolvedLayout {
                 nodes: Vec::with_capacity(
                     previous.map_or(0, |previous| previous.resolved.nodes.len()),
@@ -4252,6 +4267,8 @@ impl<Message: Clone> UiFrame<Message> {
             interaction_storage_bytes,
             index_storage_bytes,
             estimated_owned_bytes,
+            peak_overlapping_generation_bytes: estimated_owned_bytes
+                .saturating_add(self.overlap_previous_owned_bytes),
             retained_build_scratch_bytes,
             retained_node_count: self.retained_nodes.node_count(),
             retained_nodes_reused: retained.reused,

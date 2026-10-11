@@ -1713,6 +1713,49 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     );
     assert!(resources.estimated_owned_bytes > resources.estimated_retained_bytes);
     assert_eq!(resources.retained_build_scratch_bytes, 0);
+    assert_eq!(
+        resources.peak_overlapping_generation_bytes,
+        resources.estimated_owned_bytes
+    );
+}
+
+#[test]
+fn consuming_rebuild_counts_only_still_owned_prior_generation_bytes_at_peak() {
+    let bounds = Rect::new(0.0, 0.0, 240.0, 120.0);
+    let view = |label: &'static str| {
+        Column::new()
+            .id("root")
+            .child(Button::new(TestMessage::Named("save"), label).id("save"))
+    };
+    let mut state = UiStateStore::default();
+    let first = UiFrame::resolve(view("Before"), FrameRequest::new(bounds, &mut state));
+    let first_owned = first.resource_diagnostics().estimated_owned_bytes;
+
+    let cloned =
+        UiFrame::resolve_against(view("After"), FrameRequest::new(bounds, &mut state), &first);
+    assert_eq!(
+        cloned
+            .resource_diagnostics()
+            .peak_overlapping_generation_bytes,
+        cloned.resource_diagnostics().estimated_owned_bytes + first_owned
+    );
+
+    let mut consumed_previous = first;
+    let consumed = UiFrame::resolve_against_reusing(
+        view("After"),
+        FrameRequest::new(bounds, &mut state),
+        &mut consumed_previous,
+    );
+    let consumed_resources = consumed.resource_diagnostics();
+    assert!(
+        consumed_resources.peak_overlapping_generation_bytes
+            < consumed_resources.estimated_owned_bytes + first_owned,
+        "transferred retained storage must not be counted in both generations"
+    );
+    assert!(
+        consumed_resources.peak_overlapping_generation_bytes
+            >= consumed_resources.estimated_owned_bytes
+    );
 }
 
 #[test]
