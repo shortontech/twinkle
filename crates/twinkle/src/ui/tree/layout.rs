@@ -1610,7 +1610,18 @@ fn capture_transient_state<Message>(
             .or_default()
             .background = Some(element.style.hover_background);
     }
+    let transparent_editor_focus = direct_interaction == Some(2)
+        && element.text_mapper.is_some()
+        && matches!(element.kind, Kind::Text { .. })
+        && element.style.background.is_none()
+        && element.style.focus_background.is_none()
+        && element
+            .style
+            .interaction_paints
+            .as_ref()
+            .is_none_or(|paints| paints[2] == InteractionPaint::default());
     let interaction_style_changes = !direct_hover_patch
+        && !transparent_editor_focus
         && interaction_index.is_some_and(|index| {
             let paint = element
                 .style

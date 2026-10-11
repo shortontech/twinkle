@@ -1418,6 +1418,22 @@ fn active_transient_overlay_paths_report_clone_and_storage_costs() {
     );
 }
 
+#[test]
+fn transparent_focused_editor_does_not_clone_an_unchanged_style() {
+    let mut state = UiStateStore::default();
+    state.set_focus(Some(UiId::from("root/field")));
+    let frame = UiFrame::resolve(
+        TextField::on_change("editable", |_| TestMessage::Named("change")).id("field"),
+        FrameRequest::new(Rect::new(0.0, 0.0, 320.0, 160.0), &mut state),
+    );
+
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_style_clone_bytes, 0);
+    assert_eq!(resources.transient_style_clone_allocations, 0);
+    assert_eq!(resources.transient_style_overlay_count, 0);
+    assert!(resources.transient_kind_clone_bytes > 0);
+}
+
 fn legacy_is_descendant_or_self<Message: Clone>(
     frame: &UiFrame<Message>,
     ancestor: &UiId,
