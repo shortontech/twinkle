@@ -1277,6 +1277,22 @@ fn transient_journal_preserves_canonical_kind_allocation_ownership() {
     );
 }
 
+#[test]
+fn idle_text_field_does_not_clone_unchanged_transient_payloads() {
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        TextField::on_change("idle", |_| TestMessage::Named("change")).id("field"),
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 40.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+
+    assert_eq!(resources.transient_style_overlay_count, 0);
+    assert_eq!(resources.transient_kind_overlay_count, 0);
+    assert_eq!(resources.transient_whole_payload_clone_bytes, 0);
+    assert_eq!(resources.transient_whole_payload_clone_allocations, 0);
+    assert!(state.state(&UiId::from("root/field")).is_some());
+}
+
 fn legacy_is_descendant_or_self<Message: Clone>(
     frame: &UiFrame<Message>,
     ancestor: &UiId,

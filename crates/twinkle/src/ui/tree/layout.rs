@@ -920,6 +920,40 @@ fn mask_text(value: &str, mask: char) -> String {
         .collect()
 }
 
+fn text_projection_needed<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &UiStateStore,
+) -> bool {
+    if element.text_mapper.is_none() {
+        return false;
+    }
+    let Kind::Text { value, details, .. } = &element.kind else {
+        return false;
+    };
+    let Some(details) = details.as_ref() else {
+        return true;
+    };
+    let Some(initial) = details.input_value.as_ref() else {
+        return true;
+    };
+    if state.focused() == Some(id) {
+        return true;
+    }
+    let Some(editor) = state
+        .state(id)
+        .and_then(|transient| transient.editor.as_ref())
+    else {
+        let expected = if initial.is_empty() {
+            details.input_placeholder.as_deref().unwrap_or_default()
+        } else {
+            initial.as_str()
+        };
+        return value != expected;
+    };
+    editor.text() != initial || !editor.preedit().is_empty() || editor.selection().is_some()
+}
+
 pub(super) fn apply_transient_state<Message>(
     element: &mut Element<Message>,
     id: &UiId,
@@ -1401,7 +1435,48 @@ fn capture_transient_state<Message>(
             element.kind,
             Kind::VerticalScroll { .. } | Kind::Dropdown(_)
         );
-    if owns_state || inherited_text_paint || inherited_geometry {
+    let scope_background_active = state.window_focused()
+        && state.input_modality() == InputModality::Controller
+        && element.navigation_scope.is_some()
+        && (state.navigation().controller_selected() == Some(id)
+            || state.navigation().controller_scope() == Some(id)
+            || (element
+                .navigation_scope
+                .as_ref()
+                .is_some_and(|scope| scope.pane)
+                && state.navigation().controller_pane() == Some(id)))
+        && element.style.controller_scope_background.is_some();
+    let retained_state = state.state(id);
+    let scroll_style_changes =
+        if matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto) {
+            let scroll_at_end = retained_state.is_none_or(|state| state.scroll_at_end);
+            let offset = retained_state.map_or(0.0, |state| state.scroll_offset);
+            let effective = if element.style.follow_scroll_end && scroll_at_end {
+                f32::MAX
+            } else {
+                offset.max(0.0)
+            };
+            effective.to_bits() != element.style.scroll_offset.to_bits()
+        } else {
+            false
+        } || if matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto) {
+            retained_state
+                .map_or(0.0, |state| state.scroll_offset_x)
+                .max(0.0)
+                .to_bits()
+                != element.style.scroll_offset_x.to_bits()
+        } else {
+            false
+        };
+    let dropdown_height_changes =
+        matches!(element.kind, Kind::Dropdown(_)) && !element.style.css_paint;
+    let style_can_change = interaction_index.is_some()
+        || scope_background_active
+        || inherited_text_paint
+        || inherited_geometry
+        || scroll_style_changes
+        || dropdown_height_changes;
+    if style_can_change {
         if !overlay.styles.contains_key(id) {
             let original = std::mem::take(&mut element.style);
             element.style = original.clone();
@@ -1414,14 +1489,20 @@ fn capture_transient_state<Message>(
             overlay.styles.insert(id.clone(), original);
         }
     }
-    if element.text_mapper.is_some()
+    let text_projection_changes = text_projection_needed(element, id, state);
+    if text_projection_changes
         || matches!(
             element.kind,
-            Kind::VerticalScroll { .. }
-                | Kind::Slider { .. }
-                | Kind::Dropdown(_)
-                | Kind::Text { .. }
-        ) && (owns_state || inherited_text_paint)
+            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
+        ) && owns_state
+        || matches!(
+            element.kind,
+            Kind::Slider {
+                presentation: Some(_),
+                ..
+            }
+        ) && direct_interaction.is_some()
+        || matches!(element.kind, Kind::Text { .. }) && inherited_text_paint
     {
         if !overlay.kinds.contains_key(id) {
             let original = std::mem::replace(&mut element.kind, Kind::Layer);
@@ -1667,6 +1748,18 @@ fn apply_transient_state_with_parent<Message>(
                 transient.dropdown_open,
             )
         };
+        if element.text_mapper.is_some()
+            && let Kind::Text { value, details, .. } = &element.kind
+        {
+            let initial = details
+                .as_ref()
+                .and_then(|details| details.input_value.clone())
+                .unwrap_or_else(|| value.clone());
+            let editor = state.editor(id.clone(), &initial);
+            if editor.text() != initial {
+                editor.set_text(initial);
+            }
+        }
         match &mut element.kind {
             Kind::VerticalScroll {
                 offset,
@@ -1776,7 +1869,7 @@ fn apply_transient_state_with_parent<Message>(
             }
             _ => {}
         }
-        if element.text_mapper.is_some()
+        if text_projection_needed(element, id, state)
             && let Kind::Text {
                 value,
                 scale,
