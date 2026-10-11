@@ -1701,6 +1701,8 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     assert_eq!(resources.signatures_computed, resources.retained_node_count);
     assert!(resources.signature_fields_hashed > resources.signatures_computed);
     assert!(resources.signature_bytes_hashed >= resources.signature_fields_hashed);
+    assert!(resources.ui_id_lookup_probes > 0);
+    assert_eq!(resources.ui_id_text_rehashes, 0);
     assert!(resources.index_storage_bytes > 0);
     assert_eq!(
         resources.estimated_owned_bytes,
@@ -1733,6 +1735,8 @@ fn signature_work_counters_are_strictly_opt_in() {
     assert_eq!(resources.signatures_computed, 0);
     assert_eq!(resources.signature_fields_hashed, 0);
     assert_eq!(resources.signature_bytes_hashed, 0);
+    assert_eq!(resources.ui_id_lookup_probes, 0);
+    assert_eq!(resources.ui_id_text_rehashes, 0);
 }
 
 #[test]

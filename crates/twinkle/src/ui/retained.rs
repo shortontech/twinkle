@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
@@ -83,6 +84,14 @@ pub(crate) struct ReconcileStats {
     pub(crate) signatures_computed: usize,
     pub(crate) signature_fields_hashed: usize,
     pub(crate) signature_bytes_hashed: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RetainedLookupDiagnostics {
+    pub(crate) ui_id_probes: usize,
+    /// Full textual `UiId` paths rehashed by retained lookup. `UiId::hash`
+    /// writes only its cached randomized fingerprint, so this remains zero.
+    pub(crate) ui_id_text_rehashes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +380,7 @@ pub(crate) struct RetainedNodeArena {
     last: ReconcileStats,
     pending_commit: Vec<RetainedNodeId>,
     diagnostics_enabled: bool,
+    lookup_diagnostics: Cell<RetainedLookupDiagnostics>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1557,6 +1567,21 @@ fn changed_phases(
 impl RetainedNodeArena {
     pub(crate) fn set_diagnostics_enabled(&mut self, enabled: bool) {
         self.diagnostics_enabled = enabled;
+        self.lookup_diagnostics
+            .set(RetainedLookupDiagnostics::default());
+    }
+
+    fn lookup_id(&self, id: &UiId) -> Option<&RetainedNodeId> {
+        if self.diagnostics_enabled {
+            let mut diagnostics = self.lookup_diagnostics.get();
+            diagnostics.ui_id_probes = diagnostics.ui_id_probes.saturating_add(1);
+            self.lookup_diagnostics.set(diagnostics);
+        }
+        self.by_ui_id.get(id)
+    }
+
+    pub(crate) fn lookup_diagnostics(&self) -> RetainedLookupDiagnostics {
+        self.lookup_diagnostics.get()
     }
 
     fn compute_signatures<Message>(&mut self, element: &Element<Message>) -> PhaseSignatures {
@@ -1576,58 +1601,52 @@ impl RetainedNodeArena {
     }
 
     pub(crate) fn child_ui_id(&self, parent: &UiId, index: usize) -> Option<UiId> {
-        let parent = self.by_ui_id.get(parent)?;
+        let parent = self.lookup_id(parent)?;
         let child = self.nodes.get(parent)?.children.get(index)?;
         self.nodes.get(child).map(|node| node.ui_id.clone())
     }
 
     pub(crate) fn phase_is_clean(&self, id: &UiId, phase: DirtyPhases) -> bool {
-        self.by_ui_id
-            .get(id)
+        self.lookup_id(id)
             .and_then(|node| self.nodes.get(node))
             .is_some_and(|node| !node.dirty.contains(phase))
     }
 
     pub(crate) fn subtree_phase_is_clean(&self, id: &UiId, phase: DirtyPhases) -> bool {
-        let Some(node) = self.by_ui_id.get(id).and_then(|node| self.nodes.get(node)) else {
+        let Some(node) = self.lookup_id(id).and_then(|node| self.nodes.get(node)) else {
             return false;
         };
         !node.subtree_dirty.contains(phase)
     }
 
     pub(crate) fn subtree_is_clean(&self, id: &UiId) -> bool {
-        self.by_ui_id
-            .get(id)
+        self.lookup_id(id)
             .and_then(|node| self.nodes.get(node))
             .is_some_and(|node| node.subtree_dirty.is_empty())
     }
 
     pub(crate) fn subtree_bulk_resolved_reuse_safe(&self, id: &UiId) -> bool {
-        self.by_ui_id
-            .get(id)
+        self.lookup_id(id)
             .and_then(|node| self.nodes.get(node))
             .is_some_and(|node| node.subtree_bulk_resolved_reuse_safe)
     }
 
     pub(crate) fn subtree_independent_output_reuse_safe(&self, id: &UiId) -> bool {
-        self.by_ui_id
-            .get(id)
+        self.lookup_id(id)
             .and_then(|node| self.nodes.get(node))
             .is_some_and(|node| node.subtree_independent_output_reuse_safe)
     }
 
     pub(crate) fn subtree_node_count(&self, id: &UiId) -> Option<usize> {
-        self.by_ui_id
-            .get(id)
+        self.lookup_id(id)
             .and_then(|node| self.nodes.get(node))
             .map(|node| node.subtree_nodes)
     }
 
     pub(crate) fn is_descendant_or_self(&self, ancestor: &UiId, candidate: &UiId) -> bool {
-        let (Some(&ancestor), Some(mut candidate)) = (
-            self.by_ui_id.get(ancestor),
-            self.by_ui_id.get(candidate).copied(),
-        ) else {
+        let (Some(&ancestor), Some(mut candidate)) =
+            (self.lookup_id(ancestor), self.lookup_id(candidate).copied())
+        else {
             return false;
         };
         loop {
@@ -1658,7 +1677,7 @@ impl RetainedNodeArena {
         let mut changed_nodes = HashSet::new();
         let mut affected_children = HashMap::<RetainedNodeId, HashSet<RetainedNodeId>>::new();
         for id in changed {
-            let Some(mut node) = self.by_ui_id.get(id).copied() else {
+            let Some(mut node) = self.lookup_id(id).copied() else {
                 return self.reconcile_against(root, previous);
             };
             changed_nodes.insert(node);
@@ -1710,7 +1729,7 @@ impl RetainedNodeArena {
         let mut changed_nodes = HashSet::new();
         let mut affected_children = HashMap::<RetainedNodeId, HashSet<RetainedNodeId>>::new();
         for id in changed {
-            let Some(mut node) = self.by_ui_id.get(id).copied() else {
+            let Some(mut node) = self.lookup_id(id).copied() else {
                 return self.reconcile(root);
             };
             changed_nodes.insert(node);
@@ -2199,15 +2218,12 @@ impl RetainedNodeArena {
 
     #[cfg(test)]
     pub(crate) fn retained_id(&self, id: &UiId) -> Option<RetainedNodeId> {
-        self.by_ui_id.get(id).copied()
+        self.lookup_id(id).copied()
     }
 
     pub(crate) fn capture_layout(&mut self, id: &UiId, measured: Size, allocated: Rect) {
-        if let Some(node) = self
-            .by_ui_id
-            .get(id)
-            .and_then(|key| self.nodes.get_mut(key))
-        {
+        let key = self.lookup_id(id).copied();
+        if let Some(node) = key.and_then(|key| self.nodes.get_mut(&key)) {
             node.phases.measured = Some(measured);
             node.phases.measured_constraints = Some([
                 allocated.size.width.to_bits(),
@@ -2218,7 +2234,7 @@ impl RetainedNodeArena {
     }
 
     pub(crate) fn measured_for(&self, id: &UiId, constraints: Size) -> Option<Size> {
-        let node = self.nodes.get(self.by_ui_id.get(id)?)?;
+        let node = self.nodes.get(self.lookup_id(id)?)?;
         (!node.dirty.contains(DirtyPhases::MEASURE)
             && node.phases.measured_constraints
                 == Some([constraints.width.to_bits(), constraints.height.to_bits()]))
@@ -2227,7 +2243,7 @@ impl RetainedNodeArena {
     }
 
     pub(crate) fn scroll_measurement_for(&self, id: &UiId, width: f32) -> Option<Size> {
-        let node = self.nodes.get(self.by_ui_id.get(id)?)?;
+        let node = self.nodes.get(self.lookup_id(id)?)?;
         let constraints = [width.to_bits(), f32::INFINITY.to_bits()];
         node.phases
             .scroll_measurements
@@ -2238,10 +2254,10 @@ impl RetainedNodeArena {
     }
 
     pub(crate) fn cache_scroll_measurement(&mut self, id: &UiId, width: f32, size: Size) {
-        let Some(key) = self.by_ui_id.get(id) else {
+        let Some(key) = self.lookup_id(id).copied() else {
             return;
         };
-        let node = self.nodes.get_mut(key).expect("indexed retained node");
+        let node = self.nodes.get_mut(&key).expect("indexed retained node");
         let entries = node
             .phases
             .scroll_measurements
@@ -2261,8 +2277,7 @@ impl RetainedNodeArena {
     /// declaration subtree remain valid. Callers may reuse geometry only when
     /// the incoming parent allocation also matches the recorded allocation.
     pub(crate) fn subtree_layout_is_clean(&self, id: &UiId) -> bool {
-        self.by_ui_id
-            .get(id)
+        self.lookup_id(id)
             .and_then(|key| self.nodes.get(key))
             .is_some_and(|node| node.subtree_layout_clean)
     }
@@ -3000,6 +3015,8 @@ mod tests {
             .work("signatures_computed", work.signatures_computed)
             .work("fields_hashed", work.signature_fields_hashed)
             .work("bytes_hashed", work.signature_bytes_hashed)
+            .work("ui_id_lookup_probes", work.ui_id_lookup_probes)
+            .work("ui_id_text_rehashes", work.ui_id_text_rehashes)
             .timings("disabled", &disabled_samples)
             .timings("collected", &collected_samples)
             .emit();

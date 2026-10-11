@@ -607,6 +607,11 @@ pub struct FrameResourceDiagnostics {
     pub signature_fields_hashed: usize,
     /// Bytes consumed by phase hashers after typed `Hash` encoding.
     pub signature_bytes_hashed: usize,
+    /// Retained-map probes keyed by a stable `UiId` while diagnostics ran.
+    pub ui_id_lookup_probes: usize,
+    /// Full textual paths rehashed during those probes. This remains zero
+    /// because `UiId::hash` submits only its cached randomized fingerprint.
+    pub ui_id_text_rehashes: usize,
     /// Resolver nodes whose intrinsic measurement actually executed for this frame.
     pub nodes_measured: usize,
     /// Extra text measurements performed solely for requested layout diagnostics.
@@ -4232,6 +4237,7 @@ impl<Message: Clone> UiFrame<Message> {
             + index_storage_bytes
             + retained_build_scratch_bytes;
         let retained = self.retained_nodes.last();
+        let retained_lookups = self.retained_nodes.lookup_diagnostics();
         FrameResourceDiagnostics {
             node_count: self.resolved.nodes.len(),
             paint_fragment_count: self.paint_fragments.len(),
@@ -4286,6 +4292,8 @@ impl<Message: Clone> UiFrame<Message> {
             signatures_computed: retained.signatures_computed,
             signature_fields_hashed: retained.signature_fields_hashed,
             signature_bytes_hashed: retained.signature_bytes_hashed,
+            ui_id_lookup_probes: retained_lookups.ui_id_probes,
+            ui_id_text_rehashes: retained_lookups.ui_id_text_rehashes,
             nodes_measured: self.nodes_measured,
             diagnostic_text_measurements: self.diagnostic_text_measurements,
             scroll_content_measurements: self.scroll_content_measurements,
