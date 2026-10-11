@@ -514,6 +514,11 @@ pub struct FrameResourceDiagnostics {
     /// selection documents, `UiId` backing strings, and nested message-owned
     /// allocations are excluded.
     pub declaration_tree_bytes: usize,
+    /// Known declaration-owned heap allocations: non-empty vector/string
+    /// buffers and boxed sidecars. Shared resources, `UiId` backing storage,
+    /// allocator metadata, and allocations recursively owned by `Message` are
+    /// excluded.
+    pub declaration_allocation_count: usize,
     /// Number of separately allocated event sidecars in the retained
     /// declaration. Each interactive element owns at most one sidecar even
     /// when it declares several handlers.
@@ -3798,6 +3803,77 @@ impl<Message: Clone> UiFrame<Message> {
         std::mem::size_of::<Element<Message>>() + nested(root)
     }
 
+    fn declaration_allocation_count(root: &Element<Message>) -> usize {
+        fn allocated(capacity: usize) -> usize {
+            usize::from(capacity != 0)
+        }
+
+        fn string(value: &String) -> usize {
+            allocated(value.capacity())
+        }
+
+        fn nested<Message>(element: &Element<Message>) -> usize {
+            let mut count = allocated(element.children.capacity())
+                + allocated(element.option_messages.capacity())
+                + allocated(element.inline_messages.capacity())
+                + usize::from(element.events.is_some())
+                + usize::from(element.navigation_scope.is_some())
+                + usize::from(element.style.details().is_some());
+            count += [
+                element.style.accessibility_label.as_ref(),
+                element.style.accessibility_description.as_ref(),
+                element.style.accessibility_role.as_ref(),
+                element.style.accessibility_state.as_ref(),
+                element.style.selection_run_id.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(string)
+            .sum::<usize>();
+            count += usize::from(element.style.interaction_paints.is_some())
+                + usize::from(element.style.editing_parts.is_some())
+                + usize::from(element.style.editing_menu.is_some())
+                + usize::from(element.style.scrollbar_parts.is_some());
+            count += match &element.kind {
+                Kind::Grid {
+                    columns: GridColumnSpec::Tracks(tracks),
+                } => allocated(tracks.capacity()),
+                Kind::CustomPaintCommands { commands } => allocated(commands.capacity()),
+                Kind::Text { value, details, .. } => {
+                    string(value)
+                        + details.as_ref().map_or(0, |details| {
+                            1 + details.input_value.as_ref().map_or(0, string)
+                                + details.input_placeholder.as_ref().map_or(0, string)
+                        })
+                }
+                Kind::StyledText { value, spans, .. } => {
+                    string(value) + allocated(spans.capacity())
+                }
+                Kind::Slider { presentation, .. } => usize::from(presentation.is_some()),
+                Kind::Dropdown(dropdown) => {
+                    1 + string(&dropdown.selected)
+                        + allocated(dropdown.options.capacity())
+                        + dropdown.options.iter().map(string).sum::<usize>()
+                        + usize::from(dropdown.presentation.is_some())
+                        + dropdown.details.as_ref().map_or(0, |details| {
+                            1 + allocated(details.option_presentations.capacity())
+                                + allocated(details.resolved_options.capacity())
+                                + allocated(details.option_icons.capacity())
+                        })
+                }
+                Kind::Flex(_)
+                | Kind::Layer
+                | Kind::VerticalScroll { .. }
+                | Kind::Grid { .. }
+                | Kind::CustomPaint { .. }
+                | Kind::Image { .. } => 0,
+            };
+            count + element.children.iter().map(nested).sum::<usize>()
+        }
+
+        nested(root)
+    }
+
     fn declaration_event_sidecars(root: &Element<Message>) -> (usize, usize) {
         fn nested<Message>(element: &Element<Message>) -> usize {
             usize::from(element.events.is_some())
@@ -3928,6 +4004,10 @@ impl<Message: Clone> UiFrame<Message> {
             .declaration_root
             .as_ref()
             .map_or(0, Self::declaration_storage_bytes);
+        let declaration_allocation_count = self
+            .declaration_root
+            .as_ref()
+            .map_or(0, Self::declaration_allocation_count);
         let (declaration_event_sidecar_count, declaration_event_sidecar_bytes) = self
             .declaration_root
             .as_ref()
@@ -4059,6 +4139,7 @@ impl<Message: Clone> UiFrame<Message> {
                 )
                 + self.retained_nodes.estimated_bytes(),
             declaration_tree_bytes,
+            declaration_allocation_count,
             declaration_event_sidecar_count,
             declaration_event_sidecar_bytes,
             declaration_kind_sidecar_count,
