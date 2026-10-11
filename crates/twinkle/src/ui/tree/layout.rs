@@ -600,7 +600,9 @@ pub(super) fn layout_element<Message: Clone>(
             }
         }
         Kind::VerticalScroll { offset, .. } => {
-            let requested_offset = *offset;
+            let requested_offset = overlay.map_or(*offset, |overlay| {
+                overlay.vertical_scroll_offset(id, *offset)
+            });
             let viewport = rect.inset(style.padding);
             let scroll_child_id = element
                 .children
@@ -1027,7 +1029,7 @@ pub(super) fn apply_transient_state<Message>(
     id: &UiId,
     state: &mut UiStateStore,
 ) {
-    apply_transient_state_with_parent(element, id, state, None);
+    apply_transient_state_with_parent(element, id, state, None, None);
 }
 
 fn style_owned_bytes(style: &Style) -> usize {
@@ -1328,6 +1330,7 @@ pub(super) struct TransientStateJournal {
     styles: std::collections::HashMap<UiId, Style>,
     style_patches: std::collections::HashMap<UiId, TransientStylePatch>,
     kinds: std::collections::HashMap<UiId, Kind>,
+    vertical_scroll_offsets: std::collections::HashMap<UiId, f32>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1343,7 +1346,7 @@ impl TransientStateJournal {
     }
 
     pub(super) fn kind_count(&self) -> usize {
-        self.kinds.len()
+        self.kinds.len() + self.vertical_scroll_offsets.len()
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
@@ -1374,6 +1377,7 @@ impl TransientStateJournal {
         self.styles.capacity() * std::mem::size_of::<(UiId, Style)>()
             + self.style_patches.capacity() * std::mem::size_of::<(UiId, TransientStylePatch)>()
             + self.kinds.capacity() * std::mem::size_of::<(UiId, Kind)>()
+            + self.vertical_scroll_offsets.capacity() * std::mem::size_of::<(UiId, f32)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
@@ -1384,6 +1388,7 @@ impl TransientStateJournal {
         usize::from(self.styles.capacity() != 0)
             + usize::from(self.style_patches.capacity() != 0)
             + usize::from(self.kinds.capacity() != 0)
+            + usize::from(self.vertical_scroll_offsets.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
 
@@ -1448,11 +1453,20 @@ impl TransientStateJournal {
             }
         }
         let effective_kind = self.kinds.get(id).unwrap_or(&element.kind);
-        let dirty = super::super::retained::transient_dirty_phases(
+        let mut dirty = super::super::retained::transient_dirty_phases(
             element,
             effective_style,
             effective_kind,
         );
+        if self.vertical_scroll_offsets.contains_key(id) {
+            use super::super::retained::DirtyPhases;
+            dirty.insert(
+                DirtyPhases::PLACE
+                    .union(DirtyPhases::PAINT)
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        }
         if dirty == super::super::retained::DirtyPhases::default() {
             self.phases.remove(id);
         } else {
@@ -1476,6 +1490,13 @@ impl TransientStateJournal {
     ) -> &'a Kind {
         self.kinds.get(id).unwrap_or(&element.kind)
     }
+
+    pub(super) fn vertical_scroll_offset(&self, id: &UiId, canonical: f32) -> f32 {
+        self.vertical_scroll_offsets
+            .get(id)
+            .copied()
+            .unwrap_or(canonical)
+    }
 }
 
 pub(super) fn apply_transient_state_staged<Message>(
@@ -1485,7 +1506,7 @@ pub(super) fn apply_transient_state_staged<Message>(
     overlay: &mut TransientStateJournal,
 ) {
     capture_transient_state(element, id, state, None, false, false, overlay);
-    apply_transient_state(element, id, state);
+    apply_transient_state_with_parent(element, id, state, None, Some(overlay));
 }
 
 fn capture_transient_state<Message>(
@@ -1575,8 +1596,16 @@ fn capture_transient_state<Message>(
     let dropdown_projection_changes =
         dropdown_projection_needed(element, id, state, interaction_index);
     let vertical_scroll_projection_changes = vertical_scroll_projection_needed(element, id, state);
+    if vertical_scroll_projection_changes {
+        let offset = state
+            .state(id)
+            .map_or(0.0, |transient| transient.scroll_offset)
+            .max(0.0);
+        overlay.vertical_scroll_offsets.insert(id.clone(), offset);
+    } else {
+        overlay.vertical_scroll_offsets.remove(id);
+    }
     if text_projection_changes
-        || vertical_scroll_projection_changes
         || dropdown_projection_changes
         || matches!(
             element.kind,
@@ -1623,6 +1652,7 @@ fn apply_transient_state_with_parent<Message>(
     id: &UiId,
     state: &mut UiStateStore,
     parent_interaction: Option<usize>,
+    compact_overlay: Option<&TransientStateJournal>,
 ) {
     let direct_interaction = if state.pressed() == Some(id) {
         Some(1)
@@ -1840,7 +1870,8 @@ fn apply_transient_state_with_parent<Message>(
                 offset,
                 controlled: false,
                 ..
-            } => *offset = scroll_offset.max(0.0),
+            } if compact_overlay.is_none() => *offset = scroll_offset.max(0.0),
+            Kind::VerticalScroll { .. } => {}
             Kind::Slider {
                 presentation: Some(parts),
                 ..
@@ -2097,6 +2128,7 @@ fn apply_transient_state_with_parent<Message>(
             &child_id,
             state,
             direct_interaction.or(parent_interaction),
+            compact_overlay,
         );
     }
     // The application just built this declaration and relinquishes it after

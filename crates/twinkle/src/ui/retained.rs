@@ -48,11 +48,11 @@ impl DirtyPhases {
         self.0 & phase.0 == phase.0
     }
 
-    const fn union(self, other: Self) -> Self {
+    pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
-    fn insert(&mut self, other: Self) {
+    pub(crate) fn insert(&mut self, other: Self) {
         *self = self.union(other);
     }
 
@@ -1474,6 +1474,15 @@ pub(super) fn transient_dirty_phases<Message>(
     {
         dirty.insert(DirtyPhases::PLACE);
     }
+    if matches!(
+        (effective_kind, &canonical.kind),
+        (
+            Kind::VerticalScroll { offset: current, .. },
+            Kind::VerticalScroll { offset: previous, .. }
+        ) if current.to_bits() != previous.to_bits()
+    ) {
+        dirty.insert(DirtyPhases::PLACE);
+    }
     if !exact_paint_style(effective_style, &canonical.style)
         || !exact_paint_kind(effective_kind, &canonical.kind)
     {
@@ -2677,10 +2686,23 @@ mod tests {
         assert!(kind.contains(DirtyPhases::PAINT));
         assert!(kind.contains(DirtyPhases::INTERACTION));
         assert!(kind.contains(DirtyPhases::SEMANTICS));
+
+        let scroll = VerticalScroll::new((), 0.0).into_element();
+        let effective_scroll = Kind::VerticalScroll {
+            offset: 12.0,
+            controlled: false,
+        };
+        let scroll_phases = transient_dirty_phases(&scroll, &scroll.style, &effective_scroll);
+        assert!(scroll_phases.contains(DirtyPhases::PLACE));
+        assert!(scroll_phases.contains(DirtyPhases::PAINT));
+        assert!(scroll_phases.contains(DirtyPhases::INTERACTION));
+        assert!(scroll_phases.contains(DirtyPhases::SEMANTICS));
+        assert!(!scroll_phases.contains(DirtyPhases::MEASURE));
     }
     use crate::{
         Column, Component, ComponentBuilderExt, CustomPaint, FrameRequest, Grid, Rect, Row,
         StyledText, StyledTextSpan, Text, TextUnderlineStyle, Track, UiFrame, UiStateStore,
+        VerticalScroll,
     };
     #[cfg(not(debug_assertions))]
     use crate::{Container, SoftwareRenderer};
