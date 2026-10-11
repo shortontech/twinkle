@@ -13,6 +13,23 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RetainedNodeId(NonZeroU64);
 
+impl RetainedNodeId {
+    fn from_parts(index: u32, generation: u32) -> Self {
+        let slot = index
+            .checked_add(1)
+            .expect("retained arena slot fits in u32");
+        Self(NonZeroU64::new((u64::from(generation) << 32) | u64::from(slot)).unwrap())
+    }
+
+    fn index(self) -> usize {
+        ((self.0.get() as u32) - 1) as usize
+    }
+
+    fn generation(self) -> u32 {
+        (self.0.get() >> 32) as u32
+    }
+}
+
 /// Independent work classes dirtied by declarative reconciliation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DirtyPhases(u8);
@@ -91,6 +108,205 @@ pub(crate) struct RetainedNode {
 }
 
 #[derive(Clone, Debug)]
+enum RetainedSlot {
+    Vacant { generation: u32, next: Option<u32> },
+    Reserved { generation: u32 },
+    Occupied(RetainedNode),
+}
+
+#[derive(Clone, Debug, Default)]
+struct RetainedNodeStorage {
+    slots: Vec<RetainedSlot>,
+    free_head: Option<u32>,
+    len: usize,
+}
+
+impl RetainedNodeStorage {
+    fn staging_from(previous: &Self) -> Self {
+        let mut storage = Self {
+            slots: Vec::with_capacity(previous.slots.capacity()),
+            free_head: None,
+            len: 0,
+        };
+        for slot in &previous.slots {
+            match slot {
+                RetainedSlot::Occupied(node) => storage.slots.push(RetainedSlot::Reserved {
+                    generation: node.id.generation(),
+                }),
+                RetainedSlot::Reserved { generation } => {
+                    storage.slots.push(RetainedSlot::Reserved {
+                        generation: *generation,
+                    });
+                }
+                RetainedSlot::Vacant { generation, .. } => {
+                    let index = storage.slots.len() as u32;
+                    storage.slots.push(RetainedSlot::Vacant {
+                        generation: *generation,
+                        next: storage.free_head,
+                    });
+                    storage.free_head = Some(index);
+                }
+            }
+        }
+        storage
+    }
+
+    fn allocate_id(&mut self) -> RetainedNodeId {
+        if let Some(index) = self.free_head {
+            let slot = &mut self.slots[index as usize];
+            let RetainedSlot::Vacant { generation, next } = *slot else {
+                unreachable!("free-list entry is vacant")
+            };
+            self.free_head = next;
+            *slot = RetainedSlot::Reserved { generation };
+            RetainedNodeId::from_parts(index, generation)
+        } else {
+            let index =
+                u32::try_from(self.slots.len()).expect("retained arena has fewer than 2^32 slots");
+            self.slots.push(RetainedSlot::Reserved { generation: 0 });
+            RetainedNodeId::from_parts(index, 0)
+        }
+    }
+
+    fn retire(&mut self, id: RetainedNodeId) {
+        let index = id.index();
+        let Some(slot) = self.slots.get_mut(index) else {
+            return;
+        };
+        let generation_matches = match slot {
+            RetainedSlot::Occupied(node) => node.id == id,
+            RetainedSlot::Reserved { generation } => *generation == id.generation(),
+            RetainedSlot::Vacant { .. } => false,
+        };
+        if !generation_matches {
+            return;
+        }
+        if matches!(slot, RetainedSlot::Occupied(_)) {
+            self.len -= 1;
+        }
+        let generation = id.generation().wrapping_add(1);
+        *slot = RetainedSlot::Vacant {
+            generation,
+            next: self.free_head,
+        };
+        self.free_head = Some(index as u32);
+    }
+
+    fn insert(&mut self, id: RetainedNodeId, node: RetainedNode) {
+        debug_assert_eq!(id, node.id);
+        let slot = self
+            .slots
+            .get_mut(id.index())
+            .expect("reserved retained arena slot");
+        assert!(matches!(
+            slot,
+            RetainedSlot::Reserved { generation } if *generation == id.generation()
+        ));
+        *slot = RetainedSlot::Occupied(node);
+        self.len += 1;
+    }
+
+    fn remove(&mut self, id: &RetainedNodeId) -> Option<RetainedNode> {
+        let slot = self.slots.get_mut(id.index())?;
+        if !matches!(slot, RetainedSlot::Occupied(node) if node.id == *id) {
+            return None;
+        }
+        let generation = id.generation().wrapping_add(1);
+        let old = std::mem::replace(
+            slot,
+            RetainedSlot::Vacant {
+                generation,
+                next: self.free_head,
+            },
+        );
+        self.free_head = Some(id.index() as u32);
+        self.len -= 1;
+        let RetainedSlot::Occupied(node) = old else {
+            unreachable!()
+        };
+        Some(node)
+    }
+
+    fn get(&self, id: &RetainedNodeId) -> Option<&RetainedNode> {
+        match self.slots.get(id.index())? {
+            RetainedSlot::Occupied(node) if node.id == *id => Some(node),
+            _ => None,
+        }
+    }
+
+    fn get_mut(&mut self, id: &RetainedNodeId) -> Option<&mut RetainedNode> {
+        match self.slots.get_mut(id.index())? {
+            RetainedSlot::Occupied(node) if node.id == *id => Some(node),
+            _ => None,
+        }
+    }
+
+    fn values(&self) -> impl Iterator<Item = &RetainedNode> {
+        self.slots.iter().filter_map(|slot| match slot {
+            RetainedSlot::Occupied(node) => Some(node),
+            _ => None,
+        })
+    }
+
+    #[cfg(test)]
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut RetainedNode> {
+        self.slots.iter_mut().filter_map(|slot| match slot {
+            RetainedSlot::Occupied(node) => Some(node),
+            _ => None,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.slots.capacity()
+    }
+
+    fn finish_rebuild(&mut self) {
+        while matches!(self.slots.last(), Some(RetainedSlot::Vacant { .. })) {
+            self.slots.pop();
+        }
+        self.free_head = None;
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if let RetainedSlot::Vacant { next, .. } = slot {
+                *next = self.free_head;
+                self.free_head = Some(index as u32);
+            }
+        }
+        self.slots.shrink_to_fit();
+    }
+}
+
+fn retained_slot_pair(slot: &RetainedSlot) -> Option<(&RetainedNodeId, &RetainedNode)> {
+    match slot {
+        RetainedSlot::Occupied(node) => Some((&node.id, node)),
+        _ => None,
+    }
+}
+
+impl<'a> IntoIterator for &'a RetainedNodeStorage {
+    type Item = (&'a RetainedNodeId, &'a RetainedNode);
+    type IntoIter = std::iter::FilterMap<
+        std::slice::Iter<'a, RetainedSlot>,
+        fn(&'a RetainedSlot) -> Option<Self::Item>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slots.iter().filter_map(retained_slot_pair)
+    }
+}
+
+impl std::ops::Index<&RetainedNodeId> for RetainedNodeStorage {
+    type Output = RetainedNode;
+
+    fn index(&self, id: &RetainedNodeId) -> &Self::Output {
+        self.get(id).expect("live retained node")
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct RetainedNodeMetadata {
     identity: ChildIdentity,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -143,9 +359,8 @@ impl RetainedNode {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RetainedNodeArena {
-    next_id: u64,
     root: Option<RetainedNodeId>,
-    nodes: HashMap<RetainedNodeId, RetainedNode>,
+    nodes: RetainedNodeStorage,
     // Identity lookup is on every retained layout/emission query. Ordering is
     // never observed; hashing avoids paying tree-comparison cost for the full
     // scoped UiId path several times per node and frame.
@@ -1593,6 +1808,7 @@ impl RetainedNodeArena {
     ) -> ReconcileStats {
         let mut old_nodes = std::mem::take(&mut self.nodes);
         let old_count = old_nodes.len();
+        self.nodes = RetainedNodeStorage::staging_from(&old_nodes);
         let old_root = self.root.take();
         self.last = ReconcileStats::default();
         self.pending_commit.clear();
@@ -1617,6 +1833,10 @@ impl RetainedNodeArena {
             trust_fingerprint_for_test,
         );
         self.root = Some(root_id);
+        for removed in old_nodes.values() {
+            self.nodes.retire(removed.id);
+        }
+        self.nodes.finish_rebuild();
         self.last.removed = old_count.saturating_sub(consumed.len());
         self.last.clone()
     }
@@ -1631,7 +1851,7 @@ impl RetainedNodeArena {
         ui_id: UiId,
         position: usize,
         candidate: Option<RetainedNodeId>,
-        old_nodes: &mut HashMap<RetainedNodeId, RetainedNode>,
+        old_nodes: &mut RetainedNodeStorage,
         consumed: &mut HashSet<RetainedNodeId>,
         changed_ancestry: Option<&HashSet<RetainedNodeId>>,
         trust_fingerprint_for_test: bool,
@@ -1652,6 +1872,7 @@ impl RetainedNodeArena {
         }
         let mut old = candidate.and_then(|id| old_nodes.remove(&id));
         let had_old = old.is_some();
+        let old_id = old.as_ref().map(|node| node.id);
         let mut reusable = old
             .as_mut()
             .filter(|node| node.kind == kind && node.identity == identity);
@@ -1687,12 +1908,9 @@ impl RetainedNodeArena {
         } else {
             if had_old {
                 self.last.replaced += 1;
+                self.nodes.retire(old_id.expect("replaced retained node"));
             }
-            self.next_id = self.next_id.max(1);
-            let id = RetainedNodeId(
-                NonZeroU64::new(self.next_id).expect("retained node IDs start at one"),
-            );
-            self.next_id += 1;
+            let id = self.nodes.allocate_id();
             self.last.created += 1;
             (
                 id,
@@ -1858,7 +2076,7 @@ impl RetainedNodeArena {
     fn reuse_unchanged_subtree(
         &mut self,
         id: RetainedNodeId,
-        old_nodes: &mut HashMap<RetainedNodeId, RetainedNode>,
+        old_nodes: &mut RetainedNodeStorage,
         consumed: &mut HashSet<RetainedNodeId>,
     ) {
         let mut node = old_nodes
@@ -1981,8 +2199,7 @@ impl RetainedNodeArena {
     }
 
     pub(crate) fn estimated_bytes(&self) -> usize {
-        self.nodes.capacity()
-            * (std::mem::size_of::<RetainedNodeId>() + std::mem::size_of::<RetainedNode>())
+        self.nodes.capacity() * std::mem::size_of::<RetainedSlot>()
             + self.nodes.len() * std::mem::size_of::<RetainedNodeMetadata>()
             + self
                 .nodes
@@ -2014,6 +2231,7 @@ mod tests {
             std::mem::size_of::<super::super::StyledTextKind>()
         );
         assert_eq!(std::mem::size_of::<RetainedNode>(), 128);
+        assert_eq!(std::mem::size_of::<RetainedSlot>(), 128);
         assert_eq!(std::mem::size_of::<RetainedPhaseData>(), 56);
         assert_eq!(std::mem::size_of::<RetainedNodeMetadata>(), 88);
         assert_eq!(std::mem::size_of::<Kind>(), 56);
@@ -2480,6 +2698,156 @@ mod tests {
         report.emit();
     }
 
+    #[cfg(not(debug_assertions))]
+    #[test]
+    #[ignore = "release-profile dense retained arena prototype"]
+    fn dense_generational_arena_release_prototype() {
+        use crate::release_admission::AdmissionReport;
+
+        const NODES: usize = 4_096;
+        const SAMPLES: usize = 25;
+        const LOOKUP_ROUNDS: usize = 64;
+
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        struct PrototypeHandle {
+            index: u32,
+            generation: u32,
+        }
+
+        #[derive(Clone, Copy)]
+        struct PrototypeRecord([u64; 16]);
+
+        #[derive(Clone, Copy)]
+        enum PrototypeSlot {
+            Vacant {
+                generation: u32,
+                next: u32,
+            },
+            Occupied {
+                generation: u32,
+                value: PrototypeRecord,
+            },
+        }
+
+        fn dense_get(slots: &[PrototypeSlot], handle: PrototypeHandle) -> Option<&PrototypeRecord> {
+            match slots.get(handle.index as usize)? {
+                PrototypeSlot::Occupied { generation, value }
+                    if *generation == handle.generation =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            }
+        }
+
+        let handles = (0..NODES)
+            .map(|index| PrototypeHandle {
+                index: index as u32,
+                generation: 1,
+            })
+            .collect::<Vec<_>>();
+        let records = (0..NODES)
+            .map(|index| PrototypeRecord([index as u64; 16]))
+            .collect::<Vec<_>>();
+        let dense = records
+            .iter()
+            .copied()
+            .map(|value| PrototypeSlot::Occupied {
+                generation: 1,
+                value,
+            })
+            .collect::<Vec<_>>();
+        let hashed = handles
+            .iter()
+            .copied()
+            .zip(records.iter().copied())
+            .collect::<HashMap<_, _>>();
+        let order = (0..NODES)
+            .map(|index| (index.wrapping_mul(2_657) + 991) & (NODES - 1))
+            .collect::<Vec<_>>();
+
+        let mut dense_lookup = Vec::with_capacity(SAMPLES);
+        let mut hash_lookup = Vec::with_capacity(SAMPLES);
+        let mut dense_mutation = Vec::with_capacity(SAMPLES);
+        let mut hash_mutation = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let dense_started = std::time::Instant::now();
+            let mut dense_sum = 0_u64;
+            for round in 0..LOOKUP_ROUNDS {
+                for &index in &order {
+                    dense_sum ^= dense_get(&dense, handles[index]).unwrap().0[round & 15];
+                }
+            }
+            dense_lookup.push(dense_started.elapsed());
+            std::hint::black_box(dense_sum);
+
+            let hash_started = std::time::Instant::now();
+            let mut hash_sum = 0_u64;
+            for round in 0..LOOKUP_ROUNDS {
+                for &index in &order {
+                    hash_sum ^= hashed.get(&handles[index]).unwrap().0[round & 15];
+                }
+            }
+            hash_lookup.push(hash_started.elapsed());
+            std::hint::black_box(hash_sum);
+
+            let mut dense_changed = dense.clone();
+            let dense_started = std::time::Instant::now();
+            for index in (sample % 8..NODES).step_by(8) {
+                let next = match dense_changed[index] {
+                    PrototypeSlot::Occupied { generation, .. } => generation + 1,
+                    PrototypeSlot::Vacant { .. } => unreachable!(),
+                };
+                dense_changed[index] = PrototypeSlot::Vacant {
+                    generation: next,
+                    next: u32::MAX,
+                };
+                let PrototypeSlot::Vacant { generation, next } = dense_changed[index] else {
+                    unreachable!()
+                };
+                std::hint::black_box((generation, next));
+                dense_changed[index] = PrototypeSlot::Occupied {
+                    generation: next,
+                    value: records[index],
+                };
+            }
+            dense_mutation.push(dense_started.elapsed());
+            std::hint::black_box(dense_changed);
+
+            let mut hash_changed = hashed.clone();
+            let hash_started = std::time::Instant::now();
+            for index in (sample % 8..NODES).step_by(8) {
+                let handle = handles[index];
+                let value = hash_changed.remove(&handle).unwrap();
+                hash_changed.insert(handle, value);
+            }
+            hash_mutation.push(hash_started.elapsed());
+            std::hint::black_box(hash_changed);
+        }
+
+        let dense_bytes = dense.capacity() * std::mem::size_of::<PrototypeSlot>();
+        let hash_entry_lower_bound = hashed.capacity()
+            * (std::mem::size_of::<PrototypeHandle>() + std::mem::size_of::<PrototypeRecord>());
+        AdmissionReport::new("retained_arena", "4096_node_dense_generational_prototype")
+            .metadata("nodes", NODES)
+            .metadata("samples", SAMPLES)
+            .metadata("lookups_per_sample", NODES * LOOKUP_ROUNDS)
+            .metadata("mutations_per_sample", NODES / 8)
+            .work("dense_slot_bytes", std::mem::size_of::<PrototypeSlot>())
+            .work("hash_key_bytes", std::mem::size_of::<PrototypeHandle>())
+            .work("record_bytes", std::mem::size_of::<PrototypeRecord>())
+            .work("dense_capacity_bytes", dense_bytes)
+            .work("hash_entry_bytes_lower_bound", hash_entry_lower_bound)
+            .timings("dense_lookup", &dense_lookup)
+            .timings("hash_lookup", &hash_lookup)
+            .timings("dense_remove_reinsert", &dense_mutation)
+            .timings("hash_remove_reinsert", &hash_mutation)
+            .emit();
+
+        assert_eq!(std::mem::size_of::<PrototypeHandle>(), 8);
+        assert!(dense_bytes < hash_entry_lower_bound);
+    }
+
     #[test]
     fn reconciliation_moves_retained_scroll_cache_instead_of_cloning_it() {
         let mut arena = RetainedNodeArena::default();
@@ -2664,6 +3032,30 @@ mod tests {
         assert_eq!(stats.removed, 1);
         assert!(stats.moved >= 2);
         assert_eq!(arena.nodes().count(), 4);
+    }
+
+    #[test]
+    fn dense_arena_reuses_retired_slots_without_reviving_stale_handles() {
+        let mut arena = RetainedNodeArena::default();
+        let view = |key: &str| {
+            Row::new()
+                .child(keyed_text("stable", "stable"))
+                .child(keyed_text(key, key))
+                .into_element()
+        };
+        arena.reconcile(&view("first"));
+        let first = ids(&arena)[&UiId::from("first")];
+
+        for index in 0..100 {
+            arena.reconcile(&view(&format!("replacement-{index}")));
+            assert!(arena.nodes.get(&first).is_none());
+            assert_eq!(arena.node_count(), 3);
+        }
+
+        assert!(arena.nodes.slots.len() <= 4);
+        let current = ids(&arena)[&UiId::from("replacement-99")];
+        assert_ne!(first, current);
+        assert!(first.generation() < current.generation());
     }
 
     #[test]
