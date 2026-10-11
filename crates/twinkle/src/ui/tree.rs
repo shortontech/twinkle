@@ -404,6 +404,13 @@ pub struct FrameResourceDiagnostics {
     /// selection documents, `UiId` backing strings, and nested message-owned
     /// allocations are excluded.
     pub declaration_tree_bytes: usize,
+    /// Number of separately allocated event sidecars in the retained
+    /// declaration. Each interactive element owns at most one sidecar even
+    /// when it declares several handlers.
+    pub declaration_event_sidecar_count: usize,
+    /// Inline payload bytes owned by declaration event sidecars. Allocator
+    /// metadata and allocations owned recursively by `Message` are excluded.
+    pub declaration_event_sidecar_bytes: usize,
     /// Resolved-node/vector storage and owned child/grid-track buffers.
     pub resolved_storage_bytes: usize,
     /// Retained reconciliation arena storage, including cached paint buffers.
@@ -3624,6 +3631,19 @@ impl<Message: Clone> UiFrame<Message> {
         std::mem::size_of::<Element<Message>>() + nested(root)
     }
 
+    fn declaration_event_sidecars(root: &Element<Message>) -> (usize, usize) {
+        fn nested<Message>(element: &Element<Message>) -> usize {
+            usize::from(element.events.is_some())
+                + element.children.iter().map(nested).sum::<usize>()
+        }
+
+        let count = nested(root);
+        (
+            count,
+            count.saturating_mul(std::mem::size_of::<super::ElementEvents<Message>>()),
+        )
+    }
+
     // A retained paint refresh may grow output-vector capacity, but it does not
     // replace resolved child lists, accessibility strings, or retained arena
     // records. Their byte contributions remain owned by the current frame.
@@ -3664,6 +3684,10 @@ impl<Message: Clone> UiFrame<Message> {
             .declaration_root
             .as_ref()
             .map_or(0, Self::declaration_storage_bytes);
+        let (declaration_event_sidecar_count, declaration_event_sidecar_bytes) = self
+            .declaration_root
+            .as_ref()
+            .map_or((0, 0), Self::declaration_event_sidecars);
         let resolved_storage_bytes = self.resolved.nodes.capacity()
             * std::mem::size_of::<ResolvedNode>()
             + self
@@ -3769,6 +3793,8 @@ impl<Message: Clone> UiFrame<Message> {
                 + accessibility_strings
                 + self.retained_nodes.estimated_bytes(),
             declaration_tree_bytes,
+            declaration_event_sidecar_count,
+            declaration_event_sidecar_bytes,
             resolved_storage_bytes,
             retained_arena_bytes,
             accessibility_storage_bytes,

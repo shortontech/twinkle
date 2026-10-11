@@ -1062,6 +1062,79 @@ fn unchanged_paint_refresh_does_not_clone_declaration_messages() {
     assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
+#[test]
+fn consuming_rebuild_transfers_the_old_declaration_and_clones_messages_once() {
+    struct CountedMessage(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Clone for CountedMessage {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self(self.0.clone())
+        }
+    }
+
+    let clones = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut state = UiStateStore::default();
+    let mut previous = UiFrame::resolve(
+        Container::new()
+            .id("transfer")
+            .message(CountedMessage(clones.clone())),
+        FrameRequest::new(Rect::new(0.0, 0.0, 200.0, 100.0), &mut state),
+    );
+    clones.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let declaration = previous
+        .take_retained_declaration()
+        .expect("resolved frame retains its declaration");
+    assert!(previous.declaration_root.is_none());
+    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let next = UiFrame::resolve_against_reusing(
+        declaration,
+        FrameRequest::new(Rect::new(0.0, 0.0, 240.0, 100.0), &mut state),
+        &mut previous,
+    );
+
+    // One clone separates retained/working declarations; hit and message
+    // output authority account for the other two clones.
+    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 3);
+    assert!(next.declaration_root.is_some());
+}
+
+#[test]
+fn transactional_rebuild_clones_without_consuming_the_published_declaration() {
+    struct CountedMessage(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Clone for CountedMessage {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self(self.0.clone())
+        }
+    }
+
+    let clones = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut state = UiStateStore::default();
+    let previous = UiFrame::resolve(
+        Container::new()
+            .id("transactional")
+            .message(CountedMessage(clones.clone())),
+        FrameRequest::new(Rect::new(0.0, 0.0, 200.0, 100.0), &mut state),
+    );
+    clones.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let staged_declaration = previous
+        .retained_declaration()
+        .expect("transactional staging clones the declaration");
+    assert!(previous.declaration_root.is_some());
+    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 1);
+    clones.store(0, std::sync::atomic::Ordering::Relaxed);
+    let _staged = UiFrame::resolve_against(
+        staged_declaration,
+        FrameRequest::new(Rect::new(0.0, 0.0, 240.0, 100.0), &mut state),
+        &previous,
+    );
+
+    assert_eq!(clones.load(std::sync::atomic::Ordering::Relaxed), 3);
+    assert!(previous.declaration_root.is_some());
+}
+
 fn legacy_is_descendant_or_self<Message: Clone>(
     frame: &UiFrame<Message>,
     ancestor: &UiId,
@@ -1524,6 +1597,11 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     assert!(resources.accessibility_node_count > 0);
     assert!(resources.estimated_retained_bytes > 0);
     assert!(resources.declaration_tree_bytes > 0);
+    assert_eq!(resources.declaration_event_sidecar_count, 1);
+    assert_eq!(
+        resources.declaration_event_sidecar_bytes,
+        std::mem::size_of::<super::super::ElementEvents<TestMessage>>()
+    );
     assert!(resources.resolved_storage_bytes > 0);
     assert!(resources.retained_arena_bytes > 0);
     assert!(resources.accessibility_storage_bytes > 0);
@@ -1543,6 +1621,34 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     );
     assert!(resources.estimated_owned_bytes > resources.estimated_retained_bytes);
     assert_eq!(resources.retained_build_scratch_bytes, 0);
+}
+
+#[test]
+fn dense_interactivity_allocates_one_event_sidecar_per_element_not_per_handler() {
+    const BUTTONS: usize = 256;
+    let mut root = Column::new();
+    for index in 0..BUTTONS {
+        root = root.child(
+            Container::new()
+                .message(TestMessage::Named("activate"))
+                .context_message(TestMessage::Named("context"))
+                .focus_message(TestMessage::Named("focus"))
+                .blur_message(TestMessage::Named("blur"))
+                .id(format!("button-{index}")),
+        );
+    }
+    let mut state = UiStateStore::default();
+    let frame = UiFrame::resolve(
+        root,
+        FrameRequest::new(Rect::new(0.0, 0.0, 640.0, 480.0), &mut state),
+    );
+    let resources = frame.resource_diagnostics();
+
+    assert_eq!(resources.declaration_event_sidecar_count, BUTTONS);
+    assert_eq!(
+        resources.declaration_event_sidecar_bytes,
+        BUTTONS * std::mem::size_of::<super::super::ElementEvents<TestMessage>>()
+    );
 }
 
 #[test]
