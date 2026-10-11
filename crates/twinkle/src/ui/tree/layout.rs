@@ -933,7 +933,7 @@ pub(super) fn apply_transient_state_staged<Message>(
 }
 
 fn capture_transient_state<Message>(
-    element: &Element<Message>,
+    element: &mut Element<Message>,
     id: &UiId,
     state: &UiStateStore,
     parent_interaction: Option<usize>,
@@ -968,10 +968,11 @@ fn capture_transient_state<Message>(
             Kind::VerticalScroll { .. } | Kind::Dropdown(_)
         );
     if owns_state || inherited_text_paint || inherited_geometry {
-        overlay
-            .styles
-            .entry(id.clone())
-            .or_insert_with(|| element.style.clone());
+        if !overlay.styles.contains_key(id) {
+            let original = std::mem::take(&mut element.style);
+            element.style = original.clone();
+            overlay.styles.insert(id.clone(), original);
+        }
     }
     if element.text_mapper.is_some()
         || matches!(
@@ -982,14 +983,15 @@ fn capture_transient_state<Message>(
                 | Kind::Text { .. }
         ) && (owns_state || inherited_text_paint)
     {
-        overlay
-            .kinds
-            .entry(id.clone())
-            .or_insert_with(|| element.kind.clone());
+        if !overlay.kinds.contains_key(id) {
+            let original = std::mem::replace(&mut element.kind, Kind::Layer);
+            element.kind = original.clone();
+            overlay.kinds.insert(id.clone(), original);
+        }
     }
     let child_text_paint = inherited_text_paint || interaction_index.is_some();
     let child_geometry = inherited_geometry || element.style.proximity_magnification.is_some();
-    for (index, child) in element.children.iter().enumerate() {
+    for (index, child) in element.children.iter_mut().enumerate() {
         let child_id = resolved_child_id(id, child, index);
         capture_transient_state(
             child,

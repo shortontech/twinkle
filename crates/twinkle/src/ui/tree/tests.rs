@@ -1146,12 +1146,18 @@ fn transactional_rebuild_clones_without_consuming_the_published_declaration() {
 fn transient_overlay_restores_canonical_declaration_before_publication() {
     let mut state = UiStateStore::default();
     state.set_hovered(Some(UiId::from("root/button")));
+    let declaration = Container::<TestMessage>::new()
+        .id("button")
+        .background(0x112233)
+        .hover_background(0x445566)
+        .message(TestMessage::Named("activate"))
+        .into_element();
+    let original_style_details = declaration
+        .style
+        .details()
+        .expect("hover style has details") as *const StyleDetails;
     let frame = UiFrame::resolve(
-        Container::<TestMessage>::new()
-            .id("button")
-            .background(0x112233)
-            .hover_background(0x445566)
-            .message(TestMessage::Named("activate")),
+        declaration,
         FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 48.0), &mut state),
     );
 
@@ -1173,9 +1179,49 @@ fn transient_overlay_restores_canonical_declaration_before_publication() {
         declaration.style.background,
         Some(Background::Solid(0x112233))
     );
+    assert_eq!(
+        declaration
+            .style
+            .details()
+            .expect("canonical details restored") as *const StyleDetails,
+        original_style_details,
+        "publication must restore the application-built sidecar allocation"
+    );
     let resources = frame.resource_diagnostics();
     assert_eq!(resources.transient_declaration_nodes_cloned, 0);
     assert!(resources.transient_style_overlay_count > 0);
+}
+
+#[test]
+fn transient_journal_preserves_canonical_kind_allocation_ownership() {
+    let mut state = UiStateStore::default();
+    let declaration = Dropdown::new(
+        TestMessage::Named("toggle"),
+        "One",
+        [("One", TestMessage::Named("one"))],
+    )
+    .id("choice")
+    .into_element();
+    let original_dropdown = match &declaration.kind {
+        Kind::Dropdown(dropdown) => dropdown.as_ref() as *const DropdownKind,
+        _ => unreachable!(),
+    };
+
+    let frame = UiFrame::resolve(
+        declaration,
+        FrameRequest::new(Rect::new(0.0, 0.0, 160.0, 80.0), &mut state),
+    );
+    let retained = frame
+        .declaration_root
+        .as_ref()
+        .expect("canonical declaration retained");
+    let retained_dropdown = match &retained.kind {
+        Kind::Dropdown(dropdown) => dropdown.as_ref() as *const DropdownKind,
+        _ => unreachable!(),
+    };
+
+    assert_eq!(retained_dropdown, original_dropdown);
+    assert!(frame.resource_diagnostics().transient_kind_overlay_count > 0);
 }
 
 fn legacy_is_descendant_or_self<Message: Clone>(
