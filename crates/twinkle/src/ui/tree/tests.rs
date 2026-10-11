@@ -1263,6 +1263,60 @@ fn pressed_interaction_paint_uses_a_compact_style_patch() {
 }
 
 #[test]
+fn inherited_interaction_text_uses_compact_format_patches() {
+    let mut state = UiStateStore::default();
+    state.set_pressed(Some(UiId::from("root/button")));
+    let frame = UiFrame::resolve(
+        Container::<TestMessage>::new()
+            .id("button")
+            .message(TestMessage::Named("activate"))
+            .part_interaction_paints([
+                InteractionPaint::default(),
+                InteractionPaint {
+                    foreground: Some(0xaabbcc),
+                    font_size: Some(18.0),
+                    line_height: Some(24.0),
+                    ..InteractionPaint::default()
+                },
+                InteractionPaint::default(),
+            ])
+            .child(
+                Text::new("Inherited")
+                    .id("label")
+                    .inherited_state_text([true, true, true]),
+            ),
+        FrameRequest::new(Rect::new(0.0, 0.0, 240.0, 60.0), &mut state),
+    );
+
+    assert!(frame.commands().iter().any(|command| matches!(
+        command,
+        PaintCommand::Text {
+            text,
+            scale,
+            color: 0xaabbcc,
+            ..
+        } if text == "Inherited" && *scale == -18.0
+    )));
+    let declaration = frame
+        .declaration_root
+        .as_ref()
+        .expect("canonical declaration retained");
+    let Kind::Text {
+        scale, line_height, ..
+    } = &declaration.children[0].kind
+    else {
+        panic!("label remains text")
+    };
+    assert_eq!(*scale, 2.0);
+    assert_eq!(*line_height, None);
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_style_clone_bytes, 0);
+    assert_eq!(resources.transient_style_clone_allocations, 0);
+    assert_eq!(resources.transient_kind_clone_bytes, 0);
+    assert_eq!(resources.transient_kind_clone_allocations, 0);
+}
+
+#[test]
 fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution() {
     assert!(
         std::mem::size_of::<layout::TransientStylePatch>() < std::mem::size_of::<Style>(),
@@ -1423,6 +1477,34 @@ fn active_transient_overlay_paths_report_clone_and_storage_costs() {
                     InteractionPaint::default(),
                 ]),
             FrameRequest::new(bounds, &mut pressed_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut inherited_text_state = UiStateStore::default();
+    inherited_text_state.set_pressed(Some(UiId::from("root/button")));
+    report(
+        "inherited-text-paint",
+        UiFrame::resolve(
+            Container::<TestMessage>::new()
+                .id("button")
+                .message(TestMessage::Named("activate"))
+                .part_interaction_paints([
+                    InteractionPaint::default(),
+                    InteractionPaint {
+                        foreground: Some(0xaabbcc),
+                        font_size: Some(18.0),
+                        line_height: Some(24.0),
+                        ..InteractionPaint::default()
+                    },
+                    InteractionPaint::default(),
+                ])
+                .child(
+                    Text::new("Inherited")
+                        .id("label")
+                        .inherited_state_text([true, true, true]),
+                ),
+            FrameRequest::new(bounds, &mut inherited_text_state),
         )
         .resource_diagnostics(),
     );

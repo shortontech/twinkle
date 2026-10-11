@@ -8053,12 +8053,16 @@ fn measure_element_effective<Message>(
             let value = context.map_or(value.as_str(), |(id, overlay)| {
                 overlay.text_value(id, value)
             });
+            let scale = context.map_or(*scale, |(id, overlay)| overlay.text_scale(id, *scale));
+            let line_height = context.map_or(*line_height, |(id, overlay)| {
+                overlay.text_line_height(id, *line_height)
+            });
             measure_text(
                 value,
-                *scale,
+                scale,
                 *bold,
                 *wrap,
-                *line_height,
+                line_height,
                 max_lines.map(std::num::NonZeroUsize::get),
                 child_max.width,
             )
@@ -8337,10 +8341,11 @@ fn measure_element_effective<Message>(
             let value = context.map_or(value.as_str(), |(id, overlay)| {
                 overlay.text_value(id, value)
             });
+            let scale = context.map_or(*scale, |(id, overlay)| overlay.text_scale(id, *scale));
             value
                 .split_whitespace()
                 .map(|word| {
-                    measure_text(word, *scale, *bold, false, None, Some(1), f32::INFINITY).width
+                    measure_text(word, scale, *bold, false, None, Some(1), f32::INFINITY).width
                 })
                 .fold(0.0, f32::max)
                 + horizontal_padding
@@ -8354,7 +8359,8 @@ fn measure_element_effective<Message>(
             let value = context.map_or(value.as_str(), |(id, overlay)| {
                 overlay.text_value(id, value)
             });
-            measure_text(value, *scale, *bold, false, None, Some(1), f32::INFINITY).width
+            let scale = context.map_or(*scale, |(id, overlay)| overlay.text_scale(id, *scale));
+            measure_text(value, scale, *bold, false, None, Some(1), f32::INFINITY).width
                 + horizontal_padding
         }
         _ => content.width + horizontal_padding,
@@ -8443,6 +8449,10 @@ fn collect_selection_regions<Message>(
                 ..
             } = kind
         {
+            let scale = overlay.map_or(*scale, |overlay| overlay.text_scale(&node.id, *scale));
+            let line_height = overlay.map_or(*line_height, |overlay| {
+                overlay.text_line_height(&node.id, *line_height)
+            });
             let run_id = style
                 .selection_run_id
                 .clone()
@@ -8452,10 +8462,10 @@ fn collect_selection_regions<Message>(
                 &text,
                 node.content,
                 node.clip,
-                *scale,
+                scale,
                 *bold,
                 *wrap,
-                *line_height,
+                line_height,
                 max_lines.map(std::num::NonZeroUsize::get),
                 style.text_align,
             );

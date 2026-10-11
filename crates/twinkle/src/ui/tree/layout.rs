@@ -274,14 +274,18 @@ pub(super) fn layout_element<Message: Clone>(
                 ..
             } => {
                 let value = overlay.map_or(value.as_str(), |overlay| overlay.text_value(id, value));
+                let scale = overlay.map_or(*scale, |overlay| overlay.text_scale(id, *scale));
+                let line_height = overlay.map_or(*line_height, |overlay| {
+                    overlay.text_line_height(id, *line_height)
+                });
                 tree.diagnostic_text_measurements =
                     tree.diagnostic_text_measurements.saturating_add(1);
                 Some(measure_text(
                     value,
-                    *scale,
+                    scale,
                     *bold,
                     *wrap,
-                    *line_height,
+                    line_height,
                     max_lines.map(std::num::NonZeroUsize::get),
                     if *wrap {
                         rect.size.width.max(0.0)
@@ -1519,6 +1523,7 @@ pub(super) struct TransientStateJournal {
     vertical_scroll_offsets: std::collections::HashMap<UiId, f32>,
     dropdown_expanded: std::collections::HashMap<UiId, bool>,
     text_patches: std::collections::HashMap<UiId, TransientTextPatch>,
+    text_format_patches: std::collections::HashMap<UiId, TransientTextFormatPatch>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1536,6 +1541,12 @@ struct TransientTextPatch {
     caret_position: Option<Point>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct TransientTextFormatPatch {
+    scale: Option<f32>,
+    line_height: Option<f32>,
+}
+
 impl TransientStateJournal {
     pub(super) fn style_count(&self) -> usize {
         self.style_patches.len()
@@ -1546,6 +1557,7 @@ impl TransientStateJournal {
             + self.vertical_scroll_offsets.len()
             + self.dropdown_expanded.len()
             + self.text_patches.len()
+            + self.text_format_patches.len()
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
@@ -1579,6 +1591,8 @@ impl TransientStateJournal {
             + self.vertical_scroll_offsets.capacity() * std::mem::size_of::<(UiId, f32)>()
             + self.dropdown_expanded.capacity() * std::mem::size_of::<(UiId, bool)>()
             + self.text_patches.capacity() * std::mem::size_of::<(UiId, TransientTextPatch)>()
+            + self.text_format_patches.capacity()
+                * std::mem::size_of::<(UiId, TransientTextFormatPatch)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
@@ -1597,6 +1611,7 @@ impl TransientStateJournal {
             + usize::from(self.vertical_scroll_offsets.capacity() != 0)
             + usize::from(self.dropdown_expanded.capacity() != 0)
             + usize::from(self.text_patches.capacity() != 0)
+            + usize::from(self.text_format_patches.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
 
@@ -1725,6 +1740,14 @@ impl TransientStateJournal {
                 dirty.insert(DirtyPhases::PAINT);
             }
         }
+        if self.text_format_patches.contains_key(id) {
+            use super::super::retained::DirtyPhases;
+            dirty.insert(
+                DirtyPhases::MEASURE
+                    .union(DirtyPhases::PLACE)
+                    .union(DirtyPhases::PAINT),
+            );
+        }
         if dirty == super::super::retained::DirtyPhases::default() {
             self.phases.remove(id);
         } else {
@@ -1792,6 +1815,20 @@ impl TransientStateJournal {
             .map_or(canonical, |patch| patch.caret_position)
     }
 
+    pub(super) fn text_scale(&self, id: &UiId, canonical: f32) -> f32 {
+        self.text_format_patches
+            .get(id)
+            .and_then(|patch| patch.scale)
+            .unwrap_or(canonical)
+    }
+
+    pub(super) fn text_line_height(&self, id: &UiId, canonical: Option<f32>) -> Option<f32> {
+        self.text_format_patches
+            .get(id)
+            .and_then(|patch| patch.line_height)
+            .or(canonical)
+    }
+
     fn has_direct_text_patch(&self, id: &UiId) -> bool {
         self.text_patches.contains_key(id)
     }
@@ -1811,7 +1848,7 @@ pub(super) fn apply_transient_state_staged<Message>(
     state: &mut UiStateStore,
     overlay: &mut TransientStateJournal,
 ) {
-    capture_transient_state(element, id, state, None, false, 1.0, overlay);
+    capture_transient_state(element, id, state, None, None, 1.0, overlay);
     apply_transient_state_with_parent(element, id, state, None, Some(overlay));
 }
 
@@ -1956,12 +1993,33 @@ fn local_transient_style_patch<Message>(
     effective.patch(&element.style)
 }
 
+fn merged_text_paint(
+    inherited: Option<InteractionPaint>,
+    local: Option<InteractionPaint>,
+) -> Option<InteractionPaint> {
+    match (inherited, local) {
+        (None, None) => None,
+        (Some(paint), None) | (None, Some(paint)) => Some(paint),
+        (Some(inherited), Some(local)) => Some(InteractionPaint {
+            background: local.background.or(inherited.background),
+            foreground: local.foreground.or(inherited.foreground),
+            border_color: local.border_color.or(inherited.border_color),
+            border_width: local.border_width.or(inherited.border_width),
+            radius: local.radius.or(inherited.radius),
+            font_size: local.font_size.or(inherited.font_size),
+            line_height: local.line_height.or(inherited.line_height),
+            width: local.width.or(inherited.width),
+            height: local.height.or(inherited.height),
+        }),
+    }
+}
+
 fn capture_transient_state<Message>(
     element: &mut Element<Message>,
     id: &UiId,
     state: &mut UiStateStore,
     parent_interaction: Option<usize>,
-    inherited_text_paint: bool,
+    inherited_text_paint: Option<InteractionPaint>,
     inherited_geometry_scale: f32,
     overlay: &mut TransientStateJournal,
 ) {
@@ -2050,6 +2108,88 @@ fn capture_transient_state<Message>(
             .or_default()
             .merge(local_patch);
     }
+    let local_text_paint = interaction_index.map(|index| {
+        element
+            .style
+            .interaction_paints
+            .as_ref()
+            .map_or(InteractionPaint::default(), |paints| paints[index])
+    });
+    let effective_text_paint = merged_text_paint(inherited_text_paint, local_text_paint);
+    if let Kind::Text {
+        scale, line_height, ..
+    } = &element.kind
+    {
+        let mut effective_scale = *scale;
+        let mut effective_line_height = *line_height;
+        let mut effective_foreground = element.style.foreground;
+        if let Some(paint) = inherited_text_paint {
+            if element.style.inherited_state_text[0]
+                && let Some(color) = paint.foreground
+            {
+                effective_foreground = Some(color);
+            }
+            if element.style.inherited_state_text[1]
+                && let Some(size) = paint.font_size
+            {
+                effective_scale = -size;
+            }
+            if element.style.inherited_state_text[2]
+                && let Some(height) = paint.line_height
+            {
+                effective_line_height = Some(height);
+            }
+        }
+        if let Some(paint) = local_text_paint {
+            if let Some(color) = paint.foreground {
+                effective_foreground = Some(color);
+            }
+            if let Some(size) = paint.font_size {
+                effective_scale = -size;
+            }
+            if let Some(height) = paint.line_height {
+                effective_line_height = Some(height);
+            }
+        }
+        if effective_foreground != element.style.foreground {
+            overlay
+                .style_patches
+                .entry(id.clone())
+                .or_default()
+                .foreground = Some(effective_foreground);
+        }
+        let format_patch = TransientTextFormatPatch {
+            scale: (*scale != effective_scale).then_some(effective_scale),
+            line_height: (*line_height != effective_line_height)
+                .then_some(effective_line_height.unwrap_or_default()),
+        };
+        if format_patch.scale.is_some() || format_patch.line_height.is_some() {
+            overlay.text_format_patches.insert(id.clone(), format_patch);
+        } else {
+            overlay.text_format_patches.remove(id);
+        }
+    } else {
+        overlay.text_format_patches.remove(id);
+        let mut effective_foreground = element.style.foreground;
+        if let Some(paint) = inherited_text_paint
+            && element.style.inherited_state_text[0]
+            && let Some(color) = paint.foreground
+        {
+            effective_foreground = Some(color);
+        }
+        if let Some(paint) = local_text_paint
+            && let Some(color) = paint.foreground
+        {
+            effective_foreground = Some(color);
+        }
+        if effective_foreground != element.style.foreground {
+            overlay
+                .style_patches
+                .entry(id.clone())
+                .or_default()
+                .foreground = Some(effective_foreground);
+        }
+    }
     if direct_dropdown
         && !element.style.css_paint
         && let Kind::Dropdown(dropdown) = &element.kind
@@ -2064,7 +2204,7 @@ fn capture_transient_state<Message>(
                 42.0
             }));
     }
-    let style_can_change = inherited_text_paint || dropdown_height_changes;
+    let style_can_change = dropdown_height_changes;
     if style_can_change {
         if !overlay.styles.contains_key(id) {
             let original = std::mem::take(&mut element.style);
@@ -2107,7 +2247,6 @@ fn capture_transient_state<Message>(
                 ..
             }
         ) && direct_interaction.is_some()
-        || matches!(element.kind, Kind::Text { .. }) && inherited_text_paint
     {
         if !overlay.kinds.contains_key(id) {
             let original = std::mem::replace(&mut element.kind, Kind::Layer);
@@ -2124,7 +2263,7 @@ fn capture_transient_state<Message>(
             overlay.kinds.insert(id.clone(), original);
         }
     }
-    let child_text_paint = inherited_text_paint || interaction_index.is_some();
+    let child_text_paint = effective_text_paint;
     let magnified_child = element.style.proximity_magnification.and_then(|_| {
         let hovered = state.hovered()?.as_str();
         element
@@ -2318,7 +2457,9 @@ fn apply_transient_state_with_parent<Message>(
                     text_paint(child, paint, false, true);
                 }
             }
-            text_paint(element, paint, true, !direct_style_patch);
+            if compact_overlay.is_none() {
+                text_paint(element, paint, true, true);
+            }
         }
         // A transparent editor already exposes keyboard focus through its caret.
         // Filling its entire text node with the generic fallback tint makes a

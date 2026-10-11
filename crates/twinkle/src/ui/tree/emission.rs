@@ -505,15 +505,19 @@ pub(super) fn emit_element<Message: Clone>(
         let value = overlay.map_or(value.as_str(), |overlay| {
             overlay.text_value(&node.id, value)
         });
+        let scale = overlay.map_or(*scale, |overlay| overlay.text_scale(&node.id, *scale));
+        let line_height = overlay.map_or(*line_height, |overlay| {
+            overlay.text_line_height(&node.id, *line_height)
+        });
         let secure = details
             .as_ref()
             .is_some_and(|details| details.input_mask.is_some());
         tree.text_inputs.push(TextInputRegion {
             id: node.id.clone(),
             content: node.content,
-            scale: *scale,
+            scale,
             bold: *bold,
-            line_height: line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
+            line_height: line_height.unwrap_or_else(|| text_font_size(scale) * 1.3),
             initial: input_value.unwrap_or(value).to_owned(),
             map: map.clone(),
             secure,
@@ -590,6 +594,10 @@ pub(super) fn emit_element<Message: Clone>(
             overlay.text_selection_x(&node.id, details.selection_x)
         })
     {
+        let scale = overlay.map_or(*scale, |overlay| overlay.text_scale(&node.id, *scale));
+        let line_height = overlay.map_or(*line_height, |overlay| {
+            overlay.text_line_height(&node.id, *line_height)
+        });
         let color = element
             .style
             .editing_parts
@@ -605,7 +613,7 @@ pub(super) fn emit_element<Message: Clone>(
                 text_rect.origin.x + start,
                 text_rect.origin.y,
                 (end - start).max(1.0),
-                line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
+                line_height.unwrap_or_else(|| text_font_size(scale) * 1.3),
             );
             tree.commands.push(if radius > 0.0 {
                 PaintCommand::RoundedFill {
@@ -632,6 +640,10 @@ pub(super) fn emit_element<Message: Clone>(
             overlay.text_caret_position(&node.id, details.caret_position)
         })
     {
+        let scale = overlay.map_or(*scale, |overlay| overlay.text_scale(&node.id, *scale));
+        let line_height = overlay.map_or(*line_height, |overlay| {
+            overlay.text_line_height(&node.id, *line_height)
+        });
         let parts = style.editing_parts.as_ref();
         let color = parts.map_or_else(
             || Some(foreground.unwrap_or(0x00ff_ffff)),
@@ -641,7 +653,7 @@ pub(super) fn emit_element<Message: Clone>(
             let width = parts.map_or(1.5, |parts| parts[0].width);
             let radius = parts.map_or(0.0, |parts| parts[0].radius);
             let height = parts.filter(|parts| parts[0].height > 0.0).map_or_else(
-                || line_height.unwrap_or_else(|| text_font_size(*scale) * 1.3),
+                || line_height.unwrap_or_else(|| text_font_size(scale) * 1.3),
                 |parts| parts[0].height,
             );
             let caret_rect = Rect::new(
@@ -705,7 +717,8 @@ pub(super) fn emit_element<Message: Clone>(
             let value = overlay.map_or(value.as_str(), |overlay| {
                 overlay.text_value(&node.id, value)
             });
-            let text = text_for_bounds(value, *scale, *bold, *ellipsis, text_rect.size.width);
+            let scale = overlay.map_or(*scale, |overlay| overlay.text_scale(&node.id, *scale));
+            let text = text_for_bounds(value, scale, *bold, *ellipsis, text_rect.size.width);
             if let Some((color, width)) = details.as_ref().and_then(|details| details.outline) {
                 for (x, y) in [
                     (-1.0, -1.0),
@@ -725,7 +738,7 @@ pub(super) fn emit_element<Message: Clone>(
                             text_rect.size.height,
                         ),
                         text: text.clone(),
-                        scale: *scale,
+                        scale,
                         color,
                         align: style.text_align,
                         bold: *bold,
@@ -737,7 +750,7 @@ pub(super) fn emit_element<Message: Clone>(
                 tree.commands.push(PaintCommand::Text {
                     bounds: text_rect,
                     text,
-                    scale: *scale,
+                    scale,
                     color: foreground.unwrap_or(0x00ff_ffff),
                     align: style.text_align,
                     bold: *bold,
