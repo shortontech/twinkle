@@ -3,7 +3,10 @@ use std::hash::{Hash, Hasher};
 
 use crate::{Rect, Size, UiId};
 
-use super::{Element, Kind, Length, Overflow, PaintCommand, Style};
+use super::{
+    BoxShadow, DropdownPartStyle, Element, GridColumnSpec, InteractionPaint, Kind, Length,
+    Overflow, PaintCommand, Style, Track,
+};
 
 /// Stable native identity assigned independently of a node's current arena slot.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -180,20 +183,6 @@ impl CompactHasher {
         value.hash(&mut self.0);
     }
 
-    fn add_formatted(&mut self, value: std::fmt::Arguments<'_>) {
-        struct HashWriter<'a>(&'a mut std::collections::hash_map::DefaultHasher);
-        impl std::fmt::Write for HashWriter<'_> {
-            fn write_str(&mut self, value: &str) -> std::fmt::Result {
-                self.0.write(value.as_bytes());
-                Ok(())
-            }
-        }
-        // Match String/str hashing without allocating the formatted String.
-        // Write the prefix-free terminator once, not once per formatter chunk.
-        std::fmt::write(&mut HashWriter(&mut self.0), value).expect("hash writer cannot fail");
-        self.0.write_u8(0xff);
-    }
-
     fn finish(self) -> u64 {
         self.0.finish()
     }
@@ -210,6 +199,97 @@ fn length(hasher: &mut CompactHasher, value: Length) {
             hasher.add(&bits(value));
         }
         Length::Auto | Length::Fill | Length::MinContent | Length::MaxContent => {}
+    }
+}
+
+fn optional_bits(hasher: &mut CompactHasher, value: Option<f32>) {
+    hasher.add(&value.map(bits));
+}
+
+fn interaction_paint(hasher: &mut CompactHasher, value: &InteractionPaint) {
+    hasher.add(&value.background);
+    hasher.add(&value.foreground);
+    hasher.add(&value.border_color);
+    optional_bits(hasher, value.border_width);
+    optional_bits(hasher, value.radius);
+    optional_bits(hasher, value.font_size);
+    optional_bits(hasher, value.line_height);
+    for length_value in [value.width, value.height] {
+        hasher.add(&length_value.is_some());
+        if let Some(length_value) = length_value {
+            length(hasher, length_value);
+        }
+    }
+}
+
+fn box_shadow(hasher: &mut CompactHasher, value: Option<BoxShadow>) {
+    hasher.add(&value.is_some());
+    if let Some(value) = value {
+        hasher.add(&bits(value.offset_x));
+        hasher.add(&bits(value.offset_y));
+        hasher.add(&bits(value.blur));
+        hasher.add(&bits(value.spread));
+        hasher.add(&value.color);
+    }
+}
+
+fn dropdown_part(hasher: &mut CompactHasher, value: &DropdownPartStyle) {
+    for float in [
+        value.width,
+        value.height,
+        value.padding.top,
+        value.padding.right,
+        value.padding.bottom,
+        value.padding.left,
+        value.margin.top,
+        value.margin.right,
+        value.margin.bottom,
+        value.margin.left,
+        value.border_width,
+        value.radius,
+        value.font_size,
+        value.line_height,
+    ] {
+        hasher.add(&bits(float));
+    }
+    hasher.add(&value.background);
+    hasher.add(&value.interaction_backgrounds);
+    for paint in &value.interaction_paints {
+        interaction_paint(hasher, paint);
+    }
+    hasher.add(&value.inherited_text);
+    hasher.add(&value.foreground);
+    hasher.add(&value.border_color);
+}
+
+fn track(hasher: &mut CompactHasher, value: &Track) {
+    std::mem::discriminant(value).hash(&mut hasher.0);
+    match value {
+        Track::Px(value) | Track::Fraction(value) => hasher.add(&bits(*value)),
+        Track::MinMax(minimum, maximum) => {
+            track(hasher, minimum);
+            track(hasher, maximum);
+        }
+        Track::Repeat(count, repeated) => {
+            hasher.add(count);
+            track(hasher, repeated);
+        }
+        Track::AutoFit(repeated) => track(hasher, repeated),
+        Track::Auto => {}
+    }
+}
+
+fn grid_columns(hasher: &mut CompactHasher, columns: &GridColumnSpec) {
+    std::mem::discriminant(columns).hash(&mut hasher.0);
+    match columns {
+        GridColumnSpec::Count(count) => hasher.add(count),
+        GridColumnSpec::Tracks(tracks) => {
+            hasher.add(&tracks.len());
+            for value in tracks {
+                track(hasher, value);
+            }
+        }
+        GridColumnSpec::AutoFit(value) => track(hasher, value),
     }
 }
 
@@ -237,13 +317,13 @@ fn hash_layout_style(style: &Style) -> (u64, u64) {
     }
     measure.add(&bits(style.grow));
     measure.add(&bits(style.shrink));
-    measure.add_formatted(format_args!(
-        "{:?}{:?}{:?}",
-        style.align_self, style.align_items, style.justify_content
-    ));
+    measure.add(&style.align_self);
+    measure.add(&style.align_items);
+    measure.add(&style.justify_content);
 
     let mut place = CompactHasher::default();
-    place.add_formatted(format_args!("{:?}{:?}", style.overflow_x, style.overflow_y));
+    place.add(&style.overflow_x);
+    place.add(&style.overflow_y);
     if let Some(position) = style.absolute_position {
         place.add(&bits(position.x));
         place.add(&bits(position.y));
@@ -326,7 +406,7 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
             content_measure.add(&line_height.map(bits));
             content_measure.add(max_lines);
             paint.add(ellipsis);
-            paint.add_formatted(format_args!("{outline:?}"));
+            paint.add(&outline.map(|(color, width)| (color, bits(width))));
             paint.add(&input_value.is_some());
             paint.add(&input_placeholder.is_some());
             paint.add(&input_mask);
@@ -354,16 +434,16 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
         } => {
             content_measure.add(id);
             content_measure.add(generation);
-            content_measure.add_formatted(format_args!("{presentation:?}"));
+            content_measure.add(presentation);
             paint.add(id);
             paint.add(generation);
-            paint.add_formatted(format_args!("{presentation:?}"));
+            paint.add(presentation);
         }
         Kind::VerticalScroll { offset, controlled } => {
             paint.add(&bits(*offset));
             paint.add(controlled);
         }
-        Kind::Grid { columns } => content_measure.add_formatted(format_args!("{columns:?}")),
+        Kind::Grid { columns } => grid_columns(&mut content_measure, columns),
         Kind::CustomPaint { paint: callback } => {
             paint.add(&(*callback as usize));
             paint_content_sensitive = true;
@@ -382,9 +462,19 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
             presentation,
         } => {
             paint.add(&bits(*value));
-            paint.add_formatted(format_args!(
-                "{track:?}{fill:?}{thumb:?}{thumb_border:?}{geometry:?}{presentation:?}"
-            ));
+            paint.add(track);
+            paint.add(fill);
+            paint.add(thumb);
+            paint.add(thumb_border);
+            for value in geometry {
+                paint.add(&bits(*value));
+            }
+            paint.add(&presentation.is_some());
+            if let Some(parts) = presentation {
+                for part in parts.as_ref() {
+                    dropdown_part(&mut paint, part);
+                }
+            }
         }
         Kind::Dropdown {
             selected,
@@ -411,9 +501,15 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
             paint.add(expanded);
             paint.add(open_generation);
             paint.add(overlay);
-            paint.add_formatted(format_args!(
-                "{background:?}{option_background:?}{foreground:?}{presentation:?}"
-            ));
+            paint.add(background);
+            paint.add(option_background);
+            paint.add(foreground);
+            paint.add(&presentation.is_some());
+            if let Some(parts) = presentation {
+                for part in parts.as_ref() {
+                    dropdown_part(&mut paint, part);
+                }
+            }
         }
         Kind::Flex(_) | Kind::Layer => {}
     }
@@ -427,23 +523,37 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
     } else {
         style_measure ^ content_measure.finish()
     };
-    paint.add_formatted(format_args!(
-        "{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}",
-        element.style.background,
-        element.style.border,
-        element.style.border_width,
-        element.style.foreground,
-        element.style.box_shadow,
-        element.style.backdrop_blur,
-        element.style.corner_radius,
-        element.style.top_corner_radius,
-        element.style.interaction_paints,
-        element.style.text_align,
-        element.style.css_paint,
-        element.style.editing_parts,
-        element.style.editing_menu,
-        element.style.focus_background_tint,
-    ));
+    paint.add(&element.style.background);
+    paint.add(&element.style.border);
+    paint.add(&bits(element.style.border_width));
+    paint.add(&element.style.foreground);
+    box_shadow(&mut paint, element.style.box_shadow);
+    optional_bits(&mut paint, element.style.backdrop_blur);
+    paint.add(&bits(element.style.corner_radius));
+    paint.add(&bits(element.style.top_corner_radius));
+    paint.add(&element.style.interaction_paints.is_some());
+    if let Some(interaction_paints) = &element.style.interaction_paints {
+        for value in interaction_paints.as_ref() {
+            interaction_paint(&mut paint, value);
+        }
+    }
+    paint.add(&element.style.text_align);
+    paint.add(&element.style.css_paint);
+    paint.add(&element.style.editing_parts.is_some());
+    if let Some(parts) = &element.style.editing_parts {
+        for part in parts.as_ref() {
+            dropdown_part(&mut paint, part);
+        }
+    }
+    paint.add(&element.style.editing_menu.is_some());
+    if let Some(menu) = &element.style.editing_menu {
+        dropdown_part(&mut paint, &menu.frame);
+        for part in menu.item.iter().chain(menu.disabled_item.iter()) {
+            dropdown_part(&mut paint, part);
+        }
+        paint.add(&bits(menu.row_gap));
+    }
+    paint.add(&element.style.focus_background_tint);
 
     let mut interaction = CompactHasher::default();
     interaction.add(&element.virtual_navigation);
@@ -473,7 +583,7 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
     semantics.add(&element.style.accessibility_role.is_some());
     semantics.add(&element.style.accessibility_state.is_some());
     semantics.add(&element.style.accessibility_controls.is_some());
-    semantics.add_formatted(format_args!("{:?}", element.style.semantic_role));
+    semantics.add(&element.style.semantic_role);
     semantics.add(&element.style.accessibility_hidden);
     semantics.add(&element.style.semantic_decorative);
 
@@ -1175,32 +1285,6 @@ mod tests {
         let mut cleared = Element::<u32>::flex(super::super::Axis::Vertical).message(1);
         cleared.clear_primary_message();
         assert!(cleared.events.is_none());
-    }
-
-    #[test]
-    fn streamed_signature_formatting_matches_allocated_string_hashing() {
-        fn check(arguments: std::fmt::Arguments<'_>) {
-            let mut allocated = CompactHasher::default();
-            let mut streamed = CompactHasher::default();
-            allocated.add(&17u64);
-            streamed.add(&17u64);
-            allocated.add(&arguments.to_string());
-            streamed.add_formatted(arguments);
-            // Include a suffix to catch incorrect per-chunk terminators.
-            allocated.add(&"after");
-            streamed.add(&"after");
-            assert_eq!(allocated.finish(), streamed.finish());
-        }
-        check(format_args!(""));
-        check(format_args!("{}{}{}", "Unicode 🦀", "", "終"));
-        check(format_args!("{:?}", Style::default()));
-        for value in [0.0f32, -0.0, 1.25, f32::INFINITY, f32::NAN] {
-            check(format_args!("{value:?}{:?}{:?}", Some(value), [value; 4]));
-        }
-        for size in [7, 8, 9, 63, 64, 65, 1024] {
-            let text = "x".repeat(size);
-            check(format_args!("{text:?}{text}{:?}", Some(&text)));
-        }
     }
 
     #[test]

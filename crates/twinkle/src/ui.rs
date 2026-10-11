@@ -53,7 +53,7 @@ impl<Message> TextMessageMapper<Message> {
 }
 
 /// How image pixels are mapped into their allocated viewport.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ImageFit {
     /// Preserve aspect ratio and show the complete image.
     #[default]
@@ -71,7 +71,7 @@ pub enum ImageFit {
 }
 
 /// Alignment along one image-presentation axis.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ImageAlignment {
     Start,
     #[default]
@@ -90,7 +90,7 @@ impl ImageAlignment {
 }
 
 /// Typed, deterministic image sizing and alignment policy.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ImagePresentation {
     pub fit: ImageFit,
     pub horizontal: ImageAlignment,
@@ -426,13 +426,13 @@ impl<Message> Default for EventOutcome<Message> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum GradientAxis {
     Horizontal,
     Vertical,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 pub struct LinearGradient {
     pub start: Color,
     pub end: Color,
@@ -457,7 +457,7 @@ impl LinearGradient {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq)]
 pub enum Background {
     Solid(Color),
     LinearGradient(LinearGradient),
@@ -475,7 +475,7 @@ impl From<LinearGradient> for Background {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum TextAlign {
     #[default]
     Start,

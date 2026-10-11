@@ -226,7 +226,7 @@ impl Length {
 }
 
 /// Cross-axis alignment of a child within its allocated layout slot.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Align {
     /// Aligns to the cross-axis start.
     #[default]
@@ -242,7 +242,7 @@ pub enum Align {
 }
 
 /// Distribution of children along a container's main axis.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Justify {
     /// Packs children at the main-axis start.
     #[default]
@@ -260,7 +260,7 @@ pub enum Justify {
 }
 
 /// Painting and scrolling policy when content exceeds its allocated box.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Overflow {
     /// Paints overflow without clipping or scrolling.
     #[default]
