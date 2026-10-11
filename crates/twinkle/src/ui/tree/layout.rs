@@ -1459,13 +1459,22 @@ impl TransientStateJournal {
             effective_style,
             effective_kind,
         );
-        if self
-            .style_patches
-            .get(id)
-            .is_some_and(|patch| patch.width.is_some() || patch.height.is_some())
-        {
+        if let Some(patch) = self.style_patches.get(id) {
             use super::super::retained::DirtyPhases;
-            dirty.insert(DirtyPhases::MEASURE);
+            if patch.width.is_some() || patch.height.is_some() {
+                dirty.insert(DirtyPhases::MEASURE);
+            }
+            if patch.background.is_some()
+                || patch.border.is_some()
+                || patch.border_width.is_some()
+                || patch.foreground.is_some()
+                || patch.corner_radius.is_some()
+            {
+                dirty.insert(DirtyPhases::PAINT);
+            }
+            if patch.scroll_offset_x.is_some() || patch.scroll_offset.is_some() {
+                dirty.insert(DirtyPhases::PLACE);
+            }
         }
         if self.vertical_scroll_offsets.contains_key(id) {
             use super::super::retained::DirtyPhases;
@@ -1505,6 +1514,14 @@ impl TransientStateJournal {
             .get(id)
             .copied()
             .unwrap_or(canonical)
+    }
+
+    fn has_direct_background_patch(&self, id: &UiId) -> bool {
+        self.styles.get(id).is_none()
+            && self
+                .style_patches
+                .get(id)
+                .is_some_and(|patch| patch.background.is_some())
     }
 }
 
@@ -1579,18 +1596,34 @@ fn capture_transient_state<Message>(
         };
     let dropdown_height_changes =
         matches!(element.kind, Kind::Dropdown(_)) && !element.style.css_paint;
-    let interaction_style_changes = interaction_index.is_some_and(|index| {
-        let paint = element
+    let direct_hover_patch = direct_interaction == Some(0)
+        && element.style.hover_background.is_some()
+        && element
             .style
             .interaction_paints
             .as_ref()
-            .map_or(InteractionPaint::default(), |paints| paints[index]);
-        paint != InteractionPaint::default()
-            || index == 0 && element.style.hover_background.is_some()
-            || index == 1 && element.style.pressed_background.is_some()
-            || index == 2
-                && (element.style.focus_background.is_some() || element.style.automatic_focus_tint)
-    });
+            .is_none_or(|paints| paints[0] == InteractionPaint::default());
+    if direct_hover_patch {
+        overlay
+            .style_patches
+            .entry(id.clone())
+            .or_default()
+            .background = Some(element.style.hover_background);
+    }
+    let interaction_style_changes = !direct_hover_patch
+        && interaction_index.is_some_and(|index| {
+            let paint = element
+                .style
+                .interaction_paints
+                .as_ref()
+                .map_or(InteractionPaint::default(), |paints| paints[index]);
+            paint != InteractionPaint::default()
+                || index == 0 && element.style.hover_background.is_some()
+                || index == 1 && element.style.pressed_background.is_some()
+                || index == 2
+                    && (element.style.focus_background.is_some()
+                        || element.style.automatic_focus_tint)
+        });
     if inherited_geometry_scale.to_bits() != 1.0f32.to_bits() {
         let patch = overlay.style_patches.entry(id.clone()).or_default();
         if let Length::Px(width) = element.style.width {
@@ -1782,6 +1815,7 @@ fn apply_transient_state_with_parent<Message>(
             }
         } else if state.hovered() == Some(id)
             && let Some(background) = element.style.hover_background
+            && !compact_overlay.is_some_and(|overlay| overlay.has_direct_background_patch(id))
         {
             element.style.background = Some(background);
         }

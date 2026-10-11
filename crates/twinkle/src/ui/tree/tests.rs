@@ -1143,7 +1143,7 @@ fn transactional_rebuild_clones_without_consuming_the_published_declaration() {
 }
 
 #[test]
-fn transient_overlay_restores_canonical_declaration_before_publication() {
+fn transient_overlay_preserves_canonical_declaration_during_publication() {
     let mut state = UiStateStore::default();
     state.set_hovered(Some(UiId::from("root/button")));
     let declaration = Container::<TestMessage>::new()
@@ -1190,8 +1190,8 @@ fn transient_overlay_restores_canonical_declaration_before_publication() {
     let resources = frame.resource_diagnostics();
     assert_eq!(resources.transient_declaration_nodes_cloned, 0);
     assert!(resources.transient_style_overlay_count > 0);
-    assert!(resources.transient_whole_payload_clone_bytes >= std::mem::size_of::<Style>());
-    assert!(resources.transient_whole_payload_clone_allocations > 0);
+    assert_eq!(resources.transient_whole_payload_clone_bytes, 0);
+    assert_eq!(resources.transient_whole_payload_clone_allocations, 0);
     assert_eq!(
         resources.transient_whole_payload_clone_bytes,
         resources.transient_style_clone_bytes + resources.transient_kind_clone_bytes
@@ -1224,6 +1224,10 @@ fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution(
     apply_transient_state_staged(&mut declaration, &root_id, &mut state, &mut overlay);
     assert_eq!(
         declaration.style.background,
+        Some(Background::Solid(0x112233))
+    );
+    assert_eq!(
+        overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))
     );
     overlay.detach_effective(&mut declaration, &root_id);
@@ -1242,7 +1246,9 @@ fn detached_transient_overlay_keeps_the_declaration_canonical_during_resolution(
         overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))
     );
-    assert!(overlay.storage_bytes() < staged_bytes);
+    assert_eq!(overlay.storage_bytes(), staged_bytes);
+    assert_eq!(overlay.style_clone_bytes(), 0);
+    assert_eq!(overlay.style_clone_allocations(), 0);
     assert_eq!(
         overlay.kind(&root_id, &declaration).name(),
         declaration.kind.name()
