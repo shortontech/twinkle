@@ -8105,6 +8105,9 @@ fn measure_element_effective<Message>(
                 presentation,
                 ..
             } = dropdown.as_ref();
+            let expanded = context.map_or(*expanded, |(id, overlay)| {
+                overlay.dropdown_expanded(id, *expanded)
+            });
             let option_presentations = dropdown
                 .details
                 .as_ref()
@@ -8134,7 +8137,7 @@ fn measure_element_effective<Message>(
                 } else {
                     text_width + header.padding.width() + parts[2].width + parts[2].margin.width()
                 };
-                let options_height = if *expanded && !*overlay {
+                let options_height = if expanded && !*overlay {
                     (0..options.len())
                         .map(|index| {
                             resolved_options
@@ -8164,7 +8167,7 @@ fn measure_element_effective<Message>(
                     if *overlay {
                         30.0
                     } else {
-                        42.0 + if *expanded {
+                        42.0 + if expanded {
                             options.len() as f32 * 36.0
                         } else {
                             0.0

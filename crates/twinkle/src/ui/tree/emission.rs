@@ -971,13 +971,16 @@ pub(super) fn emit_element<Message: Clone>(
                 selected,
                 options,
                 expanded,
-                overlay,
+                overlay: dropdown_overlay,
                 background,
                 option_background,
                 foreground,
                 presentation,
                 ..
             } = dropdown.as_ref();
+            let expanded = overlay.map_or(*expanded, |overlay| {
+                overlay.dropdown_expanded(&node.id, *expanded)
+            });
             let option_presentations = dropdown
                 .details
                 .as_ref()
@@ -997,12 +1000,12 @@ pub(super) fn emit_element<Message: Clone>(
             let rect = node.content;
             let header_height = presentation
                 .as_ref()
-                .map_or(if *overlay { 30.0 } else { 42.0 }, |parts| {
+                .map_or(if *dropdown_overlay { 30.0 } else { 42.0 }, |parts| {
                     parts[0].height + parts[0].margin.height()
                 });
             let option_height = presentation
                 .as_ref()
-                .map_or(if *overlay { 34.0 } else { 36.0 }, |parts| {
+                .map_or(if *dropdown_overlay { 34.0 } else { 36.0 }, |parts| {
                     parts[1].height + parts[1].margin.height()
                 });
             let option_part = |index: usize| {
@@ -1014,7 +1017,7 @@ pub(super) fn emit_element<Message: Clone>(
                 option_part(index).map_or(option_height, |part| part.height + part.margin.height())
             };
             let options_height = (0..options.len()).map(row_height).sum::<f32>();
-            let options_origin_y = if *overlay
+            let options_origin_y = if *dropdown_overlay
                 && rect.origin.y + header_height + options_height
                     > tree.viewport.origin.y + tree.viewport.size.height
                 && rect.origin.y - options_height >= tree.viewport.origin.y
@@ -1075,7 +1078,7 @@ pub(super) fn emit_element<Message: Clone>(
                     &mut tree.commands,
                     indicator_rect,
                     indicator,
-                    if *expanded { "▲" } else { "▼" },
+                    if expanded { "▲" } else { "▼" },
                     TextAlign::Center,
                 );
             } else {
@@ -1085,9 +1088,9 @@ pub(super) fn emit_element<Message: Clone>(
                 });
                 tree.commands.push(PaintCommand::Text {
                     bounds: header.inset(Insets {
-                        top: if *overlay { 5.0 } else { 10.0 },
+                        top: if *dropdown_overlay { 5.0 } else { 10.0 },
                         right: 36.0,
-                        bottom: if *overlay { 4.0 } else { 8.0 },
+                        bottom: if *dropdown_overlay { 4.0 } else { 8.0 },
                         left: if selected_icon.is_some() { 40.0 } else { 12.0 },
                     }),
                     text: selected.clone(),
@@ -1100,11 +1103,11 @@ pub(super) fn emit_element<Message: Clone>(
                 tree.commands.push(PaintCommand::Text {
                     bounds: Rect::new(
                         header.origin.x + header.size.width - 32.0,
-                        header.origin.y + if *overlay { 5.0 } else { 10.0 },
+                        header.origin.y + if *dropdown_overlay { 5.0 } else { 10.0 },
                         20.0,
                         22.0,
                     ),
-                    text: if *expanded { "▲" } else { "▼" }.into(),
+                    text: if expanded { "▲" } else { "▼" }.into(),
                     scale: 1.0,
                     color: *foreground,
                     align: TextAlign::Center,
@@ -1128,7 +1131,7 @@ pub(super) fn emit_element<Message: Clone>(
             // opening transition can select its declared entry target in the
             // same event batch. Hidden options remain absent from hit testing,
             // painting, and accessibility until expanded.
-            if !*expanded {
+            if !expanded {
                 for (index, message) in element.option_messages.iter().enumerate() {
                     if let Some(message) = message {
                         tree.messages.push(MessageRegion {
@@ -1142,10 +1145,10 @@ pub(super) fn emit_element<Message: Clone>(
                     }
                 }
             }
-            if *expanded {
+            if expanded {
                 for (index, option) in options.iter().enumerate() {
                     let option_rect = option_bounds(index);
-                    let commands = if *overlay {
+                    let commands = if *dropdown_overlay {
                         &mut tree.overlay_commands
                     } else {
                         &mut tree.commands
@@ -1238,7 +1241,7 @@ pub(super) fn emit_element<Message: Clone>(
                         .map(|clip| intersection(option_rect, clip))
                         .unwrap_or(Some(option_rect))
                     {
-                        let hits = if *overlay {
+                        let hits = if *dropdown_overlay {
                             &mut tree.overlay_hits
                         } else {
                             &mut tree.hits

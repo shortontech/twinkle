@@ -1331,6 +1331,7 @@ pub(super) struct TransientStateJournal {
     style_patches: std::collections::HashMap<UiId, TransientStylePatch>,
     kinds: std::collections::HashMap<UiId, Kind>,
     vertical_scroll_offsets: std::collections::HashMap<UiId, f32>,
+    dropdown_expanded: std::collections::HashMap<UiId, bool>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
     whole_payload_clone_bytes: usize,
     whole_payload_clone_allocations: usize,
@@ -1346,7 +1347,7 @@ impl TransientStateJournal {
     }
 
     pub(super) fn kind_count(&self) -> usize {
-        self.kinds.len() + self.vertical_scroll_offsets.len()
+        self.kinds.len() + self.vertical_scroll_offsets.len() + self.dropdown_expanded.len()
     }
 
     pub(super) fn whole_payload_clone_bytes(&self) -> usize {
@@ -1378,6 +1379,7 @@ impl TransientStateJournal {
             + self.style_patches.capacity() * std::mem::size_of::<(UiId, TransientStylePatch)>()
             + self.kinds.capacity() * std::mem::size_of::<(UiId, Kind)>()
             + self.vertical_scroll_offsets.capacity() * std::mem::size_of::<(UiId, f32)>()
+            + self.dropdown_expanded.capacity() * std::mem::size_of::<(UiId, bool)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
             + self.styles.values().map(style_owned_bytes).sum::<usize>()
@@ -1389,6 +1391,7 @@ impl TransientStateJournal {
             + usize::from(self.style_patches.capacity() != 0)
             + usize::from(self.kinds.capacity() != 0)
             + usize::from(self.vertical_scroll_offsets.capacity() != 0)
+            + usize::from(self.dropdown_expanded.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
     }
 
@@ -1485,6 +1488,14 @@ impl TransientStateJournal {
                     .union(DirtyPhases::SEMANTICS),
             );
         }
+        if self.dropdown_expanded.contains_key(id) {
+            use super::super::retained::DirtyPhases;
+            dirty.insert(
+                DirtyPhases::PAINT
+                    .union(DirtyPhases::INTERACTION)
+                    .union(DirtyPhases::SEMANTICS),
+            );
+        }
         if dirty == super::super::retained::DirtyPhases::default() {
             self.phases.remove(id);
         } else {
@@ -1514,6 +1525,14 @@ impl TransientStateJournal {
             .get(id)
             .copied()
             .unwrap_or(canonical)
+    }
+
+    pub(super) fn dropdown_expanded(&self, id: &UiId, canonical: bool) -> bool {
+        self.dropdown_expanded.get(id).copied().unwrap_or(canonical)
+    }
+
+    fn has_direct_dropdown_patch(&self, id: &UiId) -> bool {
+        self.dropdown_expanded.contains_key(id)
     }
 
     fn has_direct_background_patch(&self, id: &UiId) -> bool {
@@ -1594,8 +1613,40 @@ fn capture_transient_state<Message>(
         } else {
             false
         };
-    let dropdown_height_changes =
-        matches!(element.kind, Kind::Dropdown(_)) && !element.style.css_paint;
+    let direct_dropdown_supported =
+        matches!(&element.kind, Kind::Dropdown(dropdown) if dropdown.presentation.is_none());
+    let direct_dropdown = if let Kind::Dropdown(dropdown) = &element.kind
+        && direct_dropdown_supported
+    {
+        let transient = state.touch(id.clone());
+        if dropdown.open_generation != transient.dropdown_open_generation {
+            transient.dropdown_open_generation = dropdown.open_generation;
+            transient.dropdown_open = true;
+        }
+        let expanded = transient.dropdown_open;
+        if expanded != dropdown.expanded {
+            overlay.dropdown_expanded.insert(id.clone(), expanded);
+            if !element.style.css_paint {
+                overlay.style_patches.entry(id.clone()).or_default().height =
+                    Some(Length::Px(if dropdown.overlay {
+                        30.0
+                    } else if expanded {
+                        42.0 + dropdown.options.len() as f32 * 36.0
+                    } else {
+                        42.0
+                    }));
+            }
+            true
+        } else {
+            overlay.dropdown_expanded.remove(id);
+            false
+        }
+    } else {
+        false
+    };
+    let dropdown_height_changes = matches!(element.kind, Kind::Dropdown(_))
+        && !element.style.css_paint
+        && !direct_dropdown_supported;
     let direct_hover_patch = direct_interaction == Some(0)
         && element.style.hover_background.is_some()
         && element
@@ -1667,7 +1718,7 @@ fn capture_transient_state<Message>(
     }
     let text_projection_changes = text_projection_needed(element, id, state);
     let dropdown_projection_changes =
-        dropdown_projection_needed(element, id, state, interaction_index);
+        !direct_dropdown && dropdown_projection_needed(element, id, state, interaction_index);
     let vertical_scroll_projection_changes = vertical_scroll_projection_needed(element, id, state);
     if vertical_scroll_projection_changes {
         let offset = state
@@ -1999,6 +2050,9 @@ fn apply_transient_state_with_parent<Message>(
                         *part = part.with_interaction(index);
                     }
                 }
+            }
+            Kind::Dropdown(_)
+                if compact_overlay.is_some_and(|overlay| overlay.has_direct_dropdown_patch(id)) => {
             }
             Kind::Dropdown(dropdown) => {
                 dropdown.expanded = dropdown_open;

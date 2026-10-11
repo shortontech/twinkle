@@ -1434,6 +1434,36 @@ fn transparent_focused_editor_does_not_clone_an_unchanged_style() {
     assert!(resources.transient_kind_clone_bytes > 0);
 }
 
+#[test]
+fn transient_plain_dropdown_uses_compact_expansion_state() {
+    let mut state = UiStateStore::default();
+    state.set_dropdown_open(UiId::from("root/choice"), true);
+    let frame = UiFrame::resolve(
+        Dropdown::new(
+            TestMessage::Named("toggle"),
+            "One",
+            [
+                ("One", TestMessage::Option(1)),
+                ("Two", TestMessage::Option(2)),
+            ],
+        )
+        .id("choice"),
+        FrameRequest::new(Rect::new(0.0, 0.0, 320.0, 160.0), &mut state),
+    );
+
+    let resources = frame.resource_diagnostics();
+    assert_eq!(resources.transient_style_clone_bytes, 0);
+    assert_eq!(resources.transient_style_clone_allocations, 0);
+    assert_eq!(resources.transient_kind_clone_bytes, 0);
+    assert_eq!(resources.transient_kind_clone_allocations, 0);
+    assert_eq!(resources.transient_style_overlay_count, 1);
+    assert_eq!(resources.transient_kind_overlay_count, 1);
+    assert_eq!(
+        frame.message_at(Point { x: 20.0, y: 96.0 }),
+        Some(&TestMessage::Option(2))
+    );
+}
+
 fn legacy_is_descendant_or_self<Message: Clone>(
     frame: &UiFrame<Message>,
     ancestor: &UiId,
