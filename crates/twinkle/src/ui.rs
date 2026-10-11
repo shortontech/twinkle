@@ -1205,7 +1205,7 @@ impl Default for Style {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 struct TextDetails {
     outline: Option<(Color, f32)>,
     selection_x: Option<(f32, f32)>,
@@ -1215,7 +1215,7 @@ struct TextDetails {
     input_mask: Option<char>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct DropdownKind {
     selected: String,
     options: Vec<String>,
@@ -1229,7 +1229,7 @@ struct DropdownKind {
     details: Option<Box<DropdownDetails>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 struct StyledTextKind {
     value: String,
     spans: Vec<StyledTextSpan>,
@@ -1238,7 +1238,7 @@ struct StyledTextKind {
     line_height: Option<f32>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 struct DropdownDetails {
     option_presentations: Vec<DropdownPartStyle>,
     resolved_options: Vec<DropdownPartStyle>,
@@ -1253,8 +1253,7 @@ impl DropdownKind {
     }
 }
 
-#[allow(unpredictable_function_pointer_comparisons)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 enum Kind {
     Flex(Axis),
     Layer,

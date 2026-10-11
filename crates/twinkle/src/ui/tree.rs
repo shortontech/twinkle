@@ -2265,7 +2265,7 @@ impl<Message: Clone> UiFrame<Message> {
                 .reconcile_against(&root, previous_declaration);
         }
         tree.retained_nodes
-            .invalidate_transient_overlay(transient_overlay.affected_ids());
+            .invalidate_transient_overlay(transient_overlay.affected_phases());
         transient_overlay.attach_effective(&mut root, &root_id);
         layout_element(&root, &root_id, bounds, None, None, &mut tree, previous);
         let initial = tree

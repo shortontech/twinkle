@@ -882,6 +882,7 @@ pub(super) fn apply_transient_state<Message>(
 pub(super) struct TransientStateJournal {
     styles: std::collections::HashMap<UiId, Style>,
     kinds: std::collections::HashMap<UiId, Kind>,
+    phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
 }
 
 impl TransientStateJournal {
@@ -897,8 +898,10 @@ impl TransientStateJournal {
         self.kinds.len()
     }
 
-    pub(super) fn affected_ids(&self) -> impl Iterator<Item = &UiId> {
-        self.styles.keys().chain(self.kinds.keys())
+    pub(super) fn affected_phases(
+        &self,
+    ) -> impl Iterator<Item = (&UiId, super::super::retained::DirtyPhases)> {
+        self.phases.iter().map(|(id, phases)| (id, *phases))
     }
 
     pub(super) fn restore<Message>(mut self, element: &mut Element<Message>, id: &UiId) {
@@ -937,12 +940,22 @@ impl TransientStateJournal {
         if let Some(canonical) = self.kinds.get_mut(id) {
             std::mem::swap(canonical, &mut element.kind);
         }
-        if self
-            .kinds
-            .get(id)
-            .is_some_and(|effective| *effective == element.kind)
-        {
+        if self.kinds.get(id).is_some_and(|effective| {
+            super::super::retained::exact_kind_metadata_equal(effective, &element.kind)
+        }) {
             self.kinds.remove(id);
+        }
+        let effective_style = self.styles.get(id).unwrap_or(&element.style);
+        let effective_kind = self.kinds.get(id).unwrap_or(&element.kind);
+        let dirty = super::super::retained::transient_dirty_phases(
+            element,
+            effective_style,
+            effective_kind,
+        );
+        if dirty == super::super::retained::DirtyPhases::default() {
+            self.phases.remove(id);
+        } else {
+            self.phases.insert(id.clone(), dirty);
         }
         compact_kind_capacity(&mut element.kind);
     }

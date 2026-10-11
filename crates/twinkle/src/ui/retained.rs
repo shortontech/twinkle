@@ -933,28 +933,9 @@ fn signatures<Message>(element: &Element<Message>) -> PhaseSignatures {
 // necessary, while a forced fingerprint collision can never preserve stale
 // output. Content payloads with an explicit source revision remain governed by
 // that revision in `phase_matches`.
-fn exact_metadata_equal<Message>(current: &Element<Message>, previous: &Element<Message>) -> bool {
+pub(super) fn exact_kind_metadata_equal(current: &Kind, previous: &Kind) -> bool {
     fn optional_f32_equal(current: Option<f32>, previous: Option<f32>) -> bool {
         current.map(f32::to_bits) == previous.map(f32::to_bits)
-    }
-
-    fn text_mapper_equal<Message>(
-        current: Option<&super::TextMessageMapper<Message>>,
-        previous: Option<&super::TextMessageMapper<Message>>,
-    ) -> bool {
-        use super::TextMessageMapper;
-        match (current, previous) {
-            (None, None) => true,
-            (
-                Some(TextMessageMapper::Function(current)),
-                Some(TextMessageMapper::Function(previous)),
-            ) => *current as usize == *previous as usize,
-            (
-                Some(TextMessageMapper::Closure(current)),
-                Some(TextMessageMapper::Closure(previous)),
-            ) => std::sync::Arc::ptr_eq(current, previous),
-            _ => false,
-        }
     }
 
     fn dropdown_equal(current: &super::DropdownKind, previous: &super::DropdownKind) -> bool {
@@ -1137,31 +1118,7 @@ fn exact_metadata_equal<Message>(current: &Element<Message>, previous: &Element<
         }
     }
 
-    current.style == previous.style
-        && kind_equal(&current.kind, &previous.kind)
-        && current.virtual_navigation == previous.virtual_navigation
-        && current.primary_message().is_some() == previous.primary_message().is_some()
-        && current.declared_context_message().is_some()
-            == previous.declared_context_message().is_some()
-        && current.declared_focus_message().is_some() == previous.declared_focus_message().is_some()
-        && current.declared_blur_message().is_some() == previous.declared_blur_message().is_some()
-        && current.declared_drag_seed().is_some() == previous.declared_drag_seed().is_some()
-        && current.declared_drop_message().is_some() == previous.declared_drop_message().is_some()
-        && current.message_mapper.map(|mapper| mapper as usize)
-            == previous.message_mapper.map(|mapper| mapper as usize)
-        && current.seeded_value_mapper.map(|mapper| mapper as usize)
-            == previous.seeded_value_mapper.map(|mapper| mapper as usize)
-        && current.scroll_extent_mapper.map(|mapper| mapper as usize)
-            == previous.scroll_extent_mapper.map(|mapper| mapper as usize)
-        && current.drag_mapper.map(|mapper| mapper as usize)
-            == previous.drag_mapper.map(|mapper| mapper as usize)
-        && current.drop_mapper.map(|mapper| mapper as usize)
-            == previous.drop_mapper.map(|mapper| mapper as usize)
-        && text_mapper_equal(current.text_mapper.as_ref(), previous.text_mapper.as_ref())
-        && current.option_messages.len() == previous.option_messages.len()
-        && current.inline_messages.len() == previous.inline_messages.len()
-        && current.navigation_scope == previous.navigation_scope
-        && current.adjustment_step.to_bits() == previous.adjustment_step.to_bits()
+    kind_equal(current, previous)
 }
 
 #[derive(Clone, Copy)]
@@ -1300,8 +1257,8 @@ fn exact_paint_style(current: &Style, previous: &Style) -> bool {
         && current.focus_background_tint == previous.focus_background_tint
 }
 
-fn exact_paint_kind<Message>(current: &Element<Message>, previous: &Element<Message>) -> bool {
-    match (&current.kind, &previous.kind) {
+fn exact_paint_kind(current: &Kind, previous: &Kind) -> bool {
+    match (current, previous) {
         (Kind::Flex(current), Kind::Flex(previous)) => current == previous,
         (Kind::Layer, Kind::Layer) | (Kind::Grid { .. }, Kind::Grid { .. }) => true,
         (
@@ -1410,7 +1367,7 @@ fn exact_paint_kind<Message>(current: &Element<Message>, previous: &Element<Mess
                 && current_geometry.map(f32::to_bits) == previous_geometry.map(f32::to_bits)
                 && current_presentation == previous_presentation
         }
-        (Kind::Dropdown(_), Kind::Dropdown(_)) => exact_metadata_equal(current, previous),
+        (Kind::Dropdown(_), Kind::Dropdown(_)) => exact_kind_metadata_equal(current, previous),
         _ => false,
     }
 }
@@ -1452,7 +1409,7 @@ fn exact_phase_matches<Message>(
             && current.style.absolute_position == previous.style.absolute_position
             && current.style.follow_scroll_end == previous.style.follow_scroll_end,
         paint: exact_paint_style(&current.style, &previous.style)
-            && exact_paint_kind(current, previous),
+            && exact_paint_kind(&current.kind, &previous.kind),
         interaction: current.virtual_navigation == previous.virtual_navigation
             && current.primary_message().is_some() == previous.primary_message().is_some()
             && current.declared_context_message().is_some()
@@ -1488,6 +1445,54 @@ fn exact_phase_matches<Message>(
             && current.style.accessibility_hidden == previous.style.accessibility_hidden
             && current.style.semantic_decorative == previous.style.semantic_decorative,
     }
+}
+
+pub(super) fn transient_dirty_phases<Message>(
+    canonical: &Element<Message>,
+    effective_style: &Style,
+    effective_kind: &Kind,
+) -> DirtyPhases {
+    let mut dirty = DirtyPhases::default();
+    let canonical_fixed = canonical.children.is_empty()
+        && matches!(canonical.style.width, Length::Px(_))
+        && matches!(canonical.style.height, Length::Px(_));
+    let effective_fixed = canonical.children.is_empty()
+        && matches!(effective_style.width, Length::Px(_))
+        && matches!(effective_style.height, Length::Px(_));
+    if canonical_fixed != effective_fixed
+        || !exact_measure_style(effective_style, &canonical.style)
+        || (!effective_fixed && !exact_measure_kind(effective_kind, &canonical.kind))
+    {
+        dirty.insert(DirtyPhases::MEASURE);
+    }
+    if effective_style.overflow_x != canonical.style.overflow_x
+        || effective_style.overflow_y != canonical.style.overflow_y
+        || effective_style.absolute_position != canonical.style.absolute_position
+        || effective_style.follow_scroll_end != canonical.style.follow_scroll_end
+    {
+        dirty.insert(DirtyPhases::PLACE);
+    }
+    if !exact_paint_style(effective_style, &canonical.style)
+        || !exact_paint_kind(effective_kind, &canonical.kind)
+    {
+        dirty.insert(DirtyPhases::PAINT);
+    }
+    if !exact_kind_metadata_equal(effective_kind, &canonical.kind) {
+        // State-dependent kind payloads own hit geometry and semantic values.
+        dirty.insert(DirtyPhases::INTERACTION.union(DirtyPhases::SEMANTICS));
+    }
+    if effective_style.accessibility_label != canonical.style.accessibility_label
+        || effective_style.accessibility_description != canonical.style.accessibility_description
+        || effective_style.accessibility_role != canonical.style.accessibility_role
+        || effective_style.accessibility_state != canonical.style.accessibility_state
+        || effective_style.accessibility_controls != canonical.style.accessibility_controls
+        || effective_style.semantic_role != canonical.style.semantic_role
+        || effective_style.accessibility_hidden != canonical.style.accessibility_hidden
+        || effective_style.semantic_decorative != canonical.style.semantic_decorative
+    {
+        dirty.insert(DirtyPhases::SEMANTICS);
+    }
+    dirty
 }
 
 fn phase_matches(
@@ -1644,23 +1649,44 @@ impl RetainedNodeArena {
     }
 
     /// Applies state-overlay invalidation after canonical declaration
-    /// reconciliation. The temporary all-phase marker is conservative until
-    /// the property overlay carries exact per-phase masks.
+    /// reconciliation, propagating the same descendant rules as ordinary
+    /// reconciliation without hashing canonical declarations again.
     pub(crate) fn invalidate_transient_overlay<'a>(
         &mut self,
-        ids: impl IntoIterator<Item = &'a UiId>,
+        affected: impl IntoIterator<Item = (&'a UiId, DirtyPhases)>,
     ) {
         let mut pending = self.pending_commit.iter().copied().collect::<HashSet<_>>();
-        for id in ids {
+        for (id, phases) in affected {
             let Some(mut current) = self.lookup_id(id).copied() else {
                 continue;
             };
+            let mut target = true;
             loop {
                 let parent = {
                     let node = self.nodes.get_mut(&current).expect("retained overlay node");
-                    node.dirty.insert(DirtyPhases::ALL);
-                    node.subtree_dirty.insert(DirtyPhases::ALL);
-                    node.subtree_layout_clean = false;
+                    node.subtree_dirty.insert(phases);
+                    if target {
+                        node.dirty.insert(phases);
+                    } else if phases.contains(DirtyPhases::MEASURE) {
+                        node.dirty.insert(
+                            DirtyPhases::MEASURE
+                                .union(DirtyPhases::PLACE)
+                                .union(DirtyPhases::PAINT)
+                                .union(DirtyPhases::INTERACTION)
+                                .union(DirtyPhases::SEMANTICS),
+                        );
+                    } else if phases.contains(DirtyPhases::PLACE) {
+                        node.dirty.insert(
+                            DirtyPhases::PLACE
+                                .union(DirtyPhases::PAINT)
+                                .union(DirtyPhases::INTERACTION)
+                                .union(DirtyPhases::SEMANTICS),
+                        );
+                    }
+                    if phases.contains(DirtyPhases::MEASURE) || phases.contains(DirtyPhases::PLACE)
+                    {
+                        node.subtree_layout_clean = false;
+                    }
                     node.invalidate_dirty_phases();
                     node.parent
                 };
@@ -1671,6 +1697,7 @@ impl RetainedNodeArena {
                     break;
                 };
                 current = parent;
+                target = false;
             }
         }
     }
@@ -2606,6 +2633,41 @@ mod tests {
         assert_invalidates!(SEMANTICS, element, {
             element.style.semantic_decorative = true
         });
+    }
+
+    #[test]
+    fn transient_overlay_reports_exact_phase_classes() {
+        let canonical = Element::<()>::flex(super::super::Axis::Vertical);
+
+        let mut paint_style = canonical.style.clone();
+        paint_style.background = Some(0xff12_3456.into());
+        let paint = transient_dirty_phases(&canonical, &paint_style, &canonical.kind);
+        assert!(paint.contains(DirtyPhases::PAINT));
+        assert!(!paint.contains(DirtyPhases::MEASURE));
+        assert!(!paint.contains(DirtyPhases::PLACE));
+        assert!(!paint.contains(DirtyPhases::SEMANTICS));
+
+        let mut measure_style = canonical.style.clone();
+        measure_style.width = Length::Px(40.0);
+        let measure = transient_dirty_phases(&canonical, &measure_style, &canonical.kind);
+        assert!(measure.contains(DirtyPhases::MEASURE));
+
+        let mut semantic_style = canonical.style.clone();
+        semantic_style.accessibility_state = Some("busy".into());
+        let semantics = transient_dirty_phases(&canonical, &semantic_style, &canonical.kind);
+        assert!(semantics.contains(DirtyPhases::SEMANTICS));
+        assert!(!semantics.contains(DirtyPhases::MEASURE));
+        assert!(!semantics.contains(DirtyPhases::PAINT));
+
+        let effective_kind = Kind::VerticalScroll {
+            offset: 12.0,
+            controlled: false,
+        };
+        let kind = transient_dirty_phases(&canonical, &canonical.style, &effective_kind);
+        assert!(kind.contains(DirtyPhases::MEASURE));
+        assert!(kind.contains(DirtyPhases::PAINT));
+        assert!(kind.contains(DirtyPhases::INTERACTION));
+        assert!(kind.contains(DirtyPhases::SEMANTICS));
     }
     use crate::{
         Column, Component, ComponentBuilderExt, CustomPaint, FrameRequest, Grid, Rect, Row,
