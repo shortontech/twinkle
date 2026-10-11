@@ -1301,6 +1301,117 @@ fn idle_text_field_does_not_clone_unchanged_transient_payloads() {
     assert!(state.state(&UiId::from("root/field")).is_some());
 }
 
+#[test]
+#[ignore = "release-profile active transient overlay attribution"]
+fn active_transient_overlay_paths_report_clone_and_storage_costs() {
+    fn report(name: &str, resources: FrameResourceDiagnostics) {
+        eprintln!(
+            "active_transient name={name} style_clones={} style_allocations={} kind_clones={} kind_allocations={} style_entries={} kind_entries={} overlay_bytes={} overlay_tables={}",
+            resources.transient_style_clone_bytes,
+            resources.transient_style_clone_allocations,
+            resources.transient_kind_clone_bytes,
+            resources.transient_kind_clone_allocations,
+            resources.transient_style_overlay_count,
+            resources.transient_kind_overlay_count,
+            resources.transient_overlay_storage_bytes,
+            resources.transient_overlay_table_allocations,
+        );
+    }
+
+    let bounds = Rect::new(0.0, 0.0, 320.0, 160.0);
+
+    let mut hover_state = UiStateStore::default();
+    hover_state.set_hovered(Some(UiId::from("root/button")));
+    report(
+        "hover",
+        UiFrame::resolve(
+            Container::new()
+                .id("button")
+                .message(TestMessage::Named("activate"))
+                .background(0x112233)
+                .hover_background(0x445566),
+            FrameRequest::new(bounds, &mut hover_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut focus_state = UiStateStore::default();
+    focus_state.set_focus(Some(UiId::from("root/field")));
+    report(
+        "focused-editor",
+        UiFrame::resolve(
+            TextField::on_change("editable", |_| TestMessage::Named("change")).id("field"),
+            FrameRequest::new(bounds, &mut focus_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut dropdown_state = UiStateStore::default();
+    dropdown_state.set_dropdown_open(UiId::from("root/choice"), true);
+    report(
+        "expanded-dropdown",
+        UiFrame::resolve(
+            Dropdown::new(
+                TestMessage::Named("toggle"),
+                "One",
+                [
+                    ("One", TestMessage::Option(1)),
+                    ("Two", TestMessage::Option(2)),
+                ],
+            )
+            .id("choice"),
+            FrameRequest::new(bounds, &mut dropdown_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let scroll_id = UiId::from("root/scroll");
+    let mut scroll_state = UiStateStore::default();
+    scroll_state.state_mut(scroll_id).scroll_offset = 48.0;
+    report(
+        "scroll",
+        UiFrame::resolve(
+            VerticalScroll::new(TestMessage::Named("scroll"), 0.0)
+                .id("scroll")
+                .child(Spacer::vertical(480.0)),
+            FrameRequest::new(bounds, &mut scroll_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut slider_state = UiStateStore::default();
+    slider_state.set_hovered(Some(UiId::from("root/volume")));
+    report(
+        "slider",
+        UiFrame::resolve(
+            Slider::new(TestMessage::Named("volume"), 0.5).id("volume"),
+            FrameRequest::new(bounds, &mut slider_state),
+        )
+        .resource_diagnostics(),
+    );
+
+    let mut proximity_state = UiStateStore::default();
+    proximity_state.set_hovered(Some(UiId::from("root/center")));
+    report(
+        "proximity",
+        UiFrame::resolve(
+            Row::<TestMessage>::new()
+                .children([
+                    Container::new().id("left").width(40.0).height(40.0),
+                    Container::new().id("center").width(40.0).height(40.0),
+                    Container::new().id("right").width(40.0).height(40.0),
+                ])
+                .into_element()
+                .proximity_magnification(ProximityMagnification {
+                    maximum_scale: 1.5,
+                    radius: 1,
+                }),
+            FrameRequest::new(bounds, &mut proximity_state),
+        )
+        .resource_diagnostics(),
+    );
+}
+
 fn legacy_is_descendant_or_self<Message: Clone>(
     frame: &UiFrame<Message>,
     ancestor: &UiId,
