@@ -954,6 +954,25 @@ fn text_projection_needed<Message>(
     editor.text() != initial || !editor.preedit().is_empty() || editor.selection().is_some()
 }
 
+fn synchronize_text_editor_state<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &mut UiStateStore,
+) {
+    if element.text_mapper.is_some()
+        && let Kind::Text { value, details, .. } = &element.kind
+    {
+        let initial = details
+            .as_ref()
+            .and_then(|details| details.input_value.clone())
+            .unwrap_or_else(|| value.clone());
+        let editor = state.editor(id.clone(), &initial);
+        if editor.text() != initial {
+            editor.set_text(initial);
+        }
+    }
+}
+
 fn dropdown_projection_needed<Message>(
     element: &Element<Message>,
     id: &UiId,
@@ -982,6 +1001,25 @@ fn dropdown_projection_needed<Message>(
                 || state.focused() == Some(&option)
                 || state.navigation().controller_selected() == Some(&option)
         })
+}
+
+fn vertical_scroll_projection_needed<Message>(
+    element: &Element<Message>,
+    id: &UiId,
+    state: &UiStateStore,
+) -> bool {
+    let Kind::VerticalScroll {
+        offset,
+        controlled: false,
+    } = element.kind
+    else {
+        return false;
+    };
+    let effective = state
+        .state(id)
+        .map_or(0.0, |transient| transient.scroll_offset)
+        .max(0.0);
+    effective.to_bits() != offset.to_bits()
 }
 
 pub(super) fn apply_transient_state<Message>(
@@ -1453,12 +1491,13 @@ pub(super) fn apply_transient_state_staged<Message>(
 fn capture_transient_state<Message>(
     element: &mut Element<Message>,
     id: &UiId,
-    state: &UiStateStore,
+    state: &mut UiStateStore,
     parent_interaction: Option<usize>,
     inherited_text_paint: bool,
     inherited_geometry: bool,
     overlay: &mut TransientStateJournal,
 ) {
+    synchronize_text_editor_state(element, id, state);
     let direct_interaction = if state.pressed() == Some(id) {
         Some(1)
     } else if state.window_focused()
@@ -1475,16 +1514,6 @@ fn capture_transient_state<Message>(
     } else {
         direct_interaction
     };
-    let owns_state = element.style.parent_interaction
-        || element.primary_message().is_some()
-        || element.navigation_scope.is_some()
-        || element.text_mapper.is_some()
-        || matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
-        || matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
-        || matches!(
-            element.kind,
-            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
-        );
     let scope_background_active = state.window_focused()
         && state.input_modality() == InputModality::Controller
         && element.navigation_scope.is_some()
@@ -1545,8 +1574,9 @@ fn capture_transient_state<Message>(
     let text_projection_changes = text_projection_needed(element, id, state);
     let dropdown_projection_changes =
         dropdown_projection_needed(element, id, state, interaction_index);
+    let vertical_scroll_projection_changes = vertical_scroll_projection_needed(element, id, state);
     if text_projection_changes
-        || matches!(element.kind, Kind::VerticalScroll { .. }) && owns_state
+        || vertical_scroll_projection_changes
         || dropdown_projection_changes
         || matches!(
             element.kind,
@@ -1804,18 +1834,7 @@ fn apply_transient_state_with_parent<Message>(
                 transient.dropdown_open,
             )
         };
-        if element.text_mapper.is_some()
-            && let Kind::Text { value, details, .. } = &element.kind
-        {
-            let initial = details
-                .as_ref()
-                .and_then(|details| details.input_value.clone())
-                .unwrap_or_else(|| value.clone());
-            let editor = state.editor(id.clone(), &initial);
-            if editor.text() != initial {
-                editor.set_text(initial);
-            }
-        }
+        synchronize_text_editor_state(element, id, state);
         match &mut element.kind {
             Kind::VerticalScroll {
                 offset,
