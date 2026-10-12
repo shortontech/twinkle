@@ -2324,13 +2324,16 @@ impl<Message: Clone> UiFrame<Message> {
         }
         tree.retained_nodes
             .invalidate_transient_overlay(transient_overlay.affected_phases());
+        let measurement_overlay = transient_overlay
+            .has_value_overrides()
+            .then_some(&transient_overlay);
         layout_element(
             &root,
             &root_id,
             bounds,
             None,
             None,
-            Some(&transient_overlay),
+            measurement_overlay,
             &mut tree,
             previous,
         );
@@ -8038,6 +8041,8 @@ fn measure_child_effective<Message>(
     match parent {
         Some((parent_id, overlay)) => {
             let child_id = layout::resolved_child_id(parent_id, child, index);
+            crate::pipeline_trace::count_work!(9, 1);
+            crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
             measure_element_effective(child, Some((&child_id, overlay)), constraints)
         }
         None => measure_element_effective(child, None, constraints),
@@ -8049,9 +8054,13 @@ fn effective_child_style<'a, Message>(
     parent: Option<(&UiId, &'a TransientStateJournal)>,
     index: usize,
 ) -> EffectiveStyle<'a> {
+    crate::pipeline_trace::count_work!(11, 1);
     match parent {
         Some((parent_id, overlay)) => {
             let child_id = layout::resolved_child_id(parent_id, child, index);
+            crate::pipeline_trace::count_work!(9, 1);
+            crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
+            crate::pipeline_trace::count_work!(8, 1);
             overlay.style(&child_id, child)
         }
         None => EffectiveStyle::canonical(&child.style),
@@ -8064,6 +8073,8 @@ fn measure_element_effective<Message>(
     constraints: Constraints,
 ) -> Size {
     crate::pipeline_trace::count_work!(1, 1);
+    crate::pipeline_trace::count_work!(6 + usize::from(context.is_some()), 1);
+    crate::pipeline_trace::count_work!(8, u64::from(context.is_some()));
     let style = context.map_or_else(
         || EffectiveStyle::canonical(&element.style),
         |(id, overlay)| overlay.style(id, element),
@@ -8108,6 +8119,7 @@ fn measure_element_effective<Message>(
             max_lines,
             ..
         } => {
+            crate::pipeline_trace::count_work!(8, if context.is_some() { 3 } else { 0 });
             let value = context.map_or(value.as_str(), |(id, overlay)| {
                 overlay.text_value(id, value)
             });
@@ -8153,6 +8165,7 @@ fn measure_element_effective<Message>(
             presentation: Some(parts),
             ..
         } if style.css_paint => {
+            crate::pipeline_trace::count_work!(8, u64::from(context.is_some()));
             if let Some(resolved) =
                 context.and_then(|(id, overlay)| overlay.slider_presentation(id))
             {
@@ -8189,6 +8202,7 @@ fn measure_element_effective<Message>(
                 presentation,
                 ..
             } = dropdown.as_ref();
+            crate::pipeline_trace::count_work!(8, u64::from(context.is_some()));
             let expanded = context.map_or(*expanded, |(id, overlay)| {
                 overlay.dropdown_expanded(id, *expanded)
             });
@@ -8201,6 +8215,7 @@ fn measure_element_effective<Message>(
                 .as_ref()
                 .map_or(&[][..], |details| details.resolved_options.as_slice());
             if let Some(parts) = presentation {
+                crate::pipeline_trace::count_work!(8, u64::from(context.is_some()));
                 let transient = context.and_then(|(id, overlay)| overlay.dropdown_presentation(id));
                 let header = transient
                     .map(|presentation| presentation.parts[0])
@@ -8427,6 +8442,7 @@ fn measure_element_effective<Message>(
             },
             Length::MinContent,
         ) => {
+            crate::pipeline_trace::count_work!(8, if context.is_some() { 2 } else { 0 });
             let value = context.map_or(value.as_str(), |(id, overlay)| {
                 overlay.text_value(id, value)
             });
@@ -8445,6 +8461,7 @@ fn measure_element_effective<Message>(
             },
             Length::MaxContent,
         ) => {
+            crate::pipeline_trace::count_work!(8, if context.is_some() { 2 } else { 0 });
             let value = context.map_or(value.as_str(), |(id, overlay)| {
                 overlay.text_value(id, value)
             });

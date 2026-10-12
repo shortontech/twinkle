@@ -1400,6 +1400,19 @@ pub(super) struct ResolvedDropdownPresentation {
 }
 
 impl TransientStateJournal {
+    /// Exact authority for whether any transient value can affect declaration
+    /// reads. Phase bookkeeping is intentionally excluded: it is consumed by
+    /// retained invalidation and does not change measured values.
+    pub(super) fn has_value_overrides(&self) -> bool {
+        !self.style_patches.is_empty()
+            || !self.vertical_scroll_offsets.is_empty()
+            || !self.dropdown_expanded.is_empty()
+            || !self.text_patches.is_empty()
+            || !self.text_format_patches.is_empty()
+            || !self.slider_presentations.is_empty()
+            || !self.dropdown_presentations.is_empty()
+    }
+
     pub(super) fn style_count(&self) -> usize {
         self.style_patches.len()
     }
@@ -3099,5 +3112,78 @@ pub(super) fn explicit_px(length: Length) -> Option<f32> {
     match length {
         Length::Px(value) => Some(value.max(0.0)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod transient_journal_tests {
+    use super::*;
+
+    fn assert_only_value_table_marks_nonempty(
+        populate: impl FnOnce(&mut TransientStateJournal, UiId),
+    ) {
+        let mut journal = TransientStateJournal::default();
+        assert!(!journal.has_value_overrides());
+        populate(&mut journal, UiId::from("root/value"));
+        assert!(journal.has_value_overrides());
+        journal.clear_patches();
+        assert!(!journal.has_value_overrides());
+    }
+
+    #[test]
+    fn value_override_authority_covers_every_transient_table() {
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal
+                .style_patches
+                .insert(id, TransientStylePatch::default());
+        });
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal.vertical_scroll_offsets.insert(id, 1.0);
+        });
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal.dropdown_expanded.insert(id, true);
+        });
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal.text_patches.insert(
+                id,
+                TransientTextPatch {
+                    value: "value".into(),
+                    input_value: "input".into(),
+                    selection_x: None,
+                    caret_position: None,
+                },
+            );
+        });
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal
+                .text_format_patches
+                .insert(id, TransientTextFormatPatch::default());
+        });
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal
+                .slider_presentations
+                .insert(id, [ResolvedPartStyle::default(); 3]);
+        });
+        assert_only_value_table_marks_nonempty(|journal, id| {
+            journal.dropdown_presentations.insert(
+                id,
+                ResolvedDropdownPresentation {
+                    expanded: false,
+                    parts: [ResolvedPartStyle::default(); 3],
+                    resolved_options: Vec::new(),
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn phase_only_bookkeeping_does_not_claim_a_value_override() {
+        let mut journal = TransientStateJournal::default();
+        journal.phases.insert(
+            UiId::from("root/value"),
+            super::super::retained::DirtyPhases::MEASURE,
+        );
+        assert!(!journal.has_value_overrides());
+        assert_eq!(journal.affected_phases().count(), 1);
     }
 }

@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn empty_transient_overlay_uses_canonical_recursive_measurement() {
+    let root = Row::<()>::new()
+        .gap(7.0)
+        .child(Column::new().child(Text::new("wrapped measurement text").wrap(true)))
+        .child(
+            Grid::fixed(2)
+                .gap(3.0)
+                .child(Text::new("one"))
+                .child(Text::new("two")),
+        )
+        .into_element();
+    let overlay = TransientStateJournal::default();
+    assert!(!overlay.has_value_overrides());
+    let root_id = UiId::from("root");
+    for maximum in [Size::new(120.0, 80.0), Size::new(320.0, f32::INFINITY)] {
+        let constraints = Constraints::loose(maximum);
+        assert_eq!(
+            measure_element(&root, constraints),
+            measure_element_with_overlay(&root, &root_id, &overlay, constraints)
+        );
+    }
+}
+
+#[test]
 fn virtual_row_accessibility_focus_is_revision_scoped_and_cancellable() {
     let build = |revision, range: std::ops::Range<usize>| {
         let heights = VirtualHeightIndex::new(&[24.0; 100], 0.0);

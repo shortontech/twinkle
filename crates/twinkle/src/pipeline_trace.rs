@@ -118,7 +118,7 @@ pub(crate) use event;
 mod work {
     use std::cell::Cell;
     thread_local! {
-        static COUNTS: Cell<[u64; 6]> = const { Cell::new([0; 6]) };
+        static COUNTS: Cell<[u64; 12]> = const { Cell::new([0; 12]) };
         static DEPTH: Cell<u32> = const { Cell::new(0) };
     }
     pub(crate) fn add(index: usize, amount: u64) {
@@ -132,7 +132,7 @@ mod work {
     }
     pub(crate) struct Scope {
         name: &'static str,
-        start: Option<[u64; 6]>,
+        start: Option<[u64; 12]>,
     }
     impl Scope {
         pub(crate) fn new(name: &'static str) -> Self {
@@ -148,9 +148,9 @@ mod work {
             let Some(start) = self.start else { return };
             let end = COUNTS.get();
             DEPTH.set(DEPTH.get() - 1);
-            let delta: [u64; 6] = std::array::from_fn(|i| end[i] - start[i]);
+            let delta: [u64; 12] = std::array::from_fn(|i| end[i] - start[i]);
             super::record(
-                serde_json::json!({"event":"native_frame_work","scope":self.name,"layoutElementVisits":delta[0],"recursiveMeasurements":delta[1],"emissionElementVisits":delta[2],"transientStateVisits":delta[3],"idConstructions":delta[4],"idConstructedUtf8Bytes":delta[5],"boundary":"Thread-local inclusive counts during frame resolution; visits count function entries including repeated work and reuse checks. IDs count new identity allocations, not Arc clones; string bytes are logical content, not allocator capacity. Other traversals are not included. Nested scopes overlap."}),
+                serde_json::json!({"event":"native_frame_work","scope":self.name,"layoutElementVisits":delta[0],"recursiveMeasurements":delta[1],"emissionElementVisits":delta[2],"transientStateVisits":delta[3],"idConstructions":delta[4],"idConstructedUtf8Bytes":delta[5],"canonicalMeasurementRequests":delta[6],"overlayMeasurementRequests":delta[7],"measurementOverlayValueReads":delta[8],"measurementChildIdConstructions":delta[9],"measurementChildIdUtf8Bytes":delta[10],"effectiveChildStyleReads":delta[11],"boundary":"Thread-local inclusive counts during frame resolution; visits count function entries including repeated work and reuse checks. IDs count new identity allocations, not Arc clones; string bytes are logical content, not allocator capacity. Measurement overlay reads count value-table access attempts, not hits. Other traversals are not included. Nested scopes overlap."}),
             );
         }
     }
