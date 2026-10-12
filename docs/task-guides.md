@@ -121,6 +121,37 @@ cargo run -p twinkle-workbench -- list
 cargo run -p twinkle-workbench -- validate
 ```
 
+## Dashboards and charts
+
+Add `twinkle-charts` explicitly; the base `twinkle-ui` dependency deliberately
+does not pull it in. Build immutable `ChartData` with stable dataset and row keys,
+choose a `Recipes` constructor or compose a `ChartSpec`, and retain `ChartView` in
+application state. Call `update`, `update_state`, `update_theme`, or
+`replace_and_update` during the application update path, then project it with
+`element` or `element_with_input`. Do not construct a fresh chart model in every
+`view` call.
+
+Selection, visible series, viewport, and table mode are controlled application
+state. Handle `ChartEvent`, publish the resulting `ChartState`, and keep the data
+revision aligned with the immutable snapshot. Use `ChartTable` as the exact-value
+accessible fallback; reduced plot geometry never replaces the admitted rows.
+Controller, keyboard, pointer, and semantic actions all enter through the same
+event boundary.
+
+Run the complete public Rust consumer and the optional live workbench dashboard:
+
+```sh
+cargo run -p twinkle-charts --example dashboard
+cargo run -p twinkle-workbench --features charts --bin twinkle-chart-dashboard
+```
+
+For TSX hosts, enable `twinkle-presentation/charts` and use the typed `Chart`
+declaration. The compiling gallery at
+[`crates/twinkle-jsx-runtime/examples/charts.tsx`](../crates/twinkle-jsx-runtime/examples/charts.tsx)
+covers every P0 recipe plus custom composition. Charts expose semantic records and
+an exact table, but those records do not by themselves create the platform
+screen-reader bridge described in [Accessibility](accessibility.md).
+
 ## Packaging an application
 
 Pin a tested Twinkle revision while the project is pre-1.0, commit `Cargo.lock` for applications,
