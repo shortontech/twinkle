@@ -281,7 +281,7 @@ fn stable_fragment(value: &str) -> String {
         .collect()
 }
 
-fn format_value(value: &DataValue) -> String {
+pub(crate) fn format_value(value: &DataValue) -> String {
     match value {
         DataValue::Null => "Missing".into(),
         DataValue::Number(value) => value.to_string(),

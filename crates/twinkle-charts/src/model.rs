@@ -82,6 +82,26 @@ pub struct ChartHit {
     pub series: Option<Arc<str>>,
     pub bounds: Rect,
     pub revision: u64,
+    /// Index into the accepted view's shared inspection-source pool.
+    pub source_index: usize,
+    /// Exact row position inside that inspection source.
+    pub row_index: usize,
+}
+
+/// Exact accepted datum exposed by pointer or keyboard inspection.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartInspection {
+    pub dataset: Arc<str>,
+    pub row: crate::RowKey,
+    pub series: Option<Arc<str>>,
+    pub revision: u64,
+    pub cells: Vec<crate::ChartTableCell>,
+}
+
+#[derive(Clone, Debug)]
+struct InspectionSource {
+    dataset: Arc<crate::Dataset>,
+    owned_bytes: usize,
 }
 
 /// Persistent chart preparation state. Clone it to stage a transactional host candidate.
@@ -95,6 +115,8 @@ pub struct ChartModel {
     diagnostics: ChartDiagnostics,
     hits: Vec<ChartHit>,
     hit_x_order: Vec<usize>,
+    inspection_sources: Vec<InspectionSource>,
+    data_owned: bool,
     renderer_generation: u64,
 }
 
@@ -116,6 +138,8 @@ impl ChartModel {
             diagnostics: ChartDiagnostics::default(),
             hits: Vec::new(),
             hit_x_order: Vec::new(),
+            inspection_sources: Vec::new(),
+            data_owned: false,
             renderer_generation: 0,
         })
     }
@@ -147,6 +171,40 @@ impl ChartModel {
     pub fn nearest(&self, point: Point) -> Option<&ChartHit> {
         self.nearest_index(point).map(|index| &self.hits[index])
     }
+    /// Resolve a hit against the exact accepted source used to prepare it.
+    ///
+    /// The lookup deliberately rejects stale or mismatched hits. In
+    /// particular, transformed layers return their derived values while an
+    /// unsuccessfully prepared candidate cannot leak into the accepted view.
+    pub fn inspection(&self, hit: &ChartHit) -> Option<ChartInspection> {
+        if hit.revision != self.data.revision() {
+            return None;
+        }
+        let dataset = &self.inspection_sources.get(hit.source_index)?.dataset;
+        let row = dataset.row(hit.row_index)?;
+        if row.key() != &hit.row {
+            return None;
+        }
+        Some(ChartInspection {
+            dataset: dataset.id.0.clone(),
+            row: row.key().clone(),
+            series: hit.series.clone(),
+            revision: hit.revision,
+            cells: dataset
+                .columns()
+                .iter()
+                .map(|column| {
+                    let value = column.values[hit.row_index].clone();
+                    crate::ChartTableCell {
+                        column: column.name.clone(),
+                        unit: column.unit.clone(),
+                        formatted: crate::table::format_value(&value),
+                        value,
+                    }
+                })
+                .collect(),
+        })
+    }
     fn nearest_index(&self, point: Point) -> Option<usize> {
         let insertion = self
             .hit_x_order
@@ -169,6 +227,7 @@ impl ChartModel {
             RetainedSurfaceOutput,
             Vec<ChartHit>,
             Vec<usize>,
+            Vec<InspectionSource>,
             ChartDiagnostics,
         ),
         ChartError,
@@ -272,8 +331,9 @@ impl ChartModel {
                 protected: false,
             });
         let mut hits = Vec::new();
+        let mut inspection_sources = Vec::new();
         if plot.size.width > 1.0 && plot.size.height > 1.0 && self.spec.facet.is_some() {
-            self.prepare_facets(plot, input, &mut output, &mut hits)?;
+            self.prepare_facets(plot, input, &mut output, &mut hits, &mut inspection_sources)?;
         } else if plot.size.width > 1.0 && plot.size.height > 1.0 {
             let shared_model = if self.spec.layers.len() > 1 {
                 let mut model = self.clone();
@@ -290,7 +350,14 @@ impl ChartModel {
                 .filter(|layer| layer.visible)
                 .enumerate()
             {
-                model.prepare_layer(layer_index, layer, plot, &mut output, &mut hits)?;
+                model.prepare_layer(
+                    layer_index,
+                    layer,
+                    plot,
+                    &mut output,
+                    &mut hits,
+                    &mut inspection_sources,
+                )?;
             }
         }
         if self.data.row_count() == 0 {
@@ -328,6 +395,10 @@ impl ChartModel {
         let index_bytes = hit_x_order.capacity() * std::mem::size_of::<usize>();
         let steady_bytes = hits.capacity() * std::mem::size_of::<ChartHit>()
             + index_bytes
+            + inspection_sources
+                .iter()
+                .map(|source| source.owned_bytes)
+                .sum::<usize>()
             + geometry_vertices * std::mem::size_of::<Point>();
         if steady_bytes > self.limits.max_steady_bytes {
             return Err(ChartError::Limit {
@@ -427,7 +498,7 @@ impl ChartModel {
             notices,
             ..self.diagnostics.clone()
         };
-        Ok((output, hits, hit_x_order, diagnostics))
+        Ok((output, hits, hit_x_order, inspection_sources, diagnostics))
     }
 
     fn prepare_facets(
@@ -436,6 +507,7 @@ impl ChartModel {
         input: RetainedSurfaceInput,
         output: &mut RetainedSurfaceOutput,
         hits: &mut Vec<ChartHit>,
+        inspection_sources: &mut Vec<InspectionSource>,
     ) -> Result<(), ChartError> {
         let facet = self.spec.facet.as_ref().expect("facet branch checked");
         let field = facet.row.as_ref().or(facet.column.as_ref()).unwrap();
@@ -541,18 +613,24 @@ impl ChartModel {
                 spec.facet = None;
                 spec.title = Arc::from(facet_label.clone());
                 spec.summary = Arc::from(format!("Facet {facet_label}. {}", self.spec.summary));
-                let submodel = ChartModel::new(Arc::new(spec), data, self.limits.clone())?
+                let mut submodel = ChartModel::new(Arc::new(spec), data, self.limits.clone())?
                     .with_theme(self.theme.clone())?
                     .with_state(self.state.clone());
+                submodel.data_owned = true;
                 let bounds = Rect::new(
                     plot.origin.x + column_index as f32 * cell_width,
                     plot.origin.y + row_index as f32 * cell_height,
                     cell_width,
                     cell_height,
                 );
-                let (mut prepared, mut facet_hits, _, _) = submodel.prepare(
+                let (mut prepared, mut facet_hits, _, mut facet_sources, _) = submodel.prepare(
                     RetainedSurfaceInput::new(bounds, input.scale_factor, input.revisions),
                 )?;
+                let source_offset = inspection_sources.len();
+                for hit in &mut facet_hits {
+                    hit.source_index = hit.source_index.saturating_add(source_offset);
+                }
+                inspection_sources.append(&mut facet_sources);
                 if matches!(prepared.paint.first(), Some(PaintCommand::Fill { .. })) {
                     prepared.paint.remove(0);
                 }
@@ -604,9 +682,18 @@ impl ChartModel {
         plot: Rect,
         output: &mut RetainedSurfaceOutput,
         hits: &mut Vec<ChartHit>,
+        inspection_sources: &mut Vec<InspectionSource>,
     ) -> Result<(), ChartError> {
         if let Mark::Arc { inner_radius } = layer.mark {
-            return self.prepare_arc(layer_index, layer, plot, inner_radius, output, hits);
+            return self.prepare_arc(
+                layer_index,
+                layer,
+                plot,
+                inner_radius,
+                output,
+                hits,
+                inspection_sources,
+            );
         }
         let x = channel(&layer.encodings, Channel::X).ok_or_else(|| {
             ChartError::invalid(crate::ChartStage::Geometry, "mark requires x encoding")
@@ -631,6 +718,11 @@ impl ChartModel {
             transformed = crate::execute_transforms(source, &layer.transforms, &self.limits)?;
             &transformed
         };
+        let inspection_source = register_inspection_source(
+            inspection_sources,
+            dataset,
+            self.data_owned || !layer.transforms.is_empty(),
+        );
         let x_column =
             dataset
                 .column(&x.field.column)
@@ -1105,7 +1197,14 @@ impl ChartModel {
                             width: 1.0,
                         });
                     }
-                    self.push_hit(dataset, *index, series_column, bounds, hits);
+                    self.push_hit(
+                        dataset,
+                        inspection_source,
+                        *index,
+                        series_column,
+                        bounds,
+                        hits,
+                    );
                 }
             }
             Mark::Bar { orientation } => {
@@ -1200,7 +1299,14 @@ impl ChartModel {
                         rect: bounds,
                         color,
                     });
-                    self.push_hit(dataset, *index, series_column, bounds, hits);
+                    self.push_hit(
+                        dataset,
+                        inspection_source,
+                        *index,
+                        series_column,
+                        bounds,
+                        hits,
+                    );
                 }
             }
             Mark::Rule => {
@@ -1221,6 +1327,7 @@ impl ChartModel {
                     let top = start.y.min(end.y);
                     self.push_hit(
                         dataset,
+                        inspection_source,
                         *index,
                         series_column,
                         Rect::new(
@@ -1273,7 +1380,14 @@ impl ChartModel {
                         bold: false,
                         wrap: false,
                     });
-                    self.push_hit(dataset, *index, series_column, bounds, hits);
+                    self.push_hit(
+                        dataset,
+                        inspection_source,
+                        *index,
+                        series_column,
+                        bounds,
+                        hits,
+                    );
                 }
             }
             _ => {
@@ -1291,6 +1405,7 @@ impl ChartModel {
                 let p = map(x, y);
                 self.push_hit(
                     dataset,
+                    inspection_source,
                     index,
                     series_column,
                     Rect::new(p.x - 5.0, p.y - 5.0, 10.0, 10.0),
@@ -1600,6 +1715,7 @@ impl ChartModel {
         inner_ratio: f32,
         output: &mut RetainedSurfaceOutput,
         hits: &mut Vec<ChartHit>,
+        inspection_sources: &mut Vec<InspectionSource>,
     ) -> Result<(), ChartError> {
         if !(0.0..1.0).contains(&inner_ratio) {
             return Err(ChartError::invalid(
@@ -1614,6 +1730,8 @@ impl ChartModel {
             .data
             .dataset(&value.field.dataset)
             .ok_or_else(|| ChartError::MissingDataset(value.field.dataset.to_string()))?;
+        let inspection_source =
+            register_inspection_source(inspection_sources, dataset, self.data_owned);
         let column =
             dataset
                 .column(&value.field.column)
@@ -1702,6 +1820,7 @@ impl ChartModel {
             );
             self.push_hit(
                 dataset,
+                inspection_source,
                 row,
                 None,
                 Rect::new(
@@ -1723,6 +1842,7 @@ impl ChartModel {
     fn push_hit(
         &self,
         dataset: &crate::Dataset,
+        source_index: usize,
         row: usize,
         series_column: Option<&crate::Column>,
         bounds: Rect,
@@ -1735,6 +1855,8 @@ impl ChartModel {
             series: series_column.map(|column| Arc::from(format_data_value(&column.values[row]))),
             bounds,
             revision: self.data.revision(),
+            source_index,
+            row_index: row,
         });
     }
 }
@@ -1746,9 +1868,10 @@ impl RetainedSurfaceModel for ChartModel {
         _changes: RetainedSurfaceChanges,
     ) -> Result<RetainedSurfaceOutput, String> {
         match self.prepare(input) {
-            Ok((output, hits, hit_x_order, diagnostics)) => {
+            Ok((output, hits, hit_x_order, inspection_sources, diagnostics)) => {
                 self.hits = hits;
                 self.hit_x_order = hit_x_order;
+                self.inspection_sources = inspection_sources;
                 self.diagnostics = diagnostics;
                 Ok(output)
             }
@@ -1769,6 +1892,8 @@ impl RetainedSurfaceModel for ChartModel {
                 self.hits.shrink_to_fit();
                 self.hit_x_order.clear();
                 self.hit_x_order.shrink_to_fit();
+                self.inspection_sources.clear();
+                self.inspection_sources.shrink_to_fit();
             }
             _ => {}
         }
@@ -1776,7 +1901,58 @@ impl RetainedSurfaceModel for ChartModel {
     fn retained_bytes(&self) -> usize {
         self.hits.capacity() * std::mem::size_of::<ChartHit>()
             + self.hit_x_order.capacity() * std::mem::size_of::<usize>()
+            + self.inspection_sources.capacity() * std::mem::size_of::<InspectionSource>()
+            + self
+                .inspection_sources
+                .iter()
+                .map(|source| source.owned_bytes)
+                .sum::<usize>()
     }
+}
+
+fn register_inspection_source(
+    sources: &mut Vec<InspectionSource>,
+    dataset: &crate::Dataset,
+    owned: bool,
+) -> usize {
+    let index = sources.len();
+    sources.push(InspectionSource {
+        dataset: Arc::new(dataset.clone()),
+        owned_bytes: owned.then(|| dataset_owned_bytes(dataset)).unwrap_or(0),
+    });
+    index
+}
+
+fn dataset_owned_bytes(dataset: &crate::Dataset) -> usize {
+    let mut bytes = dataset
+        .len()
+        .saturating_mul(std::mem::size_of::<crate::RowKey>())
+        .saturating_add(
+            dataset
+                .columns()
+                .len()
+                .saturating_mul(std::mem::size_of::<crate::Column>()),
+        );
+    for key in dataset.keys() {
+        bytes = bytes.saturating_add(key.0.len());
+    }
+    for column in dataset.columns() {
+        bytes = bytes
+            .saturating_add(column.name.len())
+            .saturating_add(column.unit.as_deref().map_or(0, str::len))
+            .saturating_add(
+                column
+                    .values
+                    .len()
+                    .saturating_mul(std::mem::size_of::<DataValue>()),
+            );
+        for value in column.values.iter() {
+            if let DataValue::Category(value) = value {
+                bytes = bytes.saturating_add(value.len());
+            }
+        }
+    }
+    bytes
 }
 
 /// Transactional retained host and normal Twinkle projection authority.
@@ -1861,6 +2037,20 @@ impl ChartView {
     }
     pub fn active_hit(&self) -> Option<&ChartHit> {
         self.navigation.active(self.host.model().hits())
+    }
+    pub fn inspection(&self, hit: &ChartHit) -> Option<ChartInspection> {
+        self.host.model().inspection(hit)
+    }
+    pub fn active_inspection(&self) -> Option<ChartInspection> {
+        self.active_hit()
+            .and_then(|hit| self.host.model().inspection(hit))
+    }
+    pub fn inspect_nearest_detail(&mut self, point: Point) -> Option<ChartInspection> {
+        let index = self.host.model().nearest_index(point)?;
+        let hit = self
+            .navigation
+            .set_active_index(self.host.model().hits(), index)?;
+        self.host.model().inspection(hit)
     }
     pub fn inspect_nearest(&mut self, point: Point) -> Option<ChartEvent> {
         let index = self.host.model().nearest_index(point)?;
@@ -2724,6 +2914,17 @@ mod tests {
         ));
         assert!(view.inspect_nearest(Point { x: 380.0, y: 20.0 }).is_some());
         assert!(view.active_hit().is_some());
+        let inspection = view.active_inspection().unwrap();
+        assert_eq!(inspection.revision, 7);
+        assert_eq!(inspection.row, RowKey::from("b"));
+        assert_eq!(
+            inspection
+                .cells
+                .iter()
+                .find(|cell| cell.column.as_ref() == "y")
+                .map(|cell| &cell.value),
+            Some(&DataValue::Number(4.0))
+        );
     }
 
     #[test]
@@ -2895,6 +3096,17 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, PaintCommand::Fill { .. }))
         );
+        let detail = view
+            .inspection(view.hits().first().expect("histogram hit"))
+            .expect("accepted transformed row");
+        let columns = detail
+            .cells
+            .iter()
+            .map(|cell| cell.column.as_ref())
+            .collect::<Vec<_>>();
+        assert!(columns.contains(&"bin"));
+        assert!(columns.contains(&"count"));
+        assert!(columns.contains(&"__source_count"));
     }
 
     #[test]
@@ -3279,6 +3491,7 @@ mod tests {
         view.update(input).unwrap();
         let paint = view.snapshot().output.paint.clone();
         let hits = view.hits().to_vec();
+        let accepted_inspection = view.inspection(&hits[0]).unwrap();
         let invalid = Arc::new(crate::Recipes::line(
             "Invalid",
             FieldRef::new("d", "missing"),
@@ -3301,6 +3514,7 @@ mod tests {
         );
         assert_eq!(view.snapshot().output.paint, paint);
         assert_eq!(view.hits(), hits);
+        assert_eq!(view.inspection(&hits[0]), Some(accepted_inspection));
         assert_eq!(view.snapshot().input.unwrap().revisions.content, 7);
     }
 

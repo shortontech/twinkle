@@ -69,7 +69,12 @@ raw/source provenance.
 
 `ChartView::nearest`, `inspect_nearest`, and `navigate` use accepted indexed hit
 records and return `ChartEvent` values carrying stable row keys and the accepted
-data revision. Applications own selection, visible-series, and viewport state and
+data revision. `inspection`, `active_inspection`, and `inspect_nearest_detail`
+resolve those hits against the exact accepted dataset. Their `ChartInspection`
+cells retain column names, units, typed values, and formatting; transformed marks
+therefore expose derived stack, bin, aggregate, and provenance columns rather
+than presenting reduced geometry as source truth. Stale or mismatched hits do not
+resolve. Applications own selection, visible-series, and viewport state and
 feed the next `ChartState` back through `update_state`; the chart never mutates a
 second hidden store. The native chart entry emits `ChartEvent::Navigate` for
 keyboard/controller/semantic previous, next, and select requests; feed its command

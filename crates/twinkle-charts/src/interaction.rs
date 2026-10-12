@@ -270,6 +270,8 @@ mod tests {
             series: None,
             bounds: twinkle_ui::Rect::new(x, 0.0, 4.0, 4.0),
             revision: 7,
+            source_index: 0,
+            row_index: 0,
         }
     }
     #[test]
