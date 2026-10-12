@@ -518,6 +518,143 @@ impl Recipes {
             value,
         )
     }
+    pub fn bubble(
+        title: impl Into<Arc<str>>,
+        x: FieldRef,
+        y: FieldRef,
+        size: FieldRef,
+    ) -> ChartSpec {
+        let mut spec = Self::scatter(title, x, y);
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Size,
+            field: size,
+            scale: Some("size".into()),
+        });
+        spec.scale(Scale {
+            name: "size".into(),
+            kind: ScaleKind::Size,
+            domain: None,
+            clamp: true,
+            reversed: false,
+            unit: None,
+        })
+    }
+    pub fn pie(title: impl Into<Arc<str>>, category: FieldRef, value: FieldRef) -> ChartSpec {
+        Self::arc(title, category, value, 0.0)
+    }
+    pub fn donut(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        value: FieldRef,
+        inner_radius: f32,
+    ) -> ChartSpec {
+        Self::arc(title, category, value, inner_radius)
+    }
+    pub fn histogram(
+        title: impl Into<Arc<str>>,
+        value: FieldRef,
+        bins: crate::BinOptions,
+    ) -> ChartSpec {
+        let title = title.into();
+        ChartSpec::new(title.clone(), format!("Histogram chart: {title}"))
+            .layer(
+                Layer::new(Mark::Bar {
+                    orientation: Orientation::Vertical,
+                })
+                .encode(Encoding {
+                    channel: Channel::X,
+                    field: value.clone(),
+                    scale: Some("x".into()),
+                })
+                .encode(Encoding {
+                    channel: Channel::Y,
+                    field: value.clone(),
+                    scale: Some("y".into()),
+                })
+                .encode(Encoding {
+                    channel: Channel::Group,
+                    field: value.clone(),
+                    scale: None,
+                }),
+            )
+            .scale(Scale {
+                name: "x".into(),
+                kind: ScaleKind::Linear,
+                domain: Some([bins.start, bins.end]),
+                clamp: true,
+                reversed: false,
+                unit: None,
+            })
+            .scale(Scale {
+                name: "y".into(),
+                kind: ScaleKind::Linear,
+                domain: None,
+                clamp: false,
+                reversed: true,
+                unit: None,
+            })
+    }
+    pub fn heatmap(
+        title: impl Into<Arc<str>>,
+        x: FieldRef,
+        y: FieldRef,
+        color: FieldRef,
+    ) -> ChartSpec {
+        let mut spec = Self::xy(title, ChartFamily::Heatmap, Mark::Rect, x, y);
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Fill,
+            field: color,
+            scale: Some("color".into()),
+        });
+        spec.scale(Scale {
+            name: "color".into(),
+            kind: ScaleKind::Color,
+            domain: None,
+            clamp: true,
+            reversed: false,
+            unit: None,
+        })
+    }
+    pub fn sparkline(title: impl Into<Arc<str>>, x: FieldRef, y: FieldRef) -> ChartSpec {
+        Self::xy(
+            title,
+            ChartFamily::Sparkline,
+            Mark::Line {
+                interpolation: Interpolation::Straight,
+                points: false,
+            },
+            x,
+            y,
+        )
+    }
+    fn arc(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        value: FieldRef,
+        inner_radius: f32,
+    ) -> ChartSpec {
+        let title = title.into();
+        ChartSpec::new(
+            title.clone(),
+            format!(
+                "{} chart: {title}",
+                if inner_radius == 0.0 { "Pie" } else { "Donut" }
+            ),
+        )
+        .layer(
+            Layer::new(Mark::Arc { inner_radius })
+                .encode(Encoding {
+                    channel: Channel::X,
+                    field: category,
+                    scale: None,
+                })
+                .encode(Encoding {
+                    channel: Channel::Y,
+                    field: value,
+                    scale: None,
+                }),
+        )
+    }
     fn xy(
         title: impl Into<Arc<str>>,
         family: ChartFamily,

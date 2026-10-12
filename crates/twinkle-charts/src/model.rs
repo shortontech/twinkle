@@ -203,6 +203,9 @@ impl ChartModel {
         output: &mut RetainedSurfaceOutput,
         hits: &mut Vec<ChartHit>,
     ) -> Result<(), ChartError> {
+        if let Mark::Arc { inner_radius } = layer.mark {
+            return self.prepare_arc(layer_index, layer, plot, inner_radius, output, hits);
+        }
         let x = channel(&layer.encodings, Channel::X).ok_or_else(|| {
             ChartError::invalid(crate::ChartStage::Geometry, "mark requires x encoding")
         })?;
@@ -238,18 +241,26 @@ impl ChartModel {
             .iter()
             .zip(y_column.values.iter())
             .enumerate()
-            .filter_map(|(index, (x, y))| match (x, y) {
-                (DataValue::Number(x), DataValue::Number(y)) if x.is_finite() && y.is_finite() => {
-                    Some((index, *x, *y))
-                }
-                _ => None,
+            .filter_map(|(index, (x, y))| {
+                coordinate(x, index)
+                    .zip(coordinate(y, index))
+                    .map(|(x, y)| (index, x, y))
             })
             .collect();
         if values.is_empty() {
             return Ok(());
         }
         let x_domain = extent(values.iter().map(|(_, x, _)| *x));
-        let y_domain = extent(values.iter().map(|(_, _, y)| *y));
+        let mut y_domain = extent(values.iter().map(|(_, _, y)| *y));
+        let baseline = match layer.mark {
+            Mark::Area { baseline, .. } => Some(baseline as f64),
+            Mark::Bar { .. } | Mark::Rect => Some(0.0),
+            _ => None,
+        };
+        if let Some(baseline) = baseline {
+            y_domain[0] = y_domain[0].min(baseline);
+            y_domain[1] = y_domain[1].max(baseline);
+        }
         let map = |x: f64, y: f64| Point {
             x: map_value(
                 x,
@@ -264,13 +275,65 @@ impl ChartModel {
         };
         let color = PALETTE[layer_index % PALETTE.len()];
         match &layer.mark {
-            Mark::Line { .. } | Mark::Area { .. } => {
-                let points: Vec<Point> = values.iter().map(|(_, x, y)| map(*x, *y)).collect();
-                let triangles = stroke_polyline(&points, 2.0);
+            Mark::Line { .. } => {
+                let mut triangles = Vec::new();
+                let mut segment = Vec::new();
+                for (index, (x, y)) in x_column
+                    .values
+                    .iter()
+                    .zip(y_column.values.iter())
+                    .enumerate()
+                {
+                    match (coordinate(x, index), coordinate(y, index)) {
+                        (Some(x), Some(y)) => segment.push(map(x, y)),
+                        _ => {
+                            triangles.extend(stroke_polyline(&segment, 2.0));
+                            segment.clear();
+                        }
+                    }
+                }
+                triangles.extend(stroke_polyline(&segment, 2.0));
                 if !triangles.is_empty() {
                     output
                         .paint
-                        .push(path_command(triangles, plot, color, points.len())?);
+                        .push(path_command(triangles, plot, color, values.len())?);
+                }
+            }
+            Mark::Area { baseline, .. } => {
+                let baseline = map_value(
+                    *baseline,
+                    y_domain,
+                    [plot.origin.y + plot.size.height, plot.origin.y],
+                );
+                let mut triangles = Vec::new();
+                for pair in values.windows(2) {
+                    if pair[1].0 != pair[0].0 + 1 {
+                        continue;
+                    }
+                    let a = map(pair[0].1, pair[0].2);
+                    let b = map(pair[1].1, pair[1].2);
+                    triangles.extend([
+                        a,
+                        Point {
+                            x: a.x,
+                            y: baseline,
+                        },
+                        b,
+                        b,
+                        Point {
+                            x: a.x,
+                            y: baseline,
+                        },
+                        Point {
+                            x: b.x,
+                            y: baseline,
+                        },
+                    ]);
+                }
+                if !triangles.is_empty() {
+                    output
+                        .paint
+                        .push(fill_path_command(triangles, color, values.len())?);
                 }
             }
             Mark::Point { .. } => {
@@ -326,6 +389,109 @@ impl ChartModel {
                     hits,
                 );
             }
+        }
+        Ok(())
+    }
+
+    fn prepare_arc(
+        &self,
+        layer_index: usize,
+        layer: &crate::Layer,
+        plot: Rect,
+        inner_ratio: f32,
+        output: &mut RetainedSurfaceOutput,
+        hits: &mut Vec<ChartHit>,
+    ) -> Result<(), ChartError> {
+        if !(0.0..1.0).contains(&inner_ratio) {
+            return Err(ChartError::invalid(
+                crate::ChartStage::Geometry,
+                "arc inner radius must be in [0, 1)",
+            ));
+        }
+        let value = channel(&layer.encodings, Channel::Y).ok_or_else(|| {
+            ChartError::invalid(crate::ChartStage::Geometry, "arc requires y value encoding")
+        })?;
+        let dataset = self
+            .data
+            .dataset(&value.field.dataset)
+            .ok_or_else(|| ChartError::MissingDataset(value.field.dataset.to_string()))?;
+        let column =
+            dataset
+                .column(&value.field.column)
+                .ok_or_else(|| ChartError::MissingColumn {
+                    dataset: value.field.dataset.to_string(),
+                    column: value.field.column.to_string(),
+                })?;
+        let values: Vec<(usize, f64)> = column
+            .values
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| match value {
+                DataValue::Number(value) if value.is_finite() && *value >= 0.0 => {
+                    Some((index, *value))
+                }
+                _ => None,
+            })
+            .collect();
+        let total: f64 = values.iter().map(|(_, value)| value).sum();
+        if total <= 0.0 {
+            return Ok(());
+        }
+        let center = Point {
+            x: plot.origin.x + plot.size.width / 2.0,
+            y: plot.origin.y + plot.size.height / 2.0,
+        };
+        let radius = plot.size.width.min(plot.size.height) * 0.45;
+        let inner = radius * inner_ratio;
+        let mut start = -std::f32::consts::FRAC_PI_2;
+        for (slice, (row, value)) in values.into_iter().enumerate() {
+            let end = start + std::f32::consts::TAU * (value / total) as f32;
+            let steps = (((end - start).abs() * radius / 5.0).ceil() as usize).clamp(2, 128);
+            let mut triangles = Vec::with_capacity(steps * 6);
+            for step in 0..steps {
+                let a0 = start + (end - start) * step as f32 / steps as f32;
+                let a1 = start + (end - start) * (step + 1) as f32 / steps as f32;
+                let outer0 = Point {
+                    x: center.x + radius * a0.cos(),
+                    y: center.y + radius * a0.sin(),
+                };
+                let outer1 = Point {
+                    x: center.x + radius * a1.cos(),
+                    y: center.y + radius * a1.sin(),
+                };
+                if inner == 0.0 {
+                    triangles.extend([center, outer0, outer1]);
+                } else {
+                    let inner0 = Point {
+                        x: center.x + inner * a0.cos(),
+                        y: center.y + inner * a0.sin(),
+                    };
+                    let inner1 = Point {
+                        x: center.x + inner * a1.cos(),
+                        y: center.y + inner * a1.sin(),
+                    };
+                    triangles.extend([inner0, outer0, inner1, inner1, outer0, outer1]);
+                }
+            }
+            output.paint.push(fill_path_command(
+                triangles,
+                PALETTE[(layer_index + slice) % PALETTE.len()],
+                steps + 1,
+            )?);
+            self.push_hit(
+                dataset,
+                row,
+                layer_index,
+                Rect::new(
+                    center.x - radius,
+                    center.y - radius,
+                    radius * 2.0,
+                    radius * 2.0,
+                ),
+                output,
+                hits,
+            );
+            start = end;
         }
         Ok(())
     }
@@ -443,6 +609,15 @@ impl ChartView {
 fn channel(encodings: &[Encoding], target: Channel) -> Option<&Encoding> {
     encodings.iter().find(|encoding| encoding.channel == target)
 }
+
+fn coordinate(value: &DataValue, category_index: usize) -> Option<f64> {
+    match value {
+        DataValue::Number(value) if value.is_finite() => Some(*value),
+        DataValue::Timestamp(value) => Some(*value as f64),
+        DataValue::Category(_) => Some(category_index as f64),
+        _ => None,
+    }
+}
 fn extent(values: impl Iterator<Item = f64>) -> [f64; 2] {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
@@ -540,6 +715,43 @@ fn path_command(
             join: PathLineJoin::Bevel,
             cap: PathLineCap::Round,
             miter_limit: 4.0,
+        },
+        0.25,
+        source_vertices,
+    )
+    .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+    Ok(PaintCommand::Path {
+        geometry: Arc::new(geometry),
+        color,
+    })
+}
+
+fn fill_path_command(
+    triangles: Vec<Point>,
+    color: u32,
+    source_vertices: usize,
+) -> Result<PaintCommand, ChartError> {
+    let min_x = triangles
+        .iter()
+        .map(|point| point.x)
+        .fold(f32::INFINITY, f32::min);
+    let min_y = triangles
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::INFINITY, f32::min);
+    let max_x = triangles
+        .iter()
+        .map(|point| point.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_y = triangles
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let geometry = PathGeometry::new(
+        triangles,
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y),
+        PathGeometryKind::Fill {
+            rule: twinkle_ui::backend::PathFillRule::NonZero,
         },
         0.25,
         source_vertices,
