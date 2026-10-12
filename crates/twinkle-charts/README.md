@@ -195,6 +195,10 @@ light/dark/high-contrast themes, 112×84 and 960×540 logical allocations, and
 1×/1.25×/1.5×/2× scales. Backend-specific curve, thin-stroke, and glyph coverage
 may differ: at least 91% of pixels must stay within 32/255 on every channel and
 the full-image mean channel delta must remain below 8.25/255.
+The companion ignored `every_family_matches_pinned_software_raster_goldens` test
+hashes every rendered RGBA pixel for each family over all 24 combinations in
+that matrix. Its checked-in per-family digests make intentional renderer changes
+reviewable while avoiding hundreds of redundant binary fixture files.
 
 ## Runnable consumers
 

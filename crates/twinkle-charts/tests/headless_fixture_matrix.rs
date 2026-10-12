@@ -376,6 +376,89 @@ fn every_family_software_and_gpu_rasters_agree_within_declared_tolerance() {
 }
 
 #[test]
+#[ignore = "pinned full software raster golden matrix; run explicitly for renderer admission"]
+fn every_family_matches_pinned_software_raster_goldens() {
+    const EXPECTED: &[(&str, u64)] = &[
+        ("line", 0x2c48ee104684b694),
+        ("line-step-multi", 0xf4c0e24f250281e6),
+        ("area", 0xebbe186fb835ce12),
+        ("stacked-area", 0x870aec46ea0d512a),
+        ("normalized-area", 0x5d9d111c767bdd55),
+        ("bar", 0x7641045b1150adb3),
+        ("horizontal-bar", 0x0c220513978f0485),
+        ("grouped-bar", 0x42f538c397a730aa),
+        ("stacked-bar", 0x6726e42c4fa88ad9),
+        ("normalized-horizontal-bar", 0x697e67cea533f3f2),
+        ("scatter", 0xe817830a45f05c5c),
+        ("bubble", 0x79866ca1fa706522),
+        ("pie", 0x24787436005e4495),
+        ("donut", 0x52f6f8b0f8135f34),
+        ("histogram", 0x948cb6025af4c0be),
+        ("heatmap", 0x2456d6035e14665a),
+        ("sparkline", 0x3f02ac88f8799847),
+        ("combo", 0xeb41b2df3fdf1d22),
+        ("shared-facet", 0x960556bde5ad9cac),
+        ("independent-facet", 0x679d5ac2386dc25b),
+    ];
+    fn mix(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    let data = fixture_data(43);
+    let limits = ChartLimits::default();
+    let themes = [
+        ChartTheme::default(),
+        ChartTheme::dark(),
+        ChartTheme::high_contrast(),
+    ];
+    let sizes = [(112.0_f32, 84.0_f32), (960.0, 540.0)];
+    let mut observed = Vec::new();
+    for (fixture_name, spec) in fixtures() {
+        let mut digest = 0xcbf29ce484222325_u64;
+        mix(&mut digest, fixture_name.as_bytes());
+        for (theme_index, theme) in themes.iter().enumerate() {
+            for (logical_width, logical_height) in sizes {
+                for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+                    let input = RetainedSurfaceInput::new(
+                        Rect::new(0.0, 0.0, logical_width, logical_height),
+                        scale,
+                        RetainedSurfaceRevisions {
+                            content: data.revision(),
+                            theme: theme_index as u64,
+                            ..Default::default()
+                        },
+                    );
+                    let model =
+                        ChartModel::new(Arc::new(spec.clone()), Arc::clone(&data), limits.clone())
+                            .unwrap()
+                            .with_theme(theme.clone())
+                            .unwrap();
+                    let mut view = ChartView::new(model).unwrap();
+                    let commands = &view.update(input).unwrap().output.paint;
+                    let width = (logical_width * scale).ceil() as u32;
+                    let height = (logical_height * scale).ceil() as u32;
+                    let mut renderer =
+                        twinkle_ui::SoftwareRenderer::new_pixel_buffer(width, height, scale);
+                    renderer.render(commands);
+                    mix(&mut digest, &(theme_index as u64).to_le_bytes());
+                    mix(&mut digest, &width.to_le_bytes());
+                    mix(&mut digest, &height.to_le_bytes());
+                    mix(&mut digest, &scale.to_bits().to_le_bytes());
+                    for pixel in renderer.pixels() {
+                        mix(&mut digest, &[pixel.r, pixel.g, pixel.b, pixel.a]);
+                    }
+                }
+            }
+        }
+        observed.push((fixture_name, digest));
+    }
+    assert_eq!(observed, EXPECTED);
+}
+
+#[test]
 fn empty_data_and_exact_table_remain_bounded_and_reachable() {
     let limits = ChartLimits {
         max_visible_table_rows: 5,
