@@ -81,6 +81,8 @@ keyboard/controller/semantic previous, next, and select requests; feed its comma
 to `ChartView::navigate` in the ordinary application update path. `PanZoomPolicy`
 provides pure anchored zoom, constrained pan, and reset operations for the same
 event flow.
+Home and End emit `NavigationCommand::Home` and `End` for the focused chart rather
+than moving focus to unrelated native boundary controls.
 
 Once a datum is active, the native projection adds a plot-bounded visible and
 semantic tooltip containing up to six exact fields; further fields remain

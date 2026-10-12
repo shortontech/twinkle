@@ -1602,6 +1602,8 @@ struct ElementEvents<Message> {
     context_message: Option<Message>,
     decrement_message: Option<Message>,
     increment_message: Option<Message>,
+    start_message: Option<Message>,
+    end_message: Option<Message>,
     focus_message: Option<Message>,
     blur_message: Option<Message>,
     pointer_move_mapper: Option<fn(Point) -> Message>,
@@ -1617,6 +1619,8 @@ impl<Message> Default for ElementEvents<Message> {
             context_message: None,
             decrement_message: None,
             increment_message: None,
+            start_message: None,
+            end_message: None,
             focus_message: None,
             blur_message: None,
             pointer_move_mapper: None,
@@ -1655,6 +1659,18 @@ impl<Message> Element<Message> {
         self.events
             .as_ref()
             .and_then(|events| events.increment_message.as_ref())
+    }
+
+    pub(crate) fn declared_start_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.start_message.as_ref())
+    }
+
+    pub(crate) fn declared_end_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.end_message.as_ref())
     }
 
     pub(crate) fn declared_focus_message(&self) -> Option<&Message> {
@@ -1697,6 +1713,8 @@ impl<Message> Element<Message> {
                 || events.context_message.is_some()
                 || events.decrement_message.is_some()
                 || events.increment_message.is_some()
+                || events.start_message.is_some()
+                || events.end_message.is_some()
                 || events.focus_message.is_some()
                 || events.blur_message.is_some()
                 || events.pointer_move_mapper.is_some()
@@ -1967,6 +1985,14 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Attach Home/End messages to an ordinary focused control.
+    pub fn on_boundary_messages(mut self, start: Message, end: Message) -> Self {
+        let events = self.events_mut();
+        events.start_message = Some(start);
+        events.end_message = Some(end);
+        self
+    }
+
     pub fn text_align(mut self, align: TextAlign) -> Self {
         self.style.text_align = align;
         self
@@ -2222,6 +2248,8 @@ impl<Message> Element<Message> {
                 context_message: events.context_message.map(&mut *map),
                 decrement_message: events.decrement_message.map(&mut *map),
                 increment_message: events.increment_message.map(&mut *map),
+                start_message: events.start_message.map(&mut *map),
+                end_message: events.end_message.map(&mut *map),
                 focus_message: events.focus_message.map(&mut *map),
                 blur_message: events.blur_message.map(&mut *map),
                 pointer_move_mapper: None,
@@ -2233,6 +2261,8 @@ impl<Message> Element<Message> {
                 || mapped.context_message.is_some()
                 || mapped.decrement_message.is_some()
                 || mapped.increment_message.is_some()
+                || mapped.start_message.is_some()
+                || mapped.end_message.is_some()
                 || mapped.focus_message.is_some()
                 || mapped.blur_message.is_some())
             .then(|| Box::new(mapped))

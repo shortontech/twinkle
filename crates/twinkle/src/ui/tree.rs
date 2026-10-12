@@ -133,6 +133,8 @@ struct MessageRegion<Message> {
     seeded_value_mapper: Option<fn(Message, f32) -> Message>,
     decrement_message: Option<Message>,
     increment_message: Option<Message>,
+    start_message: Option<Message>,
+    end_message: Option<Message>,
 }
 
 fn map_value<Message: Clone>(
@@ -1763,6 +1765,8 @@ impl<Message: Clone> UiFrame<Message> {
                     seeded_value_mapper: None,
                     decrement_message: None,
                     increment_message: None,
+                    start_message: None,
+                    end_message: None,
                 });
             }
             if let Some(command) = item.text_command {
@@ -5780,8 +5784,22 @@ impl<Message: Clone> UiFrame<Message> {
                     moved
                 }
             }
-            UiEvent::KeyboardNavigateStart => self.move_controller_boundary(state, false),
-            UiEvent::KeyboardNavigateEnd => self.move_controller_boundary(state, true),
+            UiEvent::KeyboardNavigateStart => {
+                if let Some(message) = self.boundary_message(state, false) {
+                    outcome.messages.push(message);
+                    Invalidation::Layout
+                } else {
+                    self.move_controller_boundary(state, false)
+                }
+            }
+            UiEvent::KeyboardNavigateEnd => {
+                if let Some(message) = self.boundary_message(state, true) {
+                    outcome.messages.push(message);
+                    Invalidation::Layout
+                } else {
+                    self.move_controller_boundary(state, true)
+                }
+            }
             UiEvent::ControllerLeft | UiEvent::KeyboardNavigateLeft => {
                 let vertical_scope = state
                     .navigation()
@@ -7350,6 +7368,19 @@ impl<Message: Clone> UiFrame<Message> {
             Invalidation::Layout
         } else {
             Invalidation::None
+        }
+    }
+
+    fn boundary_message(&self, state: &UiStateStore, end: bool) -> Option<Message> {
+        let id = state
+            .navigation()
+            .controller_selected()
+            .or_else(|| state.focused())?;
+        let region = self.messages.iter().find(|region| &region.id == id)?;
+        if end {
+            region.end_message.clone()
+        } else {
+            region.start_message.clone()
         }
     }
 

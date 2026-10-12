@@ -723,6 +723,8 @@ fn signatures_with_work<Message, const COLLECT: bool>(
         || element.declared_context_message().is_some()
         || element.declared_focus_message().is_some()
         || element.declared_blur_message().is_some()
+        || element.declared_start_message().is_some()
+        || element.declared_end_message().is_some()
         || element.declared_pointer_move_mapper().is_some()
         || element.declared_wheel_mapper().is_some()
         || element.declared_drag_seed().is_some()
@@ -922,6 +924,8 @@ fn signatures_with_work<Message, const COLLECT: bool>(
     interaction.add(&element.declared_context_message().is_some());
     interaction.add(&element.declared_focus_message().is_some());
     interaction.add(&element.declared_blur_message().is_some());
+    interaction.add(&element.declared_start_message().is_some());
+    interaction.add(&element.declared_end_message().is_some());
     interaction.add(&element.message_mapper.map(|callback| callback as usize));
     interaction.add(
         &element
@@ -1475,6 +1479,10 @@ fn exact_phase_matches<Message>(
                 == previous.declared_focus_message().is_some()
             && current.declared_blur_message().is_some()
                 == previous.declared_blur_message().is_some()
+            && current.declared_start_message().is_some()
+                == previous.declared_start_message().is_some()
+            && current.declared_end_message().is_some()
+                == previous.declared_end_message().is_some()
             && current.declared_drag_seed().is_some() == previous.declared_drag_seed().is_some()
             && current.declared_drop_message().is_some()
                 == previous.declared_drop_message().is_some()

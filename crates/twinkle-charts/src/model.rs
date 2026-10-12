@@ -2272,6 +2272,10 @@ impl ChartView {
                 )),
                 ChartProjectionAction::Event(ChartEvent::Navigate(crate::NavigationCommand::Next)),
             )
+            .on_boundary_messages(
+                ChartProjectionAction::Event(ChartEvent::Navigate(crate::NavigationCommand::Home)),
+                ChartProjectionAction::Event(ChartEvent::Navigate(crate::NavigationCommand::End)),
+            )
             .adjustment_step(0.25);
         if let Some(semantic) = root_semantic {
             if let Some(label) = semantic.label {
@@ -3187,6 +3191,18 @@ mod tests {
                 .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateRight)
                 .messages,
             vec![ChartEvent::Navigate(crate::NavigationCommand::Next)]
+        );
+        assert_eq!(
+            frame
+                .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateStart)
+                .messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::Home)]
+        );
+        assert_eq!(
+            frame
+                .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateEnd)
+                .messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::End)]
         );
         assert_eq!(
             frame
