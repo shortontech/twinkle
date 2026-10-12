@@ -127,6 +127,12 @@ impl ChartModel {
                 state: Some(self.spec.summary.to_string()),
                 protected: false,
             });
+        output.interactions.push(RetainedSurfaceInteraction {
+            id: UiId::from("chart"),
+            bounds: input.bounds,
+            action: ActionKind::Activate,
+            focusable: true,
+        });
         let mut hits = Vec::new();
         if plot.size.width > 1.0 && plot.size.height > 1.0 {
             for (layer_index, layer) in self
@@ -218,10 +224,17 @@ impl ChartModel {
                 "x and y must currently share a dataset",
             ));
         }
-        let dataset = self
+        let source = self
             .data
             .dataset(&x.field.dataset)
             .ok_or_else(|| ChartError::MissingDataset(x.field.dataset.to_string()))?;
+        let transformed;
+        let dataset = if layer.transforms.is_empty() {
+            source
+        } else {
+            transformed = crate::execute_transforms(source, &layer.transforms, &self.limits)?;
+            &transformed
+        };
         let x_column =
             dataset
                 .column(&x.field.column)
@@ -345,7 +358,7 @@ impl ChartModel {
                         color,
                         radius: 3.0,
                     });
-                    self.push_hit(dataset, *index, layer_index, bounds, output, hits);
+                    self.push_hit(dataset, *index, bounds, hits);
                 }
             }
             Mark::Bar { .. } | Mark::Rect => {
@@ -357,17 +370,19 @@ impl ChartModel {
                 );
                 for (index, x, y) in &values {
                     let point = map(*x, *y);
+                    let left = (point.x - width / 2.0).max(plot.origin.x);
+                    let right = (point.x + width / 2.0).min(plot.origin.x + plot.size.width);
                     let bounds = Rect::new(
-                        point.x - width / 2.0,
+                        left,
                         point.y.min(zero),
-                        width,
+                        (right - left).max(0.0),
                         (point.y - zero).abs().max(1.0),
                     );
                     output.paint.push(PaintCommand::Fill {
                         rect: bounds,
                         color,
                     });
-                    self.push_hit(dataset, *index, layer_index, bounds, output, hits);
+                    self.push_hit(dataset, *index, bounds, hits);
                 }
             }
             _ => {
@@ -383,9 +398,7 @@ impl ChartModel {
                 self.push_hit(
                     dataset,
                     index,
-                    layer_index,
                     Rect::new(p.x - 5.0, p.y - 5.0, 10.0, 10.0),
-                    output,
                     hits,
                 );
             }
@@ -481,14 +494,12 @@ impl ChartModel {
             self.push_hit(
                 dataset,
                 row,
-                layer_index,
                 Rect::new(
                     center.x - radius,
                     center.y - radius,
                     radius * 2.0,
                     radius * 2.0,
                 ),
-                output,
                 hits,
             );
             start = end;
@@ -500,13 +511,10 @@ impl ChartModel {
         &self,
         dataset: &crate::Dataset,
         row: usize,
-        layer: usize,
         bounds: Rect,
-        output: &mut RetainedSurfaceOutput,
         hits: &mut Vec<ChartHit>,
     ) {
         let key = dataset.keys()[row].clone();
-        let id = UiId::from(format!("chart/layer-{layer}/row-{}", key.0));
         hits.push(ChartHit {
             dataset: dataset.id.0.clone(),
             row: key.clone(),
@@ -514,22 +522,6 @@ impl ChartModel {
             bounds,
             revision: self.data.revision(),
         });
-        output.interactions.push(RetainedSurfaceInteraction {
-            id: id.clone(),
-            bounds,
-            action: ActionKind::Activate,
-            focusable: true,
-        });
-        output
-            .semantics
-            .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
-                id,
-                bounds,
-                role: SemanticRole::GraphicalCustomControl,
-                label: Some(format!("{} row {}", dataset.id.0, key.0)),
-                state: None,
-                protected: false,
-            });
     }
 }
 
@@ -810,13 +802,62 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, PaintCommand::Path { .. }))
         );
-        assert_eq!(snapshot.output.interactions.len(), 2);
+        assert_eq!(snapshot.output.interactions.len(), 1);
         assert!(
             snapshot
                 .output
                 .semantics
                 .iter()
                 .any(|item| item.role == SemanticRole::GraphicalCustomControl)
+        );
+    }
+
+    #[test]
+    fn histogram_recipe_executes_bins_and_aggregate_before_rendering() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            vec![RowKey::from("a"), RowKey::from("b"), RowKey::from("c")],
+            vec![Column::new(
+                "value",
+                vec![
+                    DataValue::Number(0.0),
+                    DataValue::Number(4.0),
+                    DataValue::Number(10.0),
+                ],
+            )],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(9, vec![dataset], &limits).unwrap());
+        let spec = crate::Recipes::histogram(
+            "Distribution",
+            FieldRef::new("d", "value"),
+            crate::BinOptions {
+                start: 0.0,
+                end: 10.0,
+                count: 2,
+                density: false,
+            },
+        );
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        let snapshot = view
+            .update(RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 400.0, 240.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content: 9,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert_eq!(snapshot.output.interactions.len(), 1);
+        assert!(
+            snapshot
+                .output
+                .paint
+                .iter()
+                .any(|command| matches!(command, PaintCommand::Fill { .. }))
         );
     }
 }

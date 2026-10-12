@@ -10,6 +10,7 @@ mod export;
 mod model;
 mod scale;
 mod spec;
+mod table;
 mod transform;
 
 pub use data::{ChartData, Column, DataValue, Dataset, DatasetId, Row, RowKey};
@@ -18,7 +19,10 @@ pub use export::{CsvOptions, ExportCapability, RasterOptions, export_csv, export
 pub use model::{ChartHit, ChartModel, ChartView};
 pub use scale::{BandScale, ContinuousScale, LinearScale, LogScale, ScaleValue};
 pub use spec::*;
-pub use transform::{AggregateOp, BinOptions, MissingPolicy, StackMode, Transform};
+pub use table::{ChartTable, ChartTableCell, ChartTablePage, ChartTableRow};
+pub use transform::{
+    AggregateOp, BinOptions, MissingPolicy, StackMode, Transform, execute_transforms,
+};
 
 /// Crate version for diagnostics and export manifests.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

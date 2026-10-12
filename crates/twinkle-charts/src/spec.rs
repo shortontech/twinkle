@@ -329,11 +329,25 @@ impl ChartSpec {
             }
         }
         for layer in &self.layers {
+            let mut derived = BTreeSet::new();
+            for transform in &layer.transforms {
+                match transform {
+                    Transform::Bin { output, .. } | Transform::Aggregate { output, .. } => {
+                        derived.insert(output.as_str());
+                    }
+                    Transform::Stack { value, .. } => {
+                        derived.insert(value.as_str());
+                    }
+                    Transform::Sort { .. } => {}
+                }
+            }
             for encoding in &layer.encodings {
                 let dataset = data.dataset(&encoding.field.dataset).ok_or_else(|| {
                     ChartError::MissingDataset(encoding.field.dataset.to_string())
                 })?;
-                if dataset.column(&encoding.field.column).is_none() {
+                if dataset.column(&encoding.field.column).is_none()
+                    && !derived.contains(encoding.field.column.as_ref())
+                {
                     return Err(ChartError::MissingColumn {
                         dataset: encoding.field.dataset.to_string(),
                         column: encoding.field.column.to_string(),
@@ -556,27 +570,34 @@ impl Recipes {
         bins: crate::BinOptions,
     ) -> ChartSpec {
         let title = title.into();
+        let dataset = value.dataset.clone();
+        let mut layer = Layer::new(Mark::Bar {
+            orientation: Orientation::Vertical,
+        })
+        .encode(Encoding {
+            channel: Channel::X,
+            field: FieldRef::new(dataset.clone(), "bin"),
+            scale: Some("x".into()),
+        })
+        .encode(Encoding {
+            channel: Channel::Y,
+            field: FieldRef::new(dataset, "count"),
+            scale: Some("y".into()),
+        });
+        layer.transforms.push(Transform::Bin {
+            field: value.column.to_string(),
+            output: "bin".into(),
+            options: bins,
+        });
+        layer.transforms.push(Transform::Aggregate {
+            group_by: vec!["bin".into()],
+            field: None,
+            output: "count".into(),
+            operation: crate::AggregateOp::Count,
+            missing: crate::MissingPolicy::Omit,
+        });
         ChartSpec::new(title.clone(), format!("Histogram chart: {title}"))
-            .layer(
-                Layer::new(Mark::Bar {
-                    orientation: Orientation::Vertical,
-                })
-                .encode(Encoding {
-                    channel: Channel::X,
-                    field: value.clone(),
-                    scale: Some("x".into()),
-                })
-                .encode(Encoding {
-                    channel: Channel::Y,
-                    field: value.clone(),
-                    scale: Some("y".into()),
-                })
-                .encode(Encoding {
-                    channel: Channel::Group,
-                    field: value.clone(),
-                    scale: None,
-                }),
-            )
+            .layer(layer)
             .scale(Scale {
                 name: "x".into(),
                 kind: ScaleKind::Linear,
