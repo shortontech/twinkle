@@ -186,6 +186,16 @@ secondary shape/dash cues when the palette is exhausted.
 explicit logical dimensions, scale, background, pixel, and byte bounds. File
 dialogs, paths, clipboard access, and effects remain application/host authority.
 
+Renderer admission uses `GpuOffscreenRenderer`, which executes the production GPU
+command preparation, shaders, clipping, blending, and texture path into a bounded
+RGBA target and performs a real mapped-buffer readback. The ignored
+`every_family_software_and_gpu_rasters_agree_within_declared_tolerance` matrix is
+run explicitly on the pinned headless-GPU environment. It covers every family,
+light/dark/high-contrast themes, 112×84 and 960×540 logical allocations, and
+1×/1.25×/1.5×/2× scales. Backend-specific curve, thin-stroke, and glyph coverage
+may differ: at least 91% of pixels must stay within 32/255 on every channel and
+the full-image mean channel delta must remain below 8.25/255.
+
 ## Runnable consumers
 
 ```text

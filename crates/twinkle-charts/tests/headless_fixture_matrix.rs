@@ -299,6 +299,83 @@ fn every_family_is_deterministic_across_theme_size_and_scale_matrix() {
 }
 
 #[test]
+#[ignore = "pinned headless GPU raster matrix; run explicitly for renderer admission"]
+fn every_family_software_and_gpu_rasters_agree_within_declared_tolerance() {
+    // Thin strokes, text edges, and curved boundaries use backend-specific
+    // coverage. Across the full matrix we require at least 91% of pixels to
+    // remain within 32/255 per channel and a mean delta below 8.25/255.
+    const MAX_LARGE_DELTA_FRACTION: f64 = 0.09;
+    const MAX_MEAN_CHANNEL_DELTA: f64 = 8.25;
+
+    let data = fixture_data(42);
+    let limits = ChartLimits::default();
+    let gpu = twinkle_ui::GpuOffscreenRenderer::new()
+        .expect("chart raster parity requires the pinned headless GPU environment");
+    let themes = [
+        ChartTheme::default(),
+        ChartTheme::dark(),
+        ChartTheme::high_contrast(),
+    ];
+    let sizes = [(112.0_f32, 84.0_f32), (960.0, 540.0)];
+    for (fixture_name, spec) in fixtures() {
+        for (theme_index, theme) in themes.iter().enumerate() {
+            for (logical_width, logical_height) in sizes {
+                for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+                    let input = RetainedSurfaceInput::new(
+                        Rect::new(0.0, 0.0, logical_width, logical_height),
+                        scale,
+                        RetainedSurfaceRevisions {
+                            content: data.revision(),
+                            theme: theme_index as u64,
+                            ..Default::default()
+                        },
+                    );
+                    let model =
+                        ChartModel::new(Arc::new(spec.clone()), Arc::clone(&data), limits.clone())
+                            .unwrap()
+                            .with_theme(theme.clone())
+                            .unwrap();
+                    let mut view = ChartView::new(model).unwrap();
+                    let commands = &view.update(input).unwrap().output.paint;
+                    let width = (logical_width * scale).ceil() as u32;
+                    let height = (logical_height * scale).ceil() as u32;
+                    let mut software =
+                        twinkle_ui::SoftwareRenderer::new_pixel_buffer(width, height, scale);
+                    software.render(commands);
+                    let gpu_pixels = gpu.render(commands, width, height, scale).unwrap();
+                    assert_eq!(gpu_pixels.len(), software.pixels().len());
+
+                    let mut large_delta = 0usize;
+                    let mut total_delta = 0u64;
+                    for (gpu, software) in gpu_pixels.iter().zip(software.pixels()) {
+                        let deltas = [
+                            gpu.r.abs_diff(software.r),
+                            gpu.g.abs_diff(software.g),
+                            gpu.b.abs_diff(software.b),
+                            gpu.a.abs_diff(software.a),
+                        ];
+                        if deltas.into_iter().max().unwrap_or(0) > 32 {
+                            large_delta += 1;
+                        }
+                        total_delta += deltas.into_iter().map(u64::from).sum::<u64>();
+                    }
+                    let large_fraction = large_delta as f64 / gpu_pixels.len() as f64;
+                    let mean_channel_delta = total_delta as f64 / (gpu_pixels.len() * 4) as f64;
+                    assert!(
+                        large_fraction <= MAX_LARGE_DELTA_FRACTION,
+                        "{fixture_name} theme {theme_index} scale {scale}: large-delta fraction {large_fraction:.5}"
+                    );
+                    assert!(
+                        mean_channel_delta <= MAX_MEAN_CHANNEL_DELTA,
+                        "{fixture_name} theme {theme_index} scale {scale}: mean channel delta {mean_channel_delta:.5}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn empty_data_and_exact_table_remain_bounded_and_reachable() {
     let limits = ChartLimits {
         max_visible_table_rows: 5,

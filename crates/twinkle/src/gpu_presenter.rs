@@ -756,7 +756,6 @@ impl GpuGraphics {
         })
     }
 
-    #[cfg(test)]
     fn new_headless() -> Result<Self, String> {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -849,6 +848,233 @@ impl GpuGraphics {
         }
         drop(renderer);
         Some(self.upload_cached_texture(key, width, height, &bytes))
+    }
+}
+
+/// Bounded headless GPU renderer used to verify native renderer agreement.
+///
+/// This executes the same command preparation, shaders, texture cache, shape
+/// pipeline, clipping, and blending as the window presenter, then reads the
+/// actual render target back into straight RGBA pixels.
+pub struct GpuOffscreenRenderer {
+    graphics: GpuGraphics,
+    textured_pipeline: wgpu::RenderPipeline,
+    shape_pipeline: wgpu::RenderPipeline,
+}
+
+impl GpuOffscreenRenderer {
+    /// Create a renderer from a headless adapter.
+    pub fn new() -> Result<Self, String> {
+        let graphics = GpuGraphics::new_headless()?;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let layout = graphics
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Twinkle offscreen pipeline"),
+                bind_group_layouts: &[Some(&graphics.texture_layout)],
+                immediate_size: 0,
+            });
+        let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2];
+        let pipeline = |label, fragment| {
+            graphics
+                .device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &graphics.shader,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &attributes,
+                        })],
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &graphics.shader,
+                        entry_point: Some(fragment),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        };
+        let textured_pipeline = pipeline("Twinkle offscreen textured rectangles", "fs_main");
+        let shape_pipeline = pipeline("Twinkle offscreen shapes", "fs_shape");
+        Ok(Self {
+            graphics,
+            textured_pipeline,
+            shape_pipeline,
+        })
+    }
+
+    /// Render an admitted display list and synchronously read back its pixels.
+    pub fn render(
+        &self,
+        commands: &[PaintCommand],
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<Vec<crate::Pixel>, String> {
+        const MAX_PIXELS: u64 = 16 * 1024 * 1024;
+        if width == 0 || height == 0 || !scale.is_finite() || scale <= 0.0 {
+            return Err("offscreen GPU dimensions and scale must be positive".into());
+        }
+        let pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or("offscreen GPU pixel count overflow")?;
+        if pixels > MAX_PIXELS {
+            return Err("offscreen GPU pixel budget exceeded".into());
+        }
+        let mut frame = Frame::new(width, height, scale, self.graphics.white.clone());
+        frame.prepare(commands, &self.graphics);
+        if frame.vertices.is_empty() {
+            frame.vertices.push(Vertex {
+                position: [0.0; 2],
+                uv: [0.0; 2],
+                color: [0.0; 4],
+                half_size: [0.0; 2],
+                shape: [0.0; 2],
+            });
+        }
+        let vertices = self
+            .graphics
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Twinkle offscreen vertices"),
+                contents: bytemuck::cast_slice(&frame.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let texture = self
+            .graphics
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Twinkle offscreen target"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let unpadded_bytes_per_row = width.checked_mul(4).ok_or("GPU row byte overflow")?;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(256) * 256;
+        let buffer_size = u64::from(padded_bytes_per_row)
+            .checked_mul(u64::from(height))
+            .ok_or("GPU readback byte overflow")?;
+        let readback = self.graphics.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Twinkle offscreen readback"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            self.graphics
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Twinkle offscreen frame"),
+                });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Twinkle offscreen frame"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_vertex_buffer(0, vertices.slice(..));
+            for draw in &frame.draws {
+                pass.set_pipeline(match draw.kind {
+                    DrawKind::Textured => &self.textured_pipeline,
+                    DrawKind::Shape => &self.shape_pipeline,
+                });
+                pass.set_scissor_rect(
+                    draw.scissor.0,
+                    draw.scissor.1,
+                    draw.scissor.2,
+                    draw.scissor.3,
+                );
+                pass.set_bind_group(0, draw.texture.as_ref(), &[]);
+                pass.draw(draw.start..draw.end, 0..1);
+            }
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = self.graphics.queue.submit(Some(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        readback.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = sender.send(result.map_err(|error| error.to_string()));
+        });
+        self.graphics
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .map_err(|error| error.to_string())?;
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .map_err(|error| error.to_string())??;
+        let mapped = readback
+            .get_mapped_range(..)
+            .map_err(|error| error.to_string())?;
+        let mut result = Vec::with_capacity(pixels as usize);
+        for row in mapped.chunks_exact(padded_bytes_per_row as usize) {
+            for rgba in row[..unpadded_bytes_per_row as usize].chunks_exact(4) {
+                result.push(crate::Pixel {
+                    r: rgba[0],
+                    g: rgba[1],
+                    b: rgba[2],
+                    a: rgba[3],
+                });
+            }
+        }
+        drop(mapped);
+        readback.unmap();
+        Ok(result)
     }
 }
 
@@ -2561,6 +2787,33 @@ fn mix(start: u32, end: u32, at: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headless_gpu_readback_matches_software_for_opaque_rectangles() {
+        let commands = vec![
+            PaintCommand::Fill {
+                rect: Rect::new(0.0, 0.0, 32.0, 24.0),
+                color: 0xff102030,
+            },
+            PaintCommand::Fill {
+                rect: Rect::new(3.0, 4.0, 17.0, 11.0),
+                color: 0xffd06020,
+            },
+            PaintCommand::PushClip(Rect::new(8.0, 2.0, 12.0, 18.0)),
+            PaintCommand::Fill {
+                rect: Rect::new(0.0, 6.0, 28.0, 9.0),
+                color: 0xff2080d0,
+            },
+            PaintCommand::PopClip,
+        ];
+        let mut software = SoftwareRenderer::new_pixel_buffer(32, 24, 1.0);
+        software.render(&commands);
+        let gpu = GpuOffscreenRenderer::new()
+            .expect("the renderer parity environment needs a headless GPU adapter")
+            .render(&commands, 32, 24, 1.0)
+            .expect("headless GPU readback");
+        assert_eq!(gpu, software.pixels());
+    }
 
     fn image_cache_key(id: u16) -> ImageTextureKey {
         ImageTextureKey {

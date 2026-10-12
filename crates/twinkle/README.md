@@ -77,6 +77,11 @@ enable either feature explicitly when needed. The backend-neutral controller voc
 software fallback remain available without default features. Oxc and V8 are not in this crate's
 dependency closure; JSX is an opt-in feature of the separate repository tooling.
 
+With `gpu-presenter`, `GpuOffscreenRenderer` provides a bounded synchronous test
+surface using the production GPU preparation and shaders. It reads real RGBA
+pixels back from a headless render target, making software/GPU tolerance tests
+possible without treating a shared display list as proof of raster agreement.
+
 ## Controller navigation
 
 Controller structure is declarative and renderer-owned. Mark shoulder-switchable regions with

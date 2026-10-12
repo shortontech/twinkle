@@ -20,6 +20,8 @@ pub mod document_selection;
 pub mod gpu;
 #[cfg(feature = "gpu-presenter")]
 mod gpu_presenter;
+#[cfg(feature = "gpu-presenter")]
+pub use gpu_presenter::GpuOffscreenRenderer;
 pub mod input;
 #[allow(missing_docs)]
 mod internal_surface;
