@@ -191,4 +191,6 @@ shared or independent facets; and original/visible-series domain policy. Field
 references may override the declaration's default dataset. Admission validates
 the resulting typed Rust specification and uses the same preparation, limits,
 rendering, interaction, semantics, diagnostics, and rollback path as recipes.
+An equivalent recipe/custom-descriptor fixture is required to produce the same
+accepted paint, interactions, semantics, and exact inspection result.
 

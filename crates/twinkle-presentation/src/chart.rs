@@ -1280,6 +1280,35 @@ mod tests {
     }
 
     #[test]
+    fn recipe_and_custom_jsx_descriptors_have_native_snapshot_parity() {
+        let recipe = declaration();
+        let mut custom = recipe.clone();
+        custom["spec"] = json!({
+            "family":"custom","title":"Revenue","summary":"Monthly revenue by region",
+            "dataset":"sales",
+            "scales":[
+                {"name":"x","kind":"linear","clamp":false},
+                {"name":"y","kind":"linear","clamp":false,"reversed":true},
+                {"name":"series","kind":"color","clamp":true}
+            ],
+            "layers":[{"mark":{"kind":"line"},"encodings":[
+                {"channel":"x","field":"month","scale":"x"},
+                {"channel":"y","field":"revenue","scale":"y"},
+                {"channel":"series","field":"region","scale":"series"}
+            ]}],
+            "legends":[{"scale":"series","toggleable":true}]
+        });
+        let recipe = ChartDeclaration::parse(&recipe, None).unwrap();
+        let custom = ChartDeclaration::parse(&custom, None).unwrap();
+        assert_eq!(recipe.snapshot, custom.snapshot);
+        let point = twinkle::Point { x: 210.0, y: 120.0 };
+        assert_eq!(
+            recipe.inspector.inspect_nearest(point),
+            custom.inspector.inspect_nearest(point)
+        );
+    }
+
+    #[test]
     fn hostile_or_incoherent_chart_descriptors_are_rejected() {
         let mut invalid = declaration();
         invalid["data"]["datasets"][0]["columns"][0]["values"] = json!([1]);
