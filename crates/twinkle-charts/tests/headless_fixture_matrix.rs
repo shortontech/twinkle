@@ -372,7 +372,7 @@ fn first_failure_has_bounded_semantic_fallback_and_table_action() {
     assert!(view.last_error().is_some());
     let snapshot = view.snapshot();
     assert_eq!(snapshot.input, Some(input));
-    assert_eq!(snapshot.output.interactions.len(), 1);
+    assert_eq!(snapshot.output.interactions.len(), 2);
     assert_eq!(snapshot.output.interactions[0].bounds, input.bounds);
     assert!(snapshot.output.paint.len() <= 3);
     assert!(snapshot.output.semantics.iter().any(|record| {

@@ -1591,6 +1591,8 @@ pub struct Element<Message = String> {
 struct ElementEvents<Message> {
     message: Option<Message>,
     context_message: Option<Message>,
+    decrement_message: Option<Message>,
+    increment_message: Option<Message>,
     focus_message: Option<Message>,
     blur_message: Option<Message>,
     drag_seed: Option<Message>,
@@ -1602,6 +1604,8 @@ impl<Message> Default for ElementEvents<Message> {
         Self {
             message: None,
             context_message: None,
+            decrement_message: None,
+            increment_message: None,
             focus_message: None,
             blur_message: None,
             drag_seed: None,
@@ -1626,6 +1630,18 @@ impl<Message> Element<Message> {
         self.events
             .as_ref()
             .and_then(|events| events.context_message.as_ref())
+    }
+
+    pub(crate) fn declared_decrement_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.decrement_message.as_ref())
+    }
+
+    pub(crate) fn declared_increment_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.increment_message.as_ref())
     }
 
     pub(crate) fn declared_focus_message(&self) -> Option<&Message> {
@@ -1656,6 +1672,8 @@ impl<Message> Element<Message> {
         self.events.as_ref().is_some_and(|events| {
             events.message.is_some()
                 || events.context_message.is_some()
+                || events.decrement_message.is_some()
+                || events.increment_message.is_some()
                 || events.focus_message.is_some()
                 || events.blur_message.is_some()
                 || events.drag_seed.is_some()
@@ -1914,6 +1932,16 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Attach discrete decrement/increment messages to an ordinary control.
+    /// Unlike a value mapper these messages survive `map_message`, making the
+    /// hook suitable for reusable compound controls.
+    pub fn on_adjust_messages(mut self, decrement: Message, increment: Message) -> Self {
+        let events = self.events_mut();
+        events.decrement_message = Some(decrement);
+        events.increment_message = Some(increment);
+        self
+    }
+
     pub fn text_align(mut self, align: TextAlign) -> Self {
         self.style.text_align = align;
         self
@@ -2150,6 +2178,8 @@ impl<Message> Element<Message> {
             let mapped = ElementEvents {
                 message: events.message.map(&mut *map),
                 context_message: events.context_message.map(&mut *map),
+                decrement_message: events.decrement_message.map(&mut *map),
+                increment_message: events.increment_message.map(&mut *map),
                 focus_message: events.focus_message.map(&mut *map),
                 blur_message: events.blur_message.map(&mut *map),
                 drag_seed: None,
@@ -2157,6 +2187,8 @@ impl<Message> Element<Message> {
             };
             (mapped.message.is_some()
                 || mapped.context_message.is_some()
+                || mapped.decrement_message.is_some()
+                || mapped.increment_message.is_some()
                 || mapped.focus_message.is_some()
                 || mapped.blur_message.is_some())
             .then(|| Box::new(mapped))

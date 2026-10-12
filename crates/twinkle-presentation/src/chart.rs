@@ -4,12 +4,17 @@ use serde_json::{Value, json};
 use twinkle::retained_surface::{
     RetainedSurfaceInput, RetainedSurfaceRevisions, RetainedSurfaceSnapshot,
 };
-use twinkle::{Rect, UiId};
+use twinkle::{Rect, SemanticRole, UiId};
 use twinkle_charts::{
     BinOptions, Channel, ChartData, ChartEvent, ChartLimits, ChartModel, ChartState, ChartView,
     Column, DataValue, Dataset, DatasetId, Encoding, FieldRef, Legend, Recipes, RowKey, Scale,
     ScaleKind, Viewport,
 };
+
+#[derive(Clone)]
+enum ChartProjectionAction {
+    Event(ChartEvent),
+}
 
 /// Host-admitted immutable projection of a JSX chart declaration.
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +73,10 @@ impl ChartDeclaration {
 
     pub fn event(&self, event: ChartEvent) -> (usize, Value) {
         match event {
+            ChartEvent::Navigate(command) => (
+                self.table_action,
+                json!({"kind":"navigate","command":format!("{command:?}")}),
+            ),
             ChartEvent::ToggleSeries { series, visible } => (
                 self.toggle_action.unwrap_or(self.table_action),
                 json!({"series": series.as_ref(), "visible": visible}),
@@ -119,7 +128,22 @@ impl ChartDeclaration {
                 })
             })
             .collect::<BTreeSet<_>>();
-        self.snapshot
+        let mut snapshot = self.snapshot.clone();
+        let root_semantic = snapshot
+            .output
+            .semantics
+            .iter()
+            .find(|semantic| semantic.id.as_str() == "chart")
+            .cloned();
+        snapshot
+            .output
+            .interactions
+            .retain(|interaction| interaction.id.as_str() != "chart");
+        snapshot
+            .output
+            .semantics
+            .retain(|semantic| semantic.id.as_str() != "chart");
+        let mut element = snapshot
             .try_element(UiId::from(self.id.clone()), |interaction| {
                 let event = interaction.id.as_str().split_once("chart/legend/").map_or(
                     ChartEvent::TableMode(true),
@@ -128,9 +152,36 @@ impl ChartDeclaration {
                         visible: !visible.contains(series),
                     },
                 );
+                ChartProjectionAction::Event(event)
+            })
+            .map_err(|error| error.to_string())?
+            .semantic_role(SemanticRole::GraphicalCustomControl)
+            .message(ChartProjectionAction::Event(ChartEvent::Navigate(
+                twinkle_charts::NavigationCommand::Select,
+            )))
+            .on_adjust_messages(
+                ChartProjectionAction::Event(ChartEvent::Navigate(
+                    twinkle_charts::NavigationCommand::Previous,
+                )),
+                ChartProjectionAction::Event(ChartEvent::Navigate(
+                    twinkle_charts::NavigationCommand::Next,
+                )),
+            )
+            .adjustment_step(0.25);
+        if let Some(semantic) = root_semantic {
+            if let Some(label) = semantic.label {
+                element = element.accessibility_label(label);
+            }
+            if let Some(state) = semantic.state {
+                element = element.accessibility_state(state);
+            }
+        }
+        Ok(element.map_message(move |action| match action {
+            ChartProjectionAction::Event(event) => {
                 let (action, payload) = self.event(event);
                 message(action, payload)
-            })
+            }
+        }))
     }
 }
 
@@ -498,7 +549,7 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, twinkle::backend::PaintCommand::Path { .. }))
         );
-        assert_eq!(chart.snapshot.output.interactions.len(), 3);
+        assert_eq!(chart.snapshot.output.interactions.len(), 4);
         let (action, payload) = chart.event(ChartEvent::ToggleSeries {
             series: Arc::from("North"),
             visible: false,

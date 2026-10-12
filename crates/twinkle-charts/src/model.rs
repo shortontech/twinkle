@@ -200,11 +200,18 @@ impl ChartModel {
             color: self.theme.grid,
             width: 1.0,
         });
+        let table_width = input.bounds.size.width.min(88.0).max(0.0);
+        let table_bounds = Rect::new(
+            input.bounds.origin.x + input.bounds.size.width - table_width,
+            input.bounds.origin.y,
+            table_width,
+            input.bounds.size.height.min(24.0).max(0.0),
+        );
         output.paint.push(PaintCommand::Text {
             bounds: Rect::new(
                 input.bounds.origin.x + 8.0,
                 input.bounds.origin.y + 4.0,
-                (input.bounds.size.width - 16.0).max(0.0),
+                (input.bounds.size.width - table_width - 16.0).max(0.0),
                 22.0,
             ),
             text: self.spec.title.to_string(),
@@ -212,6 +219,24 @@ impl ChartModel {
             color: self.theme.foreground,
             align: twinkle_ui::TextAlign::Start,
             bold: true,
+            wrap: false,
+        });
+        output.paint.push(PaintCommand::RoundedFill {
+            rect: table_bounds,
+            color: if self.theme.high_contrast {
+                self.theme.focus
+            } else {
+                self.theme.grid
+            },
+            radius: 4.0,
+        });
+        output.paint.push(PaintCommand::Text {
+            bounds: table_bounds,
+            text: "Data table".into(),
+            scale: 0.9,
+            color: self.theme.foreground,
+            align: twinkle_ui::TextAlign::Center,
+            bold: false,
             wrap: false,
         });
         output
@@ -230,6 +255,22 @@ impl ChartModel {
             action: ActionKind::Activate,
             focusable: true,
         });
+        output.interactions.push(RetainedSurfaceInteraction {
+            id: UiId::from("chart/table"),
+            bounds: table_bounds,
+            action: ActionKind::Activate,
+            focusable: true,
+        });
+        output
+            .semantics
+            .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                id: UiId::from("chart/table"),
+                bounds: table_bounds,
+                role: SemanticRole::Button,
+                label: Some("View chart data table".into()),
+                state: Some("Exact values, paged".into()),
+                protected: false,
+            });
         let mut hits = Vec::new();
         if plot.size.width > 1.0 && plot.size.height > 1.0 && self.spec.facet.is_some() {
             self.prepare_facets(plot, input, &mut output, &mut hits)?;
@@ -1745,6 +1786,12 @@ pub struct ChartView {
     fallback: RetainedSurfaceSnapshot,
     last_error: Option<ChartError>,
 }
+
+#[derive(Clone)]
+enum ChartProjectionAction {
+    Event(ChartEvent),
+}
+
 impl ChartView {
     pub fn new(model: ChartModel) -> Result<Self, ChartError> {
         let limits = RetainedSurfaceLimits {
@@ -1877,22 +1924,59 @@ impl ChartView {
         mut message: impl FnMut(ChartEvent) -> Message,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
         let visible = self.host.model().state.visible_series.clone();
-        self.snapshot()
+        let mut snapshot = self.snapshot().clone();
+        let root_semantic = snapshot
+            .output
+            .semantics
+            .iter()
+            .find(|semantic| semantic.id.as_str() == "chart")
+            .cloned();
+        snapshot
+            .output
+            .interactions
+            .retain(|interaction| interaction.id.as_str() != "chart");
+        snapshot
+            .output
+            .semantics
+            .retain(|semantic| semantic.id.as_str() != "chart");
+        let mut element = snapshot
             .try_element(id, |interaction| {
                 if let Some((_, label)) = interaction.id.as_str().split_once("chart/legend/") {
                     let label: Arc<str> = Arc::from(label);
                     let currently_visible = visible
                         .as_ref()
                         .is_none_or(|series| series.contains(&label));
-                    message(ChartEvent::ToggleSeries {
+                    ChartProjectionAction::Event(ChartEvent::ToggleSeries {
                         series: label,
                         visible: !currently_visible,
                     })
                 } else {
-                    message(ChartEvent::TableMode(true))
+                    ChartProjectionAction::Event(ChartEvent::TableMode(true))
                 }
             })
-            .map_err(|error| ChartError::invalid(crate::ChartStage::Semantics, error))
+            .map_err(|error| ChartError::invalid(crate::ChartStage::Semantics, error))?
+            .semantic_role(SemanticRole::GraphicalCustomControl)
+            .message(ChartProjectionAction::Event(ChartEvent::Navigate(
+                crate::NavigationCommand::Select,
+            )))
+            .on_adjust_messages(
+                ChartProjectionAction::Event(ChartEvent::Navigate(
+                    crate::NavigationCommand::Previous,
+                )),
+                ChartProjectionAction::Event(ChartEvent::Navigate(crate::NavigationCommand::Next)),
+            )
+            .adjustment_step(0.25);
+        if let Some(semantic) = root_semantic {
+            if let Some(label) = semantic.label {
+                element = element.accessibility_label(label);
+            }
+            if let Some(state) = semantic.state {
+                element = element.accessibility_state(state);
+            }
+        }
+        Ok(element.map_message(move |action| match action {
+            ChartProjectionAction::Event(event) => message(event),
+        }))
     }
     pub fn detach(&mut self) {
         self.host.detach();
@@ -1975,20 +2059,38 @@ fn chart_error_snapshot(
                     wrap: true,
                 },
             ],
-            interactions: vec![RetainedSurfaceInteraction {
-                id: UiId::from("chart"),
-                bounds: input.bounds,
-                action: ActionKind::Activate,
-                focusable: true,
-            }],
-            semantics: vec![twinkle_ui::retained_surface::RetainedSurfaceSemantic {
-                id: UiId::from("chart"),
-                bounds: input.bounds,
-                role: SemanticRole::GraphicalCustomControl,
-                label: Some(truncate(title)),
-                state: Some(state),
-                protected: false,
-            }],
+            interactions: vec![
+                RetainedSurfaceInteraction {
+                    id: UiId::from("chart"),
+                    bounds: input.bounds,
+                    action: ActionKind::Activate,
+                    focusable: true,
+                },
+                RetainedSurfaceInteraction {
+                    id: UiId::from("chart/table"),
+                    bounds: input.bounds,
+                    action: ActionKind::Activate,
+                    focusable: true,
+                },
+            ],
+            semantics: vec![
+                twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                    id: UiId::from("chart"),
+                    bounds: input.bounds,
+                    role: SemanticRole::GraphicalCustomControl,
+                    label: Some(truncate(title)),
+                    state: Some(state),
+                    protected: false,
+                },
+                twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                    id: UiId::from("chart/table"),
+                    bounds: input.bounds,
+                    role: SemanticRole::Button,
+                    label: Some("View chart data table".into()),
+                    state: Some("Exact values, paged".into()),
+                    protected: false,
+                },
+            ],
             damage: vec![input.bounds],
         },
     }
@@ -2602,7 +2704,7 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, PaintCommand::Path { .. }))
         );
-        assert_eq!(snapshot.output.interactions.len(), 1);
+        assert_eq!(snapshot.output.interactions.len(), 2);
         let summary = snapshot
             .output
             .semantics
@@ -2654,6 +2756,99 @@ mod tests {
     }
 
     #[test]
+    fn native_projection_routes_semantic_keyboard_and_controller_navigation() {
+        let mut view = ChartView::new(model()).unwrap();
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 7,
+                ..Default::default()
+            },
+        );
+        view.update(input).unwrap();
+        let element = view.element("native-chart", |event| event).unwrap();
+        let frame = twinkle_ui::UiFrame::layout(element, input.bounds);
+        let chart = frame
+            .semantic_nodes()
+            .into_iter()
+            .find(|node| node.role == Some(SemanticRole::GraphicalCustomControl))
+            .unwrap();
+        assert_eq!(
+            chart.actions,
+            vec![
+                ActionKind::Increment,
+                ActionKind::Decrement,
+                ActionKind::Activate
+            ]
+        );
+        let previous = frame
+            .perform_semantic_action(
+                &chart.id,
+                twinkle_ui::SemanticAction::Invoke(ActionKind::Decrement),
+            )
+            .unwrap();
+        assert_eq!(
+            previous.messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::Previous)]
+        );
+        let next = frame
+            .perform_semantic_action(
+                &chart.id,
+                twinkle_ui::SemanticAction::Invoke(ActionKind::Increment),
+            )
+            .unwrap();
+        assert_eq!(
+            next.messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::Next)]
+        );
+        assert_eq!(
+            frame
+                .perform_semantic_action(
+                    &chart.id,
+                    twinkle_ui::SemanticAction::Invoke(ActionKind::Activate),
+                )
+                .unwrap()
+                .messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::Select)]
+        );
+        let table = frame
+            .semantic_nodes()
+            .into_iter()
+            .find(|node| {
+                node.role == Some(SemanticRole::Button)
+                    && node.name.as_deref() == Some("View chart data table")
+            })
+            .unwrap();
+        assert_eq!(
+            frame
+                .perform_semantic_action(
+                    &table.id,
+                    twinkle_ui::SemanticAction::Invoke(ActionKind::Activate),
+                )
+                .unwrap()
+                .messages,
+            vec![ChartEvent::TableMode(true)]
+        );
+
+        let mut state = twinkle_ui::UiStateStore::default();
+        frame.handle_event(&mut state, twinkle_ui::UiEvent::FocusNext);
+        frame.handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateActivate);
+        assert_eq!(
+            frame
+                .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateRight)
+                .messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::Next)]
+        );
+        assert_eq!(
+            frame
+                .handle_event(&mut state, twinkle_ui::UiEvent::ControllerActivate)
+                .messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::Select)]
+        );
+    }
+
+    #[test]
     fn histogram_recipe_executes_bins_and_aggregate_before_rendering() {
         let limits = ChartLimits::default();
         let dataset = Dataset::new(
@@ -2692,7 +2887,7 @@ mod tests {
                 },
             ))
             .unwrap();
-        assert_eq!(snapshot.output.interactions.len(), 1);
+        assert_eq!(snapshot.output.interactions.len(), 2);
         assert!(
             snapshot
                 .output
@@ -3061,7 +3256,7 @@ mod tests {
         let radii: Vec<f32> = bubbles
             .iter()
             .filter_map(|command| match command {
-                PaintCommand::RoundedFill { radius, .. } => Some(*radius),
+                PaintCommand::RoundedFill { radius, .. } if *radius != 4.0 => Some(*radius),
                 _ => None,
             })
             .collect();
@@ -3255,7 +3450,7 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(initial.output.interactions.len(), 3);
+        assert_eq!(initial.output.interactions.len(), 4);
 
         let one = ChartState {
             visible_series: Some([Arc::from("one")].into_iter().collect()),
@@ -3286,7 +3481,7 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, PaintCommand::Path { .. }))
         );
-        assert_eq!(hidden.output.interactions.len(), 3);
+        assert_eq!(hidden.output.interactions.len(), 4);
         assert_eq!(hidden.input.unwrap().revisions.content, 17);
         assert_eq!(view.hits().len(), 0);
     }

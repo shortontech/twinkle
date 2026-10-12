@@ -2194,6 +2194,7 @@ enum TestMessage {
     Query(String),
     Drag(DragPhase, i32, i32),
     Drop(String, String, i32, i32),
+    Adjustment(i8),
 }
 
 fn map_volume(value: f32) -> TestMessage {
@@ -3036,6 +3037,73 @@ fn slider_and_text_field_semantic_values_use_production_mappers() {
     assert_eq!(
         frame.perform_semantic_action(&query, SemanticAction::Invoke(ActionKind::Activate),),
         Err(SemanticActionError::ActionUnavailable)
+    );
+}
+
+#[test]
+fn graphical_control_adjustment_shares_semantic_keyboard_and_controller_routing() {
+    let control = Layer::new()
+        .id("chart")
+        .width(200.0)
+        .height(80.0)
+        .into_element()
+        .semantic_role(SemanticRole::GraphicalCustomControl)
+        .accessibility_label("Chart")
+        .message(TestMessage::Adjustment(0))
+        .on_adjust_messages(TestMessage::Adjustment(-1), TestMessage::Adjustment(1))
+        .adjustment_step(0.25);
+    let frame = UiFrame::layout(control, Rect::new(0.0, 0.0, 200.0, 80.0));
+    let id = UiId::from("root/chart");
+    let node = frame
+        .semantic_nodes()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert_eq!(
+        node.actions,
+        vec![
+            ActionKind::Increment,
+            ActionKind::Decrement,
+            ActionKind::Activate
+        ]
+    );
+    assert_eq!(
+        frame
+            .perform_semantic_action(&id, SemanticAction::Invoke(ActionKind::Decrement))
+            .unwrap()
+            .messages,
+        vec![TestMessage::Adjustment(-1)]
+    );
+    assert_eq!(
+        frame
+            .perform_semantic_action(&id, SemanticAction::Invoke(ActionKind::Increment))
+            .unwrap()
+            .messages,
+        vec![TestMessage::Adjustment(1)]
+    );
+
+    let mut state = UiStateStore::default();
+    frame.handle_event(&mut state, UiEvent::FocusNext);
+    assert_eq!(state.focused(), Some(&id));
+    frame.handle_event(&mut state, UiEvent::KeyboardNavigateActivate);
+    assert!(state.navigation().controller_editing());
+    assert_eq!(
+        frame
+            .handle_event(&mut state, UiEvent::KeyboardNavigateLeft)
+            .messages,
+        vec![TestMessage::Adjustment(-1)]
+    );
+    assert_eq!(
+        frame
+            .handle_event(&mut state, UiEvent::ControllerRight)
+            .messages,
+        vec![TestMessage::Adjustment(1)]
+    );
+    assert_eq!(
+        frame
+            .handle_event(&mut state, UiEvent::ControllerActivate)
+            .messages,
+        vec![TestMessage::Adjustment(0)]
     );
 }
 

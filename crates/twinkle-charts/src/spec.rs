@@ -516,6 +516,10 @@ pub struct Viewport {
 /// Typed application event carrying stable identity and accepted revision.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChartEvent {
+    /// Request emitted by native keyboard/controller adjustment. Applications
+    /// feed it to `ChartView::navigate` and publish the returned stable datum
+    /// event through their ordinary update path.
+    Navigate(crate::NavigationCommand),
     Select {
         dataset: Arc<str>,
         row: crate::RowKey,

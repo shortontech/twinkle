@@ -129,6 +129,8 @@ struct MessageRegion<Message> {
     message: Message,
     message_mapper: Option<fn(f32) -> Message>,
     seeded_value_mapper: Option<fn(Message, f32) -> Message>,
+    decrement_message: Option<Message>,
+    increment_message: Option<Message>,
 }
 
 fn map_value<Message: Clone>(
@@ -1716,6 +1718,8 @@ impl<Message: Clone> UiFrame<Message> {
                     message,
                     message_mapper: None,
                     seeded_value_mapper: None,
+                    decrement_message: None,
+                    increment_message: None,
                 });
             }
             if let Some(command) = item.text_command {
@@ -3986,13 +3990,24 @@ impl<Message: Clone> UiFrame<Message> {
                     .rev()
                     .find(|region| &region.id == id)
                     .zip(node.controller_value)
-                    .and_then(|(region, value)| {
-                        map_value(
-                            &region.message,
-                            region.message_mapper,
-                            region.seeded_value_mapper,
-                            (value + direction * node.adjustment_step).clamp(0.0, 1.0),
-                        )
+                    .and_then(|(region, value)| match kind {
+                        ActionKind::Increment => region.increment_message.clone().or_else(|| {
+                            map_value(
+                                &region.message,
+                                region.message_mapper,
+                                region.seeded_value_mapper,
+                                (value + direction * node.adjustment_step).clamp(0.0, 1.0),
+                            )
+                        }),
+                        ActionKind::Decrement => region.decrement_message.clone().or_else(|| {
+                            map_value(
+                                &region.message,
+                                region.message_mapper,
+                                region.seeded_value_mapper,
+                                (value + direction * node.adjustment_step).clamp(0.0, 1.0),
+                            )
+                        }),
+                        _ => None,
                     })
             }
             SemanticAction::SetValue(SemanticValueInput::Number(value)) => self
@@ -5902,6 +5917,17 @@ impl<Message: Clone> UiFrame<Message> {
                                 matches!(action, ActionKind::Increment | ActionKind::Decrement)
                             }))
                     {
+                        if state.navigation().controller_editing() {
+                            if let Some(message) = self.message_for_id(&node.id).cloned() {
+                                outcome.messages.push(message);
+                            }
+                            return EventOutcome {
+                                messages: outcome.messages,
+                                invalidation: pointer_cancellation,
+                                clipboard_text: None,
+                                disposition: crate::EventDisposition::Handled,
+                            };
+                        }
                         return EventOutcome {
                             messages: outcome.messages,
                             invalidation: pointer_cancellation
@@ -7217,19 +7243,31 @@ impl<Message: Clone> UiFrame<Message> {
         direction: f32,
         messages: &mut Vec<Message>,
     ) -> Invalidation {
-        let Some((value, step, region)) = state.navigation().controller_selected().and_then(|id| {
-            let node = self.resolved.nodes.iter().find(|node| &node.id == id)?;
-            let region = self.messages.iter().find(|region| &region.id == id)?;
-            Some((node.controller_value?, node.adjustment_step, region))
-        }) else {
+        let Some((value, step, region)) = state
+            .navigation()
+            .controller_selected()
+            .or_else(|| state.focused())
+            .and_then(|id| {
+                let node = self.resolved.nodes.iter().find(|node| &node.id == id)?;
+                let region = self.messages.iter().find(|region| &region.id == id)?;
+                Some((node.controller_value?, node.adjustment_step, region))
+            })
+        else {
             return Invalidation::None;
         };
-        if let Some(message) = map_value(
-            &region.message,
-            region.message_mapper,
-            region.seeded_value_mapper,
-            (value + direction.signum() * step).clamp(0.0, 1.0),
-        ) {
+        let direct = if direction.is_sign_negative() {
+            region.decrement_message.clone()
+        } else {
+            region.increment_message.clone()
+        };
+        if let Some(message) = direct.or_else(|| {
+            map_value(
+                &region.message,
+                region.message_mapper,
+                region.seeded_value_mapper,
+                (value + direction.signum() * step).clamp(0.0, 1.0),
+            )
+        }) {
             messages.push(message);
             Invalidation::Layout
         } else {

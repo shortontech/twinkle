@@ -131,7 +131,19 @@ pub(super) fn layout_element<Message: Clone>(
     let semantic_actions = {
         let mut actions = Vec::new();
         if !missing_accessible_name {
-            if let Kind::Slider { value, .. } = kind
+            if element.declared_decrement_message().is_some()
+                || element.declared_increment_message().is_some()
+            {
+                if element.declared_increment_message().is_some() {
+                    actions.push(ActionKind::Increment);
+                }
+                if element.declared_decrement_message().is_some() {
+                    actions.push(ActionKind::Decrement);
+                }
+                if element.primary_message().is_some() && !is_scroll_container(element) {
+                    actions.push(ActionKind::Activate);
+                }
+            } else if let Kind::Slider { value, .. } = kind
                 && (element.message_mapper.is_some() || element.seeded_value_mapper.is_some())
             {
                 if *value < 1.0 {
@@ -208,9 +220,15 @@ pub(super) fn layout_element<Message: Clone>(
             navigation_scope: element.navigation_scope.as_deref().cloned(),
             virtual_navigation: element.virtual_navigation.clone(),
             adjustment_step: element.adjustment_step,
-            controller_value: match kind {
-                Kind::Slider { value, .. } => Some(*value),
-                _ => None,
+            controller_value: if element.declared_decrement_message().is_some()
+                || element.declared_increment_message().is_some()
+            {
+                Some(0.5)
+            } else {
+                match kind {
+                    Kind::Slider { value, .. } => Some(*value),
+                    _ => None,
+                }
             },
             accessibility_label: derived_accessible_name,
             accessibility_description: style.accessibility_description.clone(),

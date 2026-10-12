@@ -71,15 +71,19 @@ raw/source provenance.
 records and return `ChartEvent` values carrying stable row keys and the accepted
 data revision. Applications own selection, visible-series, and viewport state and
 feed the next `ChartState` back through `update_state`; the chart never mutates a
-second hidden store. `PanZoomPolicy` provides pure anchored zoom, constrained pan,
-and reset operations for the same event flow.
+second hidden store. The native chart entry emits `ChartEvent::Navigate` for
+keyboard/controller/semantic previous, next, and select requests; feed its command
+to `ChartView::navigate` in the ordinary application update path. `PanZoomPolicy`
+provides pure anchored zoom, constrained pan, and reset operations for the same
+event flow.
 
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,
 inspectable/displayed values, missing data, selection, and reduction. Activation
-requests the exact paged data-table mode. `ChartTable` keeps all admitted rows
-reachable without creating one UI node per row. Platform screen-reader support is
-separate from these semantic records; Twinkle does not claim a tested Linux
+selects the active datum, while a visible, separately focusable **Data table**
+control requests exact paged table mode. `ChartTable` keeps all admitted rows
+reachable without creating one UI node per row. Platform screen-reader support
+is separate from these semantic records; Twinkle does not claim a tested Linux
 screen-reader bridge yet.
 
 ## Limits, diagnostics, and reduction
