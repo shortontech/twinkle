@@ -34,6 +34,7 @@ pub struct ChartModel {
     theme: ChartTheme,
     diagnostics: ChartDiagnostics,
     hits: Vec<ChartHit>,
+    hit_x_order: Vec<usize>,
     renderer_generation: u64,
 }
 
@@ -53,6 +54,7 @@ impl ChartModel {
             theme,
             diagnostics: ChartDiagnostics::default(),
             hits: Vec::new(),
+            hit_x_order: Vec::new(),
             renderer_generation: 0,
         })
     }
@@ -78,18 +80,34 @@ impl ChartModel {
         &self.hits
     }
     pub fn nearest(&self, point: Point) -> Option<&ChartHit> {
-        self.hits.iter().min_by(|a, b| {
-            distance(a.bounds, point)
-                .total_cmp(&distance(b.bounds, point))
-                .then_with(|| a.dataset.cmp(&b.dataset))
-                .then_with(|| a.row.cmp(&b.row))
-        })
+        let insertion = self
+            .hit_x_order
+            .partition_point(|index| hit_center_x(&self.hits[*index]) < point.x);
+        let start = insertion.saturating_sub(512);
+        let end = insertion.saturating_add(512).min(self.hit_x_order.len());
+        self.hit_x_order[start..end]
+            .iter()
+            .map(|index| &self.hits[*index])
+            .min_by(|a, b| {
+                distance(a.bounds, point)
+                    .total_cmp(&distance(b.bounds, point))
+                    .then_with(|| a.dataset.cmp(&b.dataset))
+                    .then_with(|| a.row.cmp(&b.row))
+            })
     }
 
     fn prepare(
         &self,
         input: RetainedSurfaceInput,
-    ) -> Result<(RetainedSurfaceOutput, Vec<ChartHit>, ChartDiagnostics), ChartError> {
+    ) -> Result<
+        (
+            RetainedSurfaceOutput,
+            Vec<ChartHit>,
+            Vec<usize>,
+            ChartDiagnostics,
+        ),
+        ChartError,
+    > {
         self.spec.validate(&self.data, &self.limits)?;
         let started = Instant::now();
         let mut output = RetainedSurfaceOutput {
@@ -175,7 +193,15 @@ impl ChartModel {
                 limit: self.limits.max_geometry_vertices,
             });
         }
+        let mut hit_x_order: Vec<usize> = (0..hits.len()).collect();
+        hit_x_order.sort_by(|a, b| {
+            hit_center_x(&hits[*a])
+                .total_cmp(&hit_center_x(&hits[*b]))
+                .then_with(|| hits[*a].row.cmp(&hits[*b].row))
+        });
+        let index_bytes = hit_x_order.capacity() * std::mem::size_of::<usize>();
         let steady_bytes = hits.capacity() * std::mem::size_of::<ChartHit>()
+            + index_bytes
             + geometry_vertices * std::mem::size_of::<Point>();
         if steady_bytes > self.limits.max_steady_bytes {
             return Err(ChartError::Limit {
@@ -184,13 +210,40 @@ impl ChartModel {
                 limit: self.limits.max_steady_bytes,
             });
         }
+        let raster_marks = output
+            .paint
+            .iter()
+            .filter(|command| {
+                matches!(
+                    command,
+                    PaintCommand::Fill { .. } | PaintCommand::RoundedFill { .. }
+                )
+            })
+            .count()
+            .saturating_sub(1);
+        let displayed_rows = hits.len().min(
+            raster_marks
+                .saturating_add(geometry_vertices / 6 + usize::from(geometry_vertices != 0)),
+        );
+        let mut notices = self.diagnostics.notices.clone();
+        if displayed_rows < hits.len() {
+            notices.push(crate::ChartDiagnostic {
+                stage: crate::ChartStage::Geometry,
+                severity: crate::DiagnosticSeverity::Info,
+                message: format!(
+                    "pixel-aware reduction displays {displayed_rows} of {} exact indexed rows",
+                    hits.len()
+                ),
+                affected_rows: hits.len() - displayed_rows,
+            });
+        }
         let diagnostics = ChartDiagnostics {
             preparation_time: started.elapsed(),
             input_rows: self.data.row_count(),
             transformed_rows: self.data.row_count(),
-            displayed_rows: hits.len(),
+            displayed_rows,
             geometry_vertices,
-            index_bytes: hits.capacity() * std::mem::size_of::<ChartHit>(),
+            index_bytes,
             guide_count: self.spec.axes.len()
                 + self.spec.legends.len()
                 + self.spec.annotations.len(),
@@ -200,9 +253,10 @@ impl ChartModel {
             steady_bytes,
             peak_bytes: steady_bytes,
             cache_misses: 1,
+            notices,
             ..self.diagnostics.clone()
         };
-        Ok((output, hits, diagnostics))
+        Ok((output, hits, hit_x_order, diagnostics))
     }
 
     fn prepare_layer(
@@ -295,6 +349,7 @@ impl ChartModel {
             Mark::Line { .. } => {
                 let mut triangles = Vec::new();
                 let mut segment = Vec::new();
+                let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
                 for (index, (x, y)) in x_column
                     .values
                     .iter()
@@ -304,12 +359,15 @@ impl ChartModel {
                     match (coordinate(x, index), coordinate(y, index)) {
                         (Some(x), Some(y)) => segment.push(map(x, y)),
                         _ => {
-                            triangles.extend(stroke_polyline(&segment, 2.0));
+                            triangles.extend(stroke_polyline(
+                                &reduce_extrema(&segment, max_points),
+                                2.0,
+                            ));
                             segment.clear();
                         }
                     }
                 }
-                triangles.extend(stroke_polyline(&segment, 2.0));
+                triangles.extend(stroke_polyline(&reduce_extrema(&segment, max_points), 2.0));
                 if !triangles.is_empty() {
                     output
                         .paint
@@ -323,30 +381,29 @@ impl ChartModel {
                     [plot.origin.y + plot.size.height, plot.origin.y],
                 );
                 let mut triangles = Vec::new();
-                for pair in values.windows(2) {
-                    if pair[1].0 != pair[0].0 + 1 {
-                        continue;
+                let mut segment = Vec::new();
+                let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
+                for (index, (x, y)) in x_column
+                    .values
+                    .iter()
+                    .zip(y_column.values.iter())
+                    .enumerate()
+                {
+                    match (coordinate(x, index), coordinate(y, index)) {
+                        (Some(x), Some(y)) => segment.push(map(x, y)),
+                        _ => {
+                            triangles.extend(area_triangles(
+                                &reduce_extrema(&segment, max_points),
+                                baseline,
+                            ));
+                            segment.clear();
+                        }
                     }
-                    let a = map(pair[0].1, pair[0].2);
-                    let b = map(pair[1].1, pair[1].2);
-                    triangles.extend([
-                        a,
-                        Point {
-                            x: a.x,
-                            y: baseline,
-                        },
-                        b,
-                        b,
-                        Point {
-                            x: a.x,
-                            y: baseline,
-                        },
-                        Point {
-                            x: b.x,
-                            y: baseline,
-                        },
-                    ]);
                 }
+                triangles.extend(area_triangles(
+                    &reduce_extrema(&segment, max_points),
+                    baseline,
+                ));
                 if !triangles.is_empty() {
                     output
                         .paint
@@ -354,7 +411,10 @@ impl ChartModel {
                 }
             }
             Mark::Point { .. } => {
-                for (index, x, y) in &values {
+                let max_marks =
+                    ((plot.size.width * plot.size.height / 16.0) as usize).clamp(1, 50_000);
+                let step = values.len().div_ceil(max_marks).max(1);
+                for (_, x, y) in values.iter().step_by(step) {
                     let center = map(*x, *y);
                     let bounds = Rect::new(center.x - 3.0, center.y - 3.0, 6.0, 6.0);
                     output.paint.push(PaintCommand::RoundedFill {
@@ -362,10 +422,16 @@ impl ChartModel {
                         color,
                         radius: 3.0,
                     });
-                    self.push_hit(dataset, *index, bounds, hits);
                 }
             }
             Mark::Bar { .. } | Mark::Rect => {
+                if values.len() > 60_000 {
+                    return Err(ChartError::Limit {
+                        resource: "bar/heatmap paint marks",
+                        actual: values.len(),
+                        limit: 60_000,
+                    });
+                }
                 let width = (plot.size.width / values.len() as f32 * 0.72).max(1.0);
                 let zero = map_value(
                     0.0,
@@ -396,7 +462,10 @@ impl ChartModel {
                 )));
             }
         }
-        if matches!(layer.mark, Mark::Line { .. } | Mark::Area { .. }) {
+        if matches!(
+            layer.mark,
+            Mark::Line { .. } | Mark::Area { .. } | Mark::Point { .. }
+        ) {
             for (index, x, y) in values {
                 let p = map(x, y);
                 self.push_hit(
@@ -536,8 +605,9 @@ impl RetainedSurfaceModel for ChartModel {
         _changes: RetainedSurfaceChanges,
     ) -> Result<RetainedSurfaceOutput, String> {
         match self.prepare(input) {
-            Ok((output, hits, diagnostics)) => {
+            Ok((output, hits, hit_x_order, diagnostics)) => {
                 self.hits = hits;
+                self.hit_x_order = hit_x_order;
                 self.diagnostics = diagnostics;
                 Ok(output)
             }
@@ -554,13 +624,15 @@ impl RetainedSurfaceModel for ChartModel {
                 self.renderer_generation = self.renderer_generation.saturating_add(1)
             }
             RetainedSurfaceLifecycle::Detached | RetainedSurfaceLifecycle::Destroyed => {
-                self.hits.clear()
+                self.hits.clear();
+                self.hit_x_order.clear();
             }
             _ => {}
         }
     }
     fn retained_bytes(&self) -> usize {
         self.hits.capacity() * std::mem::size_of::<ChartHit>()
+            + self.hit_x_order.capacity() * std::mem::size_of::<usize>()
     }
 }
 
@@ -571,7 +643,7 @@ pub struct ChartView {
 impl ChartView {
     pub fn new(model: ChartModel) -> Result<Self, ChartError> {
         let limits = RetainedSurfaceLimits {
-            max_retained_bytes: model.limits.max_steady_bytes.min(64 * 1024 * 1024),
+            max_retained_bytes: model.limits.max_steady_bytes,
             ..RetainedSurfaceLimits::default()
         };
         Ok(Self {
@@ -649,6 +721,9 @@ fn distance(rect: Rect, point: Point) -> f32 {
         .clamp(rect.origin.y, rect.origin.y + rect.size.height);
     (point.x - x).hypot(point.y - y)
 }
+fn hit_center_x(hit: &ChartHit) -> f32 {
+    hit.bounds.origin.x + hit.bounds.size.width / 2.0
+}
 fn stroke_polyline(points: &[Point], width: f32) -> Vec<Point> {
     let mut out = Vec::with_capacity(points.len().saturating_sub(1) * 6);
     for pair in points.windows(2) {
@@ -679,6 +754,68 @@ fn stroke_polyline(points: &[Point], width: f32) -> Vec<Point> {
         out.extend([a, b, c, c, b, d]);
     }
     out
+}
+
+fn area_triangles(points: &[Point], baseline: f32) -> Vec<Point> {
+    let mut triangles = Vec::with_capacity(points.len().saturating_sub(1) * 6);
+    for pair in points.windows(2) {
+        triangles.extend([
+            pair[0],
+            Point {
+                x: pair[0].x,
+                y: baseline,
+            },
+            pair[1],
+            pair[1],
+            Point {
+                x: pair[0].x,
+                y: baseline,
+            },
+            Point {
+                x: pair[1].x,
+                y: baseline,
+            },
+        ]);
+    }
+    triangles
+}
+
+/// Bucket reduction preserves both endpoints and the ordered min/max extrema
+/// in each bucket. It operates on mapped coordinates so work follows pixels.
+fn reduce_extrema(points: &[Point], max_points: usize) -> Vec<Point> {
+    if points.len() <= max_points || max_points < 4 {
+        return points.to_vec();
+    }
+    let interior = &points[1..points.len() - 1];
+    let buckets = (max_points - 2) / 2;
+    let width = interior.len().div_ceil(buckets.max(1));
+    let mut result = Vec::with_capacity(max_points + 2);
+    result.push(points[0]);
+    for bucket in interior.chunks(width.max(1)) {
+        let min = bucket
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.y.total_cmp(&b.y))
+            .map(|(index, point)| (index, *point))
+            .unwrap();
+        let max = bucket
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.y.total_cmp(&b.y))
+            .map(|(index, point)| (index, *point))
+            .unwrap();
+        if min.0 <= max.0 {
+            result.push(min.1);
+            if min.0 != max.0 {
+                result.push(max.1);
+            }
+        } else {
+            result.push(max.1);
+            result.push(min.1);
+        }
+    }
+    result.push(*points.last().unwrap());
+    result
 }
 fn path_command(
     triangles: Vec<Point>,
@@ -863,5 +1000,21 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, PaintCommand::Fill { .. }))
         );
+    }
+
+    #[test]
+    fn pixel_reduction_preserves_endpoints_and_bucket_extrema() {
+        let mut points: Vec<Point> = (0..10_000)
+            .map(|index| Point {
+                x: index as f32,
+                y: (index % 11) as f32,
+            })
+            .collect();
+        points[5_000].y = 10_000.0;
+        let reduced = reduce_extrema(&points, 400);
+        assert_eq!(reduced.first(), points.first());
+        assert_eq!(reduced.last(), points.last());
+        assert!(reduced.iter().any(|point| point.y == 10_000.0));
+        assert!(reduced.len() <= 402);
     }
 }
