@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use twinkle_charts::{
-    ChartData, ChartEvent, ChartInputBindings, ChartLimits, ChartModel, ChartState, ChartView,
-    Column, DataValue, Dataset, DatasetId, FieldRef, PanZoomPolicy, Recipes, RowKey,
-    ViewportCommand,
+    ChartData, ChartEvent, ChartInputBindings, ChartLimits, ChartModel, ChartState, ChartTable,
+    ChartTableEvent, ChartView, Column, DataValue, Dataset, DatasetId, FieldRef, PanZoomPolicy,
+    Recipes, RowKey, ViewportCommand,
 };
 use twinkle_testkit::{Scenario, Selector};
 use twinkle_ui::{
@@ -21,6 +21,7 @@ enum Message {
     Drag(DragGesture),
     Wheel(WheelGesture),
     Scroll(f32),
+    Table(ChartTableEvent),
 }
 
 fn pointer(point: Point) -> Message {
@@ -142,6 +143,7 @@ impl Application for ChartScenarioApp {
                 });
             }
             Message::Scroll(_) => {}
+            Message::Table(_) => {}
         }
     }
 
@@ -202,6 +204,72 @@ impl Application for NestedScrollApp {
                     )
                     .child(Spacer::new().height(400.0)),
             )
+    }
+}
+
+struct TableScenarioApp {
+    table: ChartTable,
+    offset: usize,
+    inspected: Option<RowKey>,
+}
+
+impl TableScenarioApp {
+    fn new() -> Self {
+        let limits = ChartLimits {
+            max_visible_table_rows: 2,
+            ..ChartLimits::default()
+        };
+        let data = Arc::new(
+            ChartData::new(
+                9,
+                vec![
+                    Dataset::new(
+                        DatasetId::from("table"),
+                        (0..5)
+                            .map(|index| RowKey::from(format!("r{index}")))
+                            .collect::<Vec<_>>(),
+                        vec![
+                            Column::new(
+                                "value",
+                                (0..5)
+                                    .map(|index| DataValue::Number(index as f64))
+                                    .collect::<Vec<_>>(),
+                            )
+                            .with_unit("ms"),
+                        ],
+                    )
+                    .unwrap(),
+                ],
+                &limits,
+            )
+            .unwrap(),
+        );
+        Self {
+            table: ChartTable::new(data, limits),
+            offset: 0,
+            inspected: None,
+        }
+    }
+}
+
+impl Application for TableScenarioApp {
+    type Message = Message;
+
+    fn update(&mut self, message: Message) {
+        if let Message::Table(event) = message {
+            match event {
+                ChartTableEvent::Page { offset, .. } => self.offset = offset,
+                ChartTableEvent::Inspect { row, .. } => self.inspected = Some(row),
+                ChartTableEvent::SetHiddenSeriesIncluded(_) => {}
+            }
+        }
+    }
+
+    fn view(&self, _: ViewContext) -> impl twinkle_ui::View<Message> {
+        let page = self.table.page("table", self.offset).unwrap();
+        self.table
+            .element(&page, "scenario-table", Message::Table)
+            .into_element()
     }
 }
 
@@ -268,4 +336,29 @@ fn testkit_preserves_nested_scroll_when_chart_has_no_wheel_binding() {
     let mut scenario = Scenario::new(NestedScrollApp::new(), 400, 200);
     scenario.pointer_scroll(&selector, 0.0, 40.0).unwrap();
     assert!(scenario.host().application().offset > 0.0);
+}
+
+#[test]
+fn testkit_pages_and_inspects_exact_table_rows_through_semantic_controls() {
+    let mut scenario = Scenario::new(TableScenarioApp::new(), 640, 300);
+    assert!(scenario.semantic_nodes().iter().any(|node| {
+        node.role == Some(SemanticRole::Grid)
+            && node.name.as_deref() == Some("Data table for table")
+    }));
+
+    scenario
+        .pointer_activate(&Selector::role_name(SemanticRole::Button, "Next page"))
+        .unwrap();
+    assert_eq!(scenario.host().application().offset, 2);
+    let third_row = Selector::role_name(SemanticRole::GridCell, "row 3 of 5 — value: 2 ms");
+    scenario.keyboard_activate(&third_row).unwrap();
+    assert_eq!(
+        scenario.host().application().inspected,
+        Some(RowKey::from("r2"))
+    );
+
+    scenario
+        .controller_activate(&Selector::role_name(SemanticRole::Button, "Previous page"))
+        .unwrap();
+    assert_eq!(scenario.host().application().offset, 0);
 }
