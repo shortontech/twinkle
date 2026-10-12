@@ -229,7 +229,10 @@ and revision without a JavaScript-side scan. Feeding that stable dataset/row
 identity back through `state.inspection` renders the same bounded exact-value
 inspector as passive plot-local paint and tooltip semantics; a removed identity
 clears it without reviving stale data. The compiling gallery is
-`crates/twinkle-jsx-runtime/examples/charts.tsx`.
+`crates/twinkle-jsx-runtime/examples/charts.tsx`; it instantiates every P0 recipe
+and required grouped/stacked/normalized/horizontal variant plus a layered custom
+composition. The TypeScript gate and native admission matrix cover the same
+surface, so the gallery cannot silently drift into type-only examples.
 
 Primitive JSX `width`/`height` patches fork the accepted retained chart authority,
 reprepare only the bounds-dependent closure, and publish atomically. Data/spec,

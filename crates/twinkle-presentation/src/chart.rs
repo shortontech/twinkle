@@ -1436,4 +1436,50 @@ mod tests {
                 .all(|semantic| semantic.id.as_str() != "chart/inspection")
         );
     }
+
+    #[test]
+    fn jsx_recipe_surface_admits_every_p0_family_and_variant() {
+        let recipes = [
+            json!({"family":"line","title":"Line","dataset":"sales","x":"month","y":"revenue","series":"region"}),
+            json!({"family":"area","title":"Area","dataset":"sales","x":"month","y":"revenue"}),
+            json!({"family":"stacked-area","title":"Stacked area","dataset":"sales","x":"month","series":"region","value":"revenue"}),
+            json!({"family":"stacked-area","title":"Normalized area","dataset":"sales","x":"month","series":"region","value":"revenue","normalized":true}),
+            json!({"family":"scatter","title":"Scatter","dataset":"sales","x":"orders","y":"revenue"}),
+            json!({"family":"bubble","title":"Bubble","dataset":"sales","x":"orders","y":"revenue","size":"orders"}),
+            json!({"family":"bar","title":"Bar","dataset":"sales","category":"month","value":"revenue"}),
+            json!({"family":"horizontal-bar","title":"Horizontal bar","dataset":"sales","category":"month","value":"revenue"}),
+            json!({"family":"grouped-bar","title":"Grouped bar","dataset":"sales","category":"month","series":"region","value":"revenue"}),
+            json!({"family":"grouped-horizontal-bar","title":"Grouped horizontal bar","dataset":"sales","category":"month","series":"region","value":"revenue"}),
+            json!({"family":"stacked-bar","title":"Stacked bar","dataset":"sales","category":"month","series":"region","value":"revenue"}),
+            json!({"family":"stacked-bar","title":"Normalized stacked bar","dataset":"sales","category":"month","series":"region","value":"revenue","normalized":true}),
+            json!({"family":"stacked-horizontal-bar","title":"Stacked horizontal bar","dataset":"sales","category":"month","series":"region","value":"revenue"}),
+            json!({"family":"stacked-horizontal-bar","title":"Normalized stacked horizontal bar","dataset":"sales","category":"month","series":"region","value":"revenue","normalized":true}),
+            json!({"family":"pie","title":"Pie","dataset":"sales","category":"region","value":"revenue"}),
+            json!({"family":"donut","title":"Donut","dataset":"sales","category":"region","value":"revenue","innerRadius":0.55}),
+            json!({"family":"histogram","title":"Histogram","dataset":"sales","value":"orders","start":0,"end":16,"bins":4}),
+            json!({"family":"heatmap","title":"Heatmap","dataset":"sales","x":"month","y":"orders","color":"revenue"}),
+            json!({"family":"sparkline","title":"Sparkline","dataset":"sales","x":"month","y":"revenue"}),
+        ];
+        for recipe in recipes {
+            let family = recipe["family"].as_str().unwrap().to_owned();
+            let mut value = declaration();
+            value["data"]["datasets"][0]["columns"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":"orders","type":"number","values":[3,8,5,12]}));
+            value["spec"] = recipe;
+            let chart = ChartDeclaration::parse(&value, None)
+                .unwrap_or_else(|error| panic!("{family} JSX recipe failed admission: {error}"));
+            assert!(!chart.snapshot.output.paint.is_empty(), "{family}");
+            assert!(
+                chart
+                    .snapshot
+                    .output
+                    .semantics
+                    .iter()
+                    .any(|semantic| { semantic.role == SemanticRole::GraphicalCustomControl }),
+                "{family}"
+            );
+        }
+    }
 }

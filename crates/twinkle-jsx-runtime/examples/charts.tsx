@@ -44,11 +44,24 @@ function ChartGallery() {
   };
   return <Column>
     <Chart {...common} id="trend" spec={{family:"line",title:"Revenue trend",dataset:"sales",x:"month",y:"revenue",series:"region"}} onToggleSeries={toggle} />
+    <Chart {...common} id="area-simple" spec={{family:"area",title:"Revenue area",dataset:"sales",x:"month",y:"revenue"}} />
     <Chart {...common} id="area" spec={{family:"stacked-area",title:"Revenue area",dataset:"sales",x:"month",series:"region",value:"revenue"}} onToggleSeries={toggle} />
+    <Chart {...common} id="area-normalized" spec={{family:"stacked-area",title:"Normalized revenue area",dataset:"sales",x:"month",series:"region",value:"revenue",normalized:true}} onToggleSeries={toggle} />
+    <Chart {...common} id="scatter" spec={{family:"scatter",title:"Orders versus revenue",dataset:"sales",x:"orders",y:"revenue"}} />
     <Chart {...common} id="bars" spec={{family:"grouped-bar",title:"Revenue by region",dataset:"sales",category:"month",series:"region",value:"revenue"}} onToggleSeries={toggle} />
+    <Chart {...common} id="bar" spec={{family:"bar",title:"Revenue bars",dataset:"sales",category:"month",value:"revenue"}} />
+    <Chart {...common} id="bar-horizontal" spec={{family:"horizontal-bar",title:"Horizontal revenue bars",dataset:"sales",category:"month",value:"revenue"}} />
+    <Chart {...common} id="bars-grouped-horizontal" spec={{family:"grouped-horizontal-bar",title:"Horizontal revenue by region",dataset:"sales",category:"month",series:"region",value:"revenue"}} onToggleSeries={toggle} />
+    <Chart {...common} id="bars-stacked" spec={{family:"stacked-bar",title:"Stacked revenue",dataset:"sales",category:"month",series:"region",value:"revenue"}} onToggleSeries={toggle} />
+    <Chart {...common} id="bars-stacked-normalized" spec={{family:"stacked-bar",title:"Normalized stacked revenue",dataset:"sales",category:"month",series:"region",value:"revenue",normalized:true}} onToggleSeries={toggle} />
+    <Chart {...common} id="bars-stacked-horizontal" spec={{family:"stacked-horizontal-bar",title:"Horizontal stacked revenue",dataset:"sales",category:"month",series:"region",value:"revenue"}} onToggleSeries={toggle} />
+    <Chart {...common} id="bars-stacked-horizontal-normalized" spec={{family:"stacked-horizontal-bar",title:"Normalized horizontal stacked revenue",dataset:"sales",category:"month",series:"region",value:"revenue",normalized:true}} onToggleSeries={toggle} />
     <Chart {...common} id="bubble" spec={{family:"bubble",title:"Orders and revenue",dataset:"sales",x:"orders",y:"revenue",size:"orders"}} />
+    <Chart {...common} id="pie" spec={{family:"pie",title:"Revenue share",dataset:"sales",category:"region",value:"revenue"}} />
     <Chart {...common} id="share" spec={{family:"donut",title:"Revenue share",dataset:"sales",category:"region",value:"revenue",innerRadius:0.55}} />
     <Chart {...common} id="distribution" spec={{family:"histogram",title:"Order distribution",dataset:"sales",value:"orders",start:0,end:16,bins:4}} />
+    <Chart {...common} id="heatmap" spec={{family:"heatmap",title:"Revenue heatmap",dataset:"sales",x:"month",y:"orders",color:"revenue"}} />
+    <Chart {...common} id="sparkline" spec={{family:"sparkline",title:"Revenue sparkline",dataset:"sales",x:"month",y:"revenue"}} />
     <Chart {...common} id="composed" spec={{
       family:"custom", title:"Revenue composition", dataset:"sales",
       scales:[{name:"x",kind:"linear"},{name:"y",kind:"linear",unit:"USD"},{name:"series",kind:"color"}],
