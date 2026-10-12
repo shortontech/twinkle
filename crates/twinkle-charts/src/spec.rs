@@ -382,6 +382,14 @@ impl ChartSpec {
                 });
             }
         }
+        for legend in &self.legends {
+            if !scale_names.contains(legend.scale.as_ref()) {
+                return Err(ChartError::invalid(
+                    crate::ChartStage::Validate,
+                    format!("legend references unknown scale `{}`", legend.scale),
+                ));
+            }
+        }
         let label_bytes = self.title.len()
             + self.summary.len()
             + self

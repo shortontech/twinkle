@@ -12,7 +12,7 @@ use twinkle_ui::{
 
 use crate::{
     Channel, ChartData, ChartDiagnostics, ChartError, ChartEvent, ChartLimits, ChartSpec,
-    ChartTheme, DataValue, Encoding, Mark,
+    ChartState, ChartTheme, DataValue, Encoding, Mark,
 };
 
 /// Accepted spatial-index entry retaining stable source identity.
@@ -32,6 +32,7 @@ pub struct ChartModel {
     data: Arc<ChartData>,
     limits: ChartLimits,
     theme: ChartTheme,
+    state: ChartState,
     diagnostics: ChartDiagnostics,
     hits: Vec<ChartHit>,
     hit_x_order: Vec<usize>,
@@ -52,6 +53,7 @@ impl ChartModel {
             data,
             limits,
             theme,
+            state: ChartState::default(),
             diagnostics: ChartDiagnostics::default(),
             hits: Vec::new(),
             hit_x_order: Vec::new(),
@@ -62,6 +64,10 @@ impl ChartModel {
         theme.validate()?;
         self.theme = theme;
         Ok(self)
+    }
+    pub fn with_state(mut self, state: ChartState) -> Self {
+        self.state = state;
+        self
     }
     pub fn replace(
         &mut self,
@@ -319,7 +325,19 @@ impl ChartModel {
             .transpose()?;
         let x_coordinates = column_coordinates(x_column);
         let y_coordinates = column_coordinates(y_column);
-        let values: Vec<(usize, f64, f64)> = x_column
+        let series_column = channel(&layer.encodings, Channel::Series)
+            .and_then(|encoding| dataset.column(&encoding.field.column));
+        let row_visible = |index: usize| {
+            let Some(visible) = &self.state.visible_series else {
+                return true;
+            };
+            series_column
+                .map(|column| {
+                    visible.contains(&Arc::<str>::from(format_data_value(&column.values[index])))
+                })
+                .unwrap_or(true)
+        };
+        let all_values: Vec<(usize, f64, f64)> = x_column
             .values
             .iter()
             .zip(y_column.values.iter())
@@ -330,16 +348,34 @@ impl ChartModel {
                     .map(|(x, y)| (index, x, y))
             })
             .collect();
-        if values.is_empty() {
+        if layer_index == 0 {
+            // Keep controls available when controlled state hides every series.
+            self.prepare_legends(plot, series_column, output)?;
+        }
+        if all_values.is_empty() {
             return Ok(());
         }
-        let mut x_domain = extent(values.iter().map(|(_, x, _)| *x));
-        let mut y_domain = extent(values.iter().map(|(_, _, y)| *y).chain(
+        let values: Vec<(usize, f64, f64)> = all_values
+            .iter()
+            .copied()
+            .filter(|(index, _, _)| row_visible(*index))
+            .collect();
+        let domain_values = match self.spec.visibility_domain {
+            crate::VisibilityDomainPolicy::Original => &all_values,
+            crate::VisibilityDomainPolicy::VisibleSeries if values.is_empty() => &all_values,
+            crate::VisibilityDomainPolicy::VisibleSeries => &values,
+        };
+        let mut x_domain = extent(domain_values.iter().map(|(_, x, _)| *x));
+        let mut y_domain = extent(domain_values.iter().map(|(_, _, y)| *y).chain(
             y2_column.into_iter().flat_map(|column| {
                 column
                     .values
                     .iter()
                     .enumerate()
+                    .filter(|(index, _)| {
+                        self.spec.visibility_domain == crate::VisibilityDomainPolicy::Original
+                            || row_visible(*index)
+                    })
                     .filter_map(|(index, value)| coordinate(value, index))
             }),
         ));
@@ -423,7 +459,7 @@ impl ChartModel {
         if layer_index == 0 {
             self.prepare_guides(plot, x_domain, y_domain, x_scale, y_scale, output);
         }
-        let series_groups = series_groups(dataset, &layer.encodings);
+        let series_groups = series_groups(dataset, &layer.encodings, &self.state);
         let color = self.theme.series_cue(layer_index).color;
         match &layer.mark {
             Mark::Line {
@@ -658,8 +694,6 @@ impl ChartModel {
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
                     .max(1);
-                let series_column = channel(&layer.encodings, Channel::Series)
-                    .and_then(|encoding| dataset.column(&encoding.field.column));
                 let series_coordinates = series_column.map(column_coordinates);
                 let series_count = series_coordinates.as_ref().map_or(1, |coordinates| {
                     coordinates
@@ -729,6 +763,105 @@ impl ChartModel {
                     hits,
                 );
             }
+        }
+        Ok(())
+    }
+
+    fn prepare_legends(
+        &self,
+        plot: Rect,
+        series_column: Option<&crate::Column>,
+        output: &mut RetainedSurfaceOutput,
+    ) -> Result<(), ChartError> {
+        if self.spec.legends.is_empty() {
+            return Ok(());
+        }
+        let Some(column) = series_column else {
+            return Ok(());
+        };
+        let mut labels = Vec::<Arc<str>>::new();
+        for value in column.values.iter() {
+            let label = Arc::<str>::from(format_data_value(value));
+            if !labels.contains(&label) {
+                labels.push(label);
+            }
+        }
+        if labels.len() > self.limits.max_series {
+            return Err(ChartError::Limit {
+                resource: "series",
+                actual: labels.len(),
+                limit: self.limits.max_series,
+            });
+        }
+        let row_height = 20.0;
+        let width = plot.size.width.min(130.0);
+        let toggleable = self.spec.legends.iter().any(|legend| legend.toggleable);
+        for (index, label) in labels.into_iter().enumerate() {
+            let y = plot.origin.y + index as f32 * row_height;
+            if y + row_height > plot.origin.y + plot.size.height {
+                break;
+            }
+            let bounds = Rect::new(
+                plot.origin.x + plot.size.width - width,
+                y,
+                width,
+                row_height,
+            );
+            let visible = self
+                .state
+                .visible_series
+                .as_ref()
+                .is_none_or(|series| series.contains(&label));
+            output.paint.push(PaintCommand::RoundedFill {
+                rect: Rect::new(bounds.origin.x + 2.0, y + 5.0, 10.0, 10.0),
+                color: if visible {
+                    self.theme.series_cue(index).color
+                } else {
+                    self.theme.missing
+                },
+                radius: 2.0,
+            });
+            output.paint.push(PaintCommand::Text {
+                bounds: Rect::new(
+                    bounds.origin.x + 16.0,
+                    y,
+                    (width - 16.0).max(0.0),
+                    row_height,
+                ),
+                text: label.to_string(),
+                scale: 0.75,
+                color: self.theme.foreground,
+                align: twinkle_ui::TextAlign::Start,
+                bold: false,
+                wrap: false,
+            });
+            let id = UiId::from(format!("chart/legend/{label}"));
+            if toggleable {
+                output.interactions.push(RetainedSurfaceInteraction {
+                    id: id.clone(),
+                    bounds,
+                    action: ActionKind::Activate,
+                    focusable: true,
+                });
+            }
+            output
+                .semantics
+                .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                    id,
+                    bounds,
+                    role: if toggleable {
+                        SemanticRole::Button
+                    } else {
+                        SemanticRole::Text
+                    },
+                    label: Some(format!("{label} series")),
+                    state: Some(if visible {
+                        "visible".into()
+                    } else {
+                        "hidden".into()
+                    }),
+                    protected: false,
+                });
         }
         Ok(())
     }
@@ -972,6 +1105,16 @@ impl ChartModel {
                     dataset: value.field.dataset.to_string(),
                     column: value.field.column.to_string(),
                 })?;
+        if column.values.iter().any(
+            |value| matches!(value, DataValue::Number(number) if !number.is_finite() || *number < 0.0),
+        ) {
+            return Err(ChartError::invalid(
+                crate::ChartStage::Transform,
+                "pie and donut values must be finite and nonnegative",
+            ));
+        }
+        let category_column = channel(&layer.encodings, Channel::X)
+            .and_then(|encoding| dataset.column(&encoding.field.column));
         let values: Vec<(usize, f64)> = column
             .values
             .iter()
@@ -996,6 +1139,9 @@ impl ChartModel {
         let mut start = -std::f32::consts::FRAC_PI_2;
         for (slice, (row, value)) in values.into_iter().enumerate() {
             let end = start + std::f32::consts::TAU * (value / total) as f32;
+            let category = category_column
+                .map(|column| format_data_value(&column.values[row]))
+                .unwrap_or_else(|| dataset.keys()[row].0.to_string());
             let steps = (((end - start).abs() * radius / 5.0).ceil() as usize).clamp(2, 128);
             let mut triangles = Vec::with_capacity(steps * 6);
             for step in 0..steps {
@@ -1028,6 +1174,16 @@ impl ChartModel {
                 self.theme.series_cue(layer_index + slice).color,
                 steps + 1,
             )?);
+            let middle = (start + end) / 2.0;
+            let label_radius = inner + (radius - inner) * 0.58;
+            annotation_label(
+                output,
+                plot,
+                &format!("{category}: {value} ({:.1}%)", value / total * 100.0),
+                center.x + label_radius * middle.cos(),
+                center.y + label_radius * middle.sin(),
+                self.theme.foreground,
+            );
             self.push_hit(
                 dataset,
                 row,
@@ -1039,6 +1195,9 @@ impl ChartModel {
                 ),
                 hits,
             );
+            if let Some(hit) = hits.last_mut() {
+                hit.series = Some(Arc::from(category));
+            }
             start = end;
         }
         Ok(())
@@ -1154,14 +1313,42 @@ impl ChartView {
         drop(old);
         Ok(self.host.snapshot())
     }
+    pub fn update_state(
+        &mut self,
+        state: ChartState,
+        input: RetainedSurfaceInput,
+    ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
+        let mut candidate = self.host.begin_candidate();
+        candidate.model_mut().state = state;
+        candidate
+            .update(input)
+            .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+        let old = self.host.finalize_candidate(candidate);
+        drop(old);
+        Ok(self.host.snapshot())
+    }
     pub fn element<Message: Clone>(
         &self,
         id: impl Into<UiId>,
         mut message: impl FnMut(ChartEvent) -> Message,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
+        let visible = self.host.model().state.visible_series.clone();
         self.host
             .snapshot()
-            .try_element(id, |_| message(ChartEvent::TableMode(true)))
+            .try_element(id, |interaction| {
+                if let Some(label) = interaction.id.as_str().strip_prefix("chart/legend/") {
+                    let label: Arc<str> = Arc::from(label);
+                    let currently_visible = visible
+                        .as_ref()
+                        .is_none_or(|series| series.contains(&label));
+                    message(ChartEvent::ToggleSeries {
+                        series: label,
+                        visible: !currently_visible,
+                    })
+                } else {
+                    message(ChartEvent::TableMode(true))
+                }
+            })
             .map_err(|error| ChartError::invalid(crate::ChartStage::Semantics, error))
     }
     pub fn detach(&mut self) {
@@ -1204,6 +1391,16 @@ fn format_tick(value: f64, unit: Option<&str>) -> String {
         text.trim_end_matches('0').trim_end_matches('.').to_owned()
     };
     unit.map_or(value.clone(), |unit| format!("{value} {unit}"))
+}
+
+fn format_data_value(value: &DataValue) -> String {
+    match value {
+        DataValue::Null => "Missing".into(),
+        DataValue::Number(value) => value.to_string(),
+        DataValue::Timestamp(value) => value.to_string(),
+        DataValue::Category(value) => value.to_string(),
+        DataValue::Boolean(value) => value.to_string(),
+    }
 }
 
 fn annotation_label(
@@ -1252,7 +1449,11 @@ fn column_coordinates(column: &crate::Column) -> Vec<Option<f64>> {
         })
         .collect()
 }
-fn series_groups(dataset: &crate::Dataset, encodings: &[Encoding]) -> Vec<Vec<usize>> {
+fn series_groups(
+    dataset: &crate::Dataset,
+    encodings: &[Encoding],
+    state: &ChartState,
+) -> Vec<Vec<usize>> {
     let Some(column) = channel(encodings, Channel::Series)
         .and_then(|encoding| dataset.column(&encoding.field.column))
     else {
@@ -1261,6 +1462,14 @@ fn series_groups(dataset: &crate::Dataset, encodings: &[Encoding]) -> Vec<Vec<us
     let mut positions = BTreeMap::<String, usize>::new();
     let mut groups: Vec<Vec<usize>> = Vec::new();
     for (index, value) in column.values.iter().enumerate() {
+        let label = Arc::<str>::from(format_data_value(value));
+        if state
+            .visible_series
+            .as_ref()
+            .is_some_and(|visible| !visible.contains(&label))
+        {
+            continue;
+        }
         let key = match value {
             DataValue::Null => "null".to_owned(),
             DataValue::Number(value) => format!("n:{:016x}", value.to_bits()),
@@ -1964,5 +2173,187 @@ mod tests {
         assert_eq!(view.snapshot().output.paint, paint);
         assert_eq!(view.hits(), hits);
         assert_eq!(view.snapshot().input.unwrap().revisions.content, 7);
+    }
+
+    #[test]
+    fn pie_labels_exact_percentages_and_rejects_negative_values() {
+        let limits = ChartLimits::default();
+        let make_data = |values: Vec<DataValue>| {
+            let dataset = Dataset::new(
+                DatasetId::from("d"),
+                vec![RowKey::from("a"), RowKey::from("b")],
+                vec![
+                    Column::new(
+                        "category",
+                        vec![
+                            DataValue::Category(Arc::from("Alpha")),
+                            DataValue::Category(Arc::from("Beta")),
+                        ],
+                    ),
+                    Column::new("value", values),
+                ],
+            )
+            .unwrap();
+            Arc::new(ChartData::new(14, vec![dataset], &limits).unwrap())
+        };
+        let spec = Arc::new(crate::Recipes::pie(
+            "Share",
+            FieldRef::new("d", "category"),
+            FieldRef::new("d", "value"),
+        ));
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 320.0, 220.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 14,
+                ..Default::default()
+            },
+        );
+        let mut view = ChartView::new(
+            ChartModel::new(
+                spec.clone(),
+                make_data(vec![DataValue::Number(1.0), DataValue::Number(3.0)]),
+                limits.clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let snapshot = view.update(input).unwrap();
+        assert!(snapshot.output.paint.iter().any(|command| matches!(command, PaintCommand::Text { text, .. } if text == "Alpha: 1 (25.0%)")));
+        assert_eq!(view.hits()[0].series.as_deref(), Some("Alpha"));
+        let mut invalid = ChartView::new(
+            ChartModel::new(
+                spec,
+                make_data(vec![DataValue::Number(-1.0), DataValue::Number(3.0)]),
+                limits,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(invalid.update(input).is_err());
+    }
+
+    #[test]
+    fn controlled_legends_filter_series_without_losing_controls_or_original_domain() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            (0..4)
+                .map(|index| RowKey::from(format!("r{index}")))
+                .collect::<Vec<_>>(),
+            vec![
+                Column::new(
+                    "x",
+                    vec![0.0, 1.0, 0.0, 1.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "series",
+                    ["one", "one", "two", "two"]
+                        .into_iter()
+                        .map(|value| DataValue::Category(Arc::from(value)))
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "value",
+                    vec![1.0, 2.0, 50.0, 100.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(15, vec![dataset], &limits).unwrap());
+        let mut spec = Recipes::line(
+            "Controlled",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "value"),
+        );
+        spec.layers[0].encodings.push(crate::Encoding {
+            channel: Channel::Series,
+            field: FieldRef::new("d", "series"),
+            scale: Some(Arc::from("series")),
+        });
+        spec.scales.push(crate::Scale {
+            name: Arc::from("series"),
+            kind: crate::ScaleKind::Color,
+            domain: None,
+            clamp: false,
+            reversed: false,
+            unit: None,
+        });
+        spec.legends.push(crate::Legend {
+            scale: Arc::from("series"),
+            title: Some(Arc::from("Series")),
+            toggleable: true,
+        });
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        let input = |content| {
+            RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 400.0, 240.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content,
+                    ..Default::default()
+                },
+            )
+        };
+        let initial = view.update(input(15)).unwrap().clone();
+        let first_geometry = initial
+            .output
+            .paint
+            .iter()
+            .find_map(|command| match command {
+                PaintCommand::Path { geometry, .. } => Some(geometry.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            initial
+                .output
+                .paint
+                .iter()
+                .filter(|command| matches!(command, PaintCommand::Path { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(initial.output.interactions.len(), 3);
+
+        let one = ChartState {
+            visible_series: Some([Arc::from("one")].into_iter().collect()),
+            ..Default::default()
+        };
+        let filtered = view.update_state(one, input(16)).unwrap();
+        let geometries = filtered
+            .output
+            .paint
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Path { geometry, .. } => Some(geometry),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(geometries, vec![&first_geometry]);
+        assert_eq!(view.hits().len(), 2);
+
+        let none = ChartState {
+            visible_series: Some(Default::default()),
+            ..Default::default()
+        };
+        let hidden = view.update_state(none, input(17)).unwrap();
+        assert!(
+            !hidden
+                .output
+                .paint
+                .iter()
+                .any(|command| matches!(command, PaintCommand::Path { .. }))
+        );
+        assert_eq!(hidden.output.interactions.len(), 3);
+        assert_eq!(hidden.input.unwrap().revisions.content, 17);
+        assert_eq!(view.hits().len(), 0);
     }
 }
