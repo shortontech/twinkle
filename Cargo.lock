@@ -3953,6 +3953,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "twinkle-charts"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "twinkle-ui",
+]
+
+[[package]]
 name = "twinkle-input"
 version = "0.2.0"
 dependencies = [

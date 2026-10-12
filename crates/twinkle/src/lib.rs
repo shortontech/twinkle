@@ -166,7 +166,10 @@ pub(crate) use ui::PaintCommand;
 /// components or [`CustomPaint`]; platform presenters consume this module.
 #[allow(missing_docs)]
 pub mod backend {
-    pub use crate::ui::{PaintCommand, rounded_border_spans, rounded_coverage_spans};
+    pub use crate::ui::{
+        PaintCommand, PathFillRule, PathGeometry, PathGeometryKind, PathLineCap, PathLineJoin,
+        rounded_border_spans, rounded_coverage_spans,
+    };
 
     use std::{convert::Infallible, sync::Arc};
 

@@ -1,0 +1,17 @@
+[package]
+name = "twinkle-charts"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Bounded, composable native charts for Twinkle"
+
+[dependencies]
+twinkle-ui = { path = "../twinkle", version = "0.2.0" }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

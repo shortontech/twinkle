@@ -875,6 +875,181 @@ impl Tone {
     }
 }
 
+/// Winding policy recorded for a tessellated filled path.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum PathFillRule {
+    /// Alternating contour crossings fill and clear the path.
+    #[default]
+    EvenOdd,
+    /// Non-zero contour winding fills the path.
+    NonZero,
+}
+
+/// Shape used at the open end of a stroked path.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum PathLineCap {
+    #[default]
+    Butt,
+    Square,
+    Round,
+}
+
+/// Shape used where two stroked path segments meet.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum PathLineJoin {
+    #[default]
+    Miter,
+    Bevel,
+    Round,
+}
+
+/// The source operation that produced immutable path triangles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathGeometryKind {
+    Fill {
+        rule: PathFillRule,
+    },
+    Stroke {
+        width: f32,
+        join: PathLineJoin,
+        cap: PathLineCap,
+        miter_limit: f32,
+    },
+}
+
+/// Immutable bounded triangles shared by retained software and GPU painting.
+///
+/// Construction validates finite coordinates, triangle cardinality, declared
+/// bounds, source complexity, and tessellation tolerance. Higher-level geometry
+/// owners retain the original path if they need to tessellate it again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PathGeometry {
+    triangles: Arc<[Point]>,
+    bounds: Rect,
+    kind: PathGeometryKind,
+    tolerance: f32,
+    source_vertices: usize,
+}
+
+impl PathGeometry {
+    /// Hard renderer safety ceiling. Outer owners normally impose lower limits.
+    pub const MAX_TRIANGLE_VERTICES: usize = 3_000_000;
+
+    pub fn new(
+        triangles: impl Into<Arc<[Point]>>,
+        bounds: Rect,
+        kind: PathGeometryKind,
+        tolerance: f32,
+        source_vertices: usize,
+    ) -> Result<Self, String> {
+        let triangles = triangles.into();
+        if triangles.is_empty() || !triangles.len().is_multiple_of(3) {
+            return Err("path geometry requires complete triangles".into());
+        }
+        if triangles.len() > Self::MAX_TRIANGLE_VERTICES {
+            return Err("path geometry exceeds its renderer vertex limit".into());
+        }
+        if source_vertices == 0 || source_vertices > Self::MAX_TRIANGLE_VERTICES {
+            return Err("path geometry has invalid source complexity".into());
+        }
+        if !tolerance.is_finite() || tolerance <= 0.0 {
+            return Err("path tessellation tolerance must be finite and positive".into());
+        }
+        if !rect_is_finite_nonnegative(bounds) {
+            return Err("path bounds must be finite and non-negative".into());
+        }
+        match kind {
+            PathGeometryKind::Fill { .. } => {}
+            PathGeometryKind::Stroke {
+                width, miter_limit, ..
+            } if !width.is_finite()
+                || width <= 0.0
+                || !miter_limit.is_finite()
+                || miter_limit < 1.0 =>
+            {
+                return Err("path stroke metrics must be finite and positive".into());
+            }
+            PathGeometryKind::Stroke { .. } => {}
+        }
+        let epsilon = tolerance.max(f32::EPSILON);
+        if triangles.iter().any(|point| {
+            !point.x.is_finite()
+                || !point.y.is_finite()
+                || point.x < bounds.origin.x - epsilon
+                || point.y < bounds.origin.y - epsilon
+                || point.x > bounds.origin.x + bounds.size.width + epsilon
+                || point.y > bounds.origin.y + bounds.size.height + epsilon
+        }) {
+            return Err("path triangle escaped its declared bounds".into());
+        }
+        Ok(Self {
+            triangles,
+            bounds,
+            kind,
+            tolerance,
+            source_vertices,
+        })
+    }
+
+    pub fn triangles(&self) -> &[Point] {
+        &self.triangles
+    }
+
+    pub const fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    pub const fn kind(&self) -> PathGeometryKind {
+        self.kind
+    }
+
+    pub const fn tolerance(&self) -> f32 {
+        self.tolerance
+    }
+
+    pub const fn source_vertices(&self) -> usize {
+        self.source_vertices
+    }
+
+    pub fn owned_bytes(&self) -> usize {
+        self.triangles
+            .len()
+            .saturating_mul(std::mem::size_of::<Point>())
+    }
+
+    pub(crate) fn translated(&self, dx: f32, dy: f32) -> Self {
+        let triangles: Arc<[Point]> = self
+            .triangles
+            .iter()
+            .map(|point| Point {
+                x: point.x + dx,
+                y: point.y + dy,
+            })
+            .collect();
+        Self {
+            triangles,
+            bounds: Rect::new(
+                self.bounds.origin.x + dx,
+                self.bounds.origin.y + dy,
+                self.bounds.size.width,
+                self.bounds.size.height,
+            ),
+            kind: self.kind,
+            tolerance: self.tolerance,
+            source_vertices: self.source_vertices,
+        }
+    }
+}
+
+fn rect_is_finite_nonnegative(rect: Rect) -> bool {
+    rect.origin.x.is_finite()
+        && rect.origin.y.is_finite()
+        && rect.size.width.is_finite()
+        && rect.size.height.is_finite()
+        && rect.size.width >= 0.0
+        && rect.size.height >= 0.0
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaintCommand {
     /// Compositor material request. Renderers do not paint this command; a
@@ -921,6 +1096,11 @@ pub enum PaintCommand {
         rect: Rect,
         color: Color,
         width: f32,
+    },
+    /// General bounded fill/stroke geometry prepared into shared triangles.
+    Path {
+        geometry: Arc<PathGeometry>,
+        color: Color,
     },
     Text {
         bounds: Rect,
@@ -984,6 +1164,7 @@ pub(crate) fn assert_background_color_policy(identity: &str, commands: &[PaintCo
             | PaintCommand::RoundedStroke { .. }
             | PaintCommand::Stroke { .. }
             | PaintCommand::OverlayStroke { .. }
+            | PaintCommand::Path { .. }
             | PaintCommand::Text { .. }
             | PaintCommand::StyledText { .. }
             | PaintCommand::Image { .. }

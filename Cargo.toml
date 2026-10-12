@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/twinkle",
+    "crates/twinkle-charts",
     "crates/twinkle-input",
     "crates/twinkle-jsx-runtime",
     "crates/twinkle-macros",

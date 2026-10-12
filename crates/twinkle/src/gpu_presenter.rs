@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::backend::PaintCommand;
-use crate::{DamageRegion, GradientAxis, Rect, SoftwareRenderer};
+use crate::{DamageRegion, GradientAxis, Point, Rect, SoftwareRenderer};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use twinkle_render_assets::ProcessFontSystem;
 
@@ -1970,6 +1970,12 @@ fn paint_command_owned_bytes(command: &PaintCommand, scale: f32) -> usize {
                 .unwrap_or(image);
             cpu_bytes.saturating_add(selected.as_raw().len())
         }
+        PaintCommand::Path { geometry, .. } => geometry.owned_bytes().saturating_add(
+            geometry
+                .triangles()
+                .len()
+                .saturating_mul(std::mem::size_of::<Vertex>()),
+        ),
         PaintCommand::BackdropBlur { .. }
         | PaintCommand::Fill { .. }
         | PaintCommand::TopRoundedFill { .. }
@@ -2278,6 +2284,48 @@ impl Frame {
         );
     }
 
+    fn path(&mut self, points: &[Point], color: u32) {
+        if points.is_empty() {
+            return;
+        }
+        let clip = *self.clips.last().expect("frame clip");
+        let start = self.vertices.len() as u32;
+        self.vertices.extend(points.iter().map(|point| Vertex {
+            position: [
+                (point.x * self.scale / self.width as f32) * 2.0 - 1.0,
+                1.0 - (point.y * self.scale / self.height as f32) * 2.0,
+            ],
+            uv: [0.0, 0.0],
+            color: rgb(color),
+            half_size: [0.0; 2],
+            shape: [0.0; 2],
+        }));
+        let end = self.vertices.len() as u32;
+        let sx = (clip.origin.x * self.scale)
+            .floor()
+            .clamp(0.0, self.width as f32) as u32;
+        let sy = (clip.origin.y * self.scale)
+            .floor()
+            .clamp(0.0, self.height as f32) as u32;
+        let ex = ((clip.origin.x + clip.size.width) * self.scale)
+            .ceil()
+            .clamp(0.0, self.width as f32) as u32;
+        let ey = ((clip.origin.y + clip.size.height) * self.scale)
+            .ceil()
+            .clamp(0.0, self.height as f32) as u32;
+        if ex > sx && ey > sy {
+            self.draws.push(Draw {
+                start,
+                end,
+                scissor: (sx, sy, ex - sx, ey - sy),
+                texture: self.white.clone(),
+                kind: DrawKind::Textured,
+            });
+        } else {
+            self.vertices.truncate(start as usize);
+        }
+    }
+
     fn rounded(&mut self, rect: Rect, color: u32, radius: f32, top_only: bool) {
         if top_only {
             for (span, shaded) in
@@ -2395,6 +2443,9 @@ impl Frame {
                         ),
                         *color,
                     );
+                }
+                PaintCommand::Path { geometry, color } => {
+                    self.path(geometry.triangles(), *color);
                 }
                 PaintCommand::Text { bounds, .. } | PaintCommand::StyledText { bounds, .. } => {
                     if bounds.size.width > 0.0

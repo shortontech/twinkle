@@ -8263,6 +8263,9 @@ fn translate_paint_command(mut command: PaintCommand, translation: Point) -> Pai
         PaintCommand::Text { bounds, .. }
         | PaintCommand::StyledText { bounds, .. }
         | PaintCommand::Image { bounds, .. } => *bounds = translate_rect(*bounds, translation),
+        PaintCommand::Path { geometry, .. } => {
+            *geometry = Arc::new(geometry.translated(translation.x, translation.y));
+        }
         PaintCommand::PopClip => {}
     }
     command

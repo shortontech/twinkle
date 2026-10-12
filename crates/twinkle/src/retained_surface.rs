@@ -7,7 +7,7 @@
 //! [`crate::CustomPaint`] component, so it does not introduce another event
 //! loop, renderer, or focus authority.
 
-use std::{fmt, hash::Hasher, time::Duration};
+use std::{fmt, hash::Hasher, sync::Arc, time::Duration};
 
 use crate::{
     ActionKind, Component, CustomPaint, Layer, Point, Rect, SemanticRole, Size, UiId,
@@ -357,6 +357,9 @@ fn translate_command(mut command: PaintCommand, dx: f32, dy: f32) -> PaintComman
         PaintCommand::Text { bounds, .. }
         | PaintCommand::StyledText { bounds, .. }
         | PaintCommand::Image { bounds, .. } => translate(bounds),
+        PaintCommand::Path { geometry, .. } => {
+            *geometry = Arc::new(geometry.translated(dx, dy));
+        }
         PaintCommand::PushClip(_) | PaintCommand::PopClip => {}
     }
     command
@@ -704,6 +707,14 @@ fn output_bytes(output: &RetainedSurfaceOutput) -> usize {
                     + record.state.as_ref().map_or(0, String::capacity)
             })
             .sum::<usize>()
+        + output
+            .paint
+            .iter()
+            .map(|command| match command {
+                PaintCommand::Path { geometry, .. } => geometry.owned_bytes(),
+                _ => 0,
+            })
+            .sum::<usize>()
 }
 
 fn paint_bounds(command: &PaintCommand) -> Option<Rect> {
@@ -719,6 +730,7 @@ fn paint_bounds(command: &PaintCommand) -> Option<Rect> {
         PaintCommand::Text { bounds, .. }
         | PaintCommand::StyledText { bounds, .. }
         | PaintCommand::Image { bounds, .. } => Some(*bounds),
+        PaintCommand::Path { geometry, .. } => Some(geometry.bounds()),
         PaintCommand::BackdropBlur { .. } | PaintCommand::PushClip(_) | PaintCommand::PopClip => {
             None
         }

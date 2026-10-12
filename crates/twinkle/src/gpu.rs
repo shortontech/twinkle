@@ -86,7 +86,7 @@ pub(crate) fn record_image_fingerprint(bytes: usize, elapsed: std::time::Duratio
 }
 
 use crate::{
-    Color, GradientAxis, PaintCommand, Rect, StyledTextSpan, TextAlign, TextUnderlineStyle,
+    Color, GradientAxis, PaintCommand, Point, Rect, StyledTextSpan, TextAlign, TextUnderlineStyle,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -734,6 +734,9 @@ impl SoftwareRenderer {
                     clip,
                 );
             }
+            PaintCommand::Path { geometry, color } => {
+                self.path(geometry.triangles(), *color, clip);
+            }
             PaintCommand::Text { .. } => self.text(index, command, clip),
             PaintCommand::StyledText { .. } => self.styled_text(index, command, clip),
             PaintCommand::Image {
@@ -757,6 +760,72 @@ impl SoftwareRenderer {
                     clips.pop();
                 }
             }
+        }
+    }
+
+    fn path(&mut self, triangles: &[Point], color: Color, clip: Rect) {
+        let source = pixel(color);
+        if source.a == 0 {
+            return;
+        }
+        const SAMPLES: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
+        for triangle in triangles.chunks_exact(3) {
+            let points = [
+                Point {
+                    x: triangle[0].x * self.scale,
+                    y: triangle[0].y * self.scale,
+                },
+                Point {
+                    x: triangle[1].x * self.scale,
+                    y: triangle[1].y * self.scale,
+                },
+                Point {
+                    x: triangle[2].x * self.scale,
+                    y: triangle[2].y * self.scale,
+                },
+            ];
+            let edge = |a: Point, b: Point, p: Point| {
+                (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x)
+            };
+            let area = edge(points[0], points[1], points[2]);
+            if area.abs() <= f32::EPSILON {
+                continue;
+            }
+            let bounds = Rect::new(
+                points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min),
+                points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min),
+                points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max)
+                    - points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min),
+                points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max)
+                    - points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min),
+            );
+            let Some(bounds) = intersection(bounds, clip) else {
+                continue;
+            };
+            self.for_pixels(bounds, |renderer, x, y| {
+                let inside = SAMPLES
+                    .iter()
+                    .filter(|(ox, oy)| {
+                        let p = Point {
+                            x: x as f32 + ox,
+                            y: y as f32 + oy,
+                        };
+                        let edges = [
+                            edge(points[0], points[1], p),
+                            edge(points[1], points[2], p),
+                            edge(points[2], points[0], p),
+                        ];
+                        edges.iter().all(|value| *value >= 0.0)
+                            || edges.iter().all(|value| *value <= 0.0)
+                    })
+                    .count();
+                if inside != 0 {
+                    let mut covered = source;
+                    covered.a =
+                        (f32::from(source.a) * inside as f32 / SAMPLES.len() as f32).round() as u8;
+                    renderer.blend(x, y, covered);
+                }
+            });
         }
     }
 
@@ -1513,6 +1582,7 @@ pub(crate) fn command_bounds(command: &PaintCommand) -> Option<Rect> {
         | PaintCommand::Stroke { rect, .. }
         | PaintCommand::OverlayFill { rect, .. }
         | PaintCommand::OverlayStroke { rect, .. } => Some(*rect),
+        PaintCommand::Path { geometry, .. } => Some(geometry.bounds()),
         PaintCommand::Text { bounds, scale, .. } => Some(Rect::new(
             bounds.origin.x,
             bounds.origin.y,
@@ -1752,12 +1822,44 @@ fn px(value: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use twinkle_render_assets::{DependencyOwnerKind, dependency_owner_diagnostics};
 
     use super::{
-        PaintCommand, Pixel, Rect, SoftwareRenderer, TextAlign, bilinear_sample,
+        PaintCommand, Pixel, Point, Rect, SoftwareRenderer, TextAlign, bilinear_sample,
         command_intersects_clip,
     };
+    use crate::backend::{PathFillRule, PathGeometry, PathGeometryKind};
+
+    #[test]
+    fn shared_path_triangles_render_with_fractional_edge_coverage() {
+        let geometry = PathGeometry::new(
+            vec![
+                Point { x: 2.0, y: 2.0 },
+                Point { x: 14.0, y: 2.0 },
+                Point { x: 2.0, y: 14.0 },
+            ],
+            Rect::new(2.0, 2.0, 12.0, 12.0),
+            PathGeometryKind::Fill {
+                rule: PathFillRule::NonZero,
+            },
+            0.25,
+            3,
+        )
+        .unwrap();
+        let mut renderer = SoftwareRenderer::new_pixel_buffer(16, 16, 1.0);
+        renderer.render(&[PaintCommand::Path {
+            geometry: Arc::new(geometry),
+            color: 0xff0000,
+        }]);
+        assert_eq!(renderer.pixels()[3 * 16 + 3], Pixel::rgba(255, 0, 0, 255));
+        assert!(
+            renderer
+                .pixels()
+                .iter()
+                .any(|pixel| pixel.a > 0 && pixel.a < 255)
+        );
+    }
 
     #[test]
     fn image_scaling_bilinearly_filters_premultiplied_alpha() {

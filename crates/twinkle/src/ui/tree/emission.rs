@@ -130,6 +130,7 @@ fn custom_paint_bounds(command: &PaintCommand) -> Option<Rect> {
         PaintCommand::Text { bounds, .. }
         | PaintCommand::StyledText { bounds, .. }
         | PaintCommand::Image { bounds, .. } => Some(*bounds),
+        PaintCommand::Path { geometry, .. } => Some(geometry.bounds()),
         PaintCommand::OverlayFill { .. }
         | PaintCommand::OverlayStroke { .. }
         | PaintCommand::PushClip(_)
@@ -160,6 +161,9 @@ fn translate_custom_command(mut command: PaintCommand, origin: Point) -> PaintCo
         PaintCommand::Text { bounds, .. }
         | PaintCommand::StyledText { bounds, .. }
         | PaintCommand::Image { bounds, .. } => translate(bounds),
+        PaintCommand::Path { geometry, .. } => {
+            *geometry = Arc::new(geometry.translated(origin.x, origin.y));
+        }
         PaintCommand::OverlayFill { .. }
         | PaintCommand::OverlayStroke { .. }
         | PaintCommand::PushClip(_)
