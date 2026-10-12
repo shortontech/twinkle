@@ -213,6 +213,9 @@ crate API. It demonstrates hover inspection, keyboard/controller navigation,
 legend state, captured pan, wheel and button zoom, exact table mode, responsive
 containment, and bounded in-memory CSV/raster export. The base workbench does not
 acquire the chart dependency.
+The standalone Rust `dashboard` example prepares every P0 recipe and required
+orientation/stack/normalization variant plus a layered bar-and-line composition,
+then exercises the exact table and both export paths using only public APIs.
 
 With `twinkle-presentation/charts`, JSX `Chart` declarations use this same native
 engine. `onTableMode`, `onToggleSeries`, `onNavigate`, `onSelectDatum`,

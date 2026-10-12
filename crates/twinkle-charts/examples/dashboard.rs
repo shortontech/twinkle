@@ -167,13 +167,64 @@ fn dashboard_data(limits: &ChartLimits) -> Result<ChartData, twinkle_charts::Cha
 
 fn dashboard_specs() -> Vec<twinkle_charts::ChartSpec> {
     let field = |name| FieldRef::new("sales", name);
+    let mut combo = Recipes::bar("Revenue combo", field("month"), field("revenue"));
+    combo.layers.push(
+        Recipes::line("Revenue combo", field("month"), field("revenue"))
+            .layers
+            .remove(0),
+    );
     vec![
         Recipes::line("Revenue trend", field("month"), field("revenue")),
+        Recipes::area("Revenue area", field("month"), field("revenue")),
+        Recipes::stacked_area(
+            "Normalized revenue area",
+            field("month"),
+            field("region"),
+            field("revenue"),
+            true,
+        ),
+        Recipes::scatter("Orders versus revenue", field("orders"), field("revenue")),
+        Recipes::bar("Revenue bars", field("month"), field("revenue")),
+        Recipes::horizontal_bar("Horizontal revenue", field("month"), field("revenue")),
         Recipes::grouped_bar(
             "Revenue by month",
             field("month"),
             field("region"),
             field("revenue"),
+        ),
+        Recipes::grouped_horizontal_bar(
+            "Horizontal revenue by month",
+            field("month"),
+            field("region"),
+            field("revenue"),
+        ),
+        Recipes::stacked_bar(
+            "Stacked revenue",
+            field("month"),
+            field("region"),
+            field("revenue"),
+            false,
+        ),
+        Recipes::stacked_bar(
+            "Normalized stacked revenue",
+            field("month"),
+            field("region"),
+            field("revenue"),
+            true,
+        ),
+        Recipes::stacked_horizontal_bar(
+            "Horizontal stacked revenue",
+            field("month"),
+            field("region"),
+            field("revenue"),
+            false,
+        ),
+        Recipes::stacked_horizontal_bar(
+            "Normalized horizontal stacked revenue",
+            field("month"),
+            field("region"),
+            field("revenue"),
+            true,
         ),
         Recipes::stacked_area(
             "Revenue composition",
@@ -188,6 +239,7 @@ fn dashboard_specs() -> Vec<twinkle_charts::ChartSpec> {
             field("revenue"),
             field("orders"),
         ),
+        Recipes::pie("Revenue pie", field("region"), field("revenue")),
         Recipes::donut("Revenue share", field("region"), field("revenue"), 0.55),
         Recipes::histogram(
             "Order distribution",
@@ -206,5 +258,6 @@ fn dashboard_specs() -> Vec<twinkle_charts::ChartSpec> {
             field("revenue"),
         ),
         Recipes::sparkline("Revenue sparkline", field("month"), field("revenue")),
+        combo,
     ]
 }
