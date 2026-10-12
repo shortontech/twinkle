@@ -117,6 +117,9 @@ impl LogScale {
             Ok(self.map(value))
         }
     }
+    pub const fn range(&self) -> [f64; 2] {
+        self.range
+    }
 }
 
 impl ContinuousScale for LogScale {

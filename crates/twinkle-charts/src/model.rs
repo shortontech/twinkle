@@ -12,8 +12,67 @@ use twinkle_ui::{
 
 use crate::{
     Channel, ChartData, ChartDiagnostics, ChartError, ChartEvent, ChartLimits, ChartSpec,
-    ChartState, ChartTheme, DataValue, Encoding, Mark,
+    ChartState, ChartTheme, ContinuousScale, DataValue, Encoding, LinearScale, LogScale, Mark,
+    Scale, ScaleKind,
 };
+
+#[derive(Clone, Copy, Debug)]
+enum AxisMapper {
+    Linear(LinearScale),
+    Log(LogScale),
+}
+
+impl AxisMapper {
+    fn new(
+        domain: [f64; 2],
+        mut range: [f32; 2],
+        scale: Option<&Scale>,
+    ) -> Result<Self, ChartError> {
+        if scale.is_some_and(|scale| scale.reversed) {
+            range.swap(0, 1);
+        }
+        let range = [f64::from(range[0]), f64::from(range[1])];
+        match scale.map(|scale| &scale.kind) {
+            Some(ScaleKind::Log { base }) => Ok(Self::Log(LogScale::new(
+                domain,
+                range,
+                *base,
+                scale.is_some_and(|scale| scale.clamp),
+            )?)),
+            _ => Ok(Self::Linear(LinearScale::new(
+                domain,
+                range,
+                scale.is_some_and(|scale| scale.clamp),
+            )?)),
+        }
+    }
+
+    fn validate(&self, value: f64) -> Result<(), ChartError> {
+        if !value.is_finite() || matches!(self, Self::Log(_)) && value <= 0.0 {
+            Err(ChartError::invalid(
+                crate::ChartStage::Domain,
+                "scale input must be finite and logarithmic inputs must be positive",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn map(&self, value: f64) -> f32 {
+        let (mapped, range) = match self {
+            Self::Linear(scale) => (scale.map(value), scale.range()),
+            Self::Log(scale) => (scale.map(value), scale.range()),
+        };
+        mapped.clamp(range[0].min(range[1]), range[0].max(range[1])) as f32
+    }
+
+    fn invert(&self, position: f32) -> f64 {
+        match self {
+            Self::Linear(scale) => scale.invert(f64::from(position)),
+            Self::Log(scale) => scale.invert(f64::from(position)),
+        }
+    }
+}
 
 /// Accepted spatial-index entry retaining stable source identity.
 #[derive(Clone, Debug, PartialEq)]
@@ -115,6 +174,16 @@ impl ChartModel {
         ChartError,
     > {
         self.spec.validate(&self.data, &self.limits)?;
+        if let Some(viewport) = self.state.viewport {
+            for domain in [viewport.x, viewport.y].into_iter().flatten() {
+                if domain.into_iter().any(|value| !value.is_finite()) || domain[0] >= domain[1] {
+                    return Err(ChartError::invalid(
+                        crate::ChartStage::Domain,
+                        "viewport domains must be finite and strictly increasing",
+                    ));
+                }
+            }
+        }
         let started = Instant::now();
         let mut output = RetainedSurfaceOutput {
             measured: input.bounds.size,
@@ -666,28 +735,79 @@ impl ChartModel {
         } else {
             plot.size.height / categorical_y_count as f32 / 2.0
         };
-        let map = |x: f64, y: f64| Point {
-            x: map_value(
-                x,
-                x_domain,
-                [
-                    plot.origin.x + x_inset,
-                    plot.origin.x + plot.size.width - x_inset,
-                ],
-            ),
-            y: map_value(
-                y,
-                y_domain,
-                [
-                    plot.origin.y + plot.size.height - y_inset,
-                    plot.origin.y + y_inset,
-                ],
-            ),
-        };
-        if layer_index == 0 {
-            self.prepare_guides(plot, x_domain, y_domain, x_scale, y_scale, output);
+        let x_scale_spec = self
+            .spec
+            .scales
+            .iter()
+            .find(|scale| Some(scale.name.as_ref()) == x_scale);
+        let y_scale_spec = self
+            .spec
+            .scales
+            .iter()
+            .find(|scale| Some(scale.name.as_ref()) == y_scale);
+        let x_mapper = AxisMapper::new(
+            x_domain,
+            [
+                plot.origin.x + x_inset,
+                plot.origin.x + plot.size.width - x_inset,
+            ],
+            x_scale_spec,
+        )?;
+        let default_y_range = [
+            plot.origin.y + plot.size.height - y_inset,
+            plot.origin.y + y_inset,
+        ];
+        let declared_y_range = [
+            plot.origin.y + y_inset,
+            plot.origin.y + plot.size.height - y_inset,
+        ];
+        let y_mapper = AxisMapper::new(
+            y_domain,
+            if y_scale_spec.is_some() {
+                declared_y_range
+            } else {
+                default_y_range
+            },
+            y_scale_spec,
+        )?;
+        for (_, x, y) in &all_values {
+            x_mapper.validate(*x)?;
+            y_mapper.validate(*y)?;
         }
-        let series_groups = series_groups(dataset, &layer.encodings, &self.state);
+        for value in x2_column
+            .into_iter()
+            .flat_map(|column| column.values.iter().enumerate())
+            .filter_map(|(index, value)| coordinate(value, index))
+        {
+            x_mapper.validate(value)?;
+        }
+        for value in y2_column
+            .into_iter()
+            .flat_map(|column| column.values.iter().enumerate())
+            .filter_map(|(index, value)| coordinate(value, index))
+        {
+            y_mapper.validate(value)?;
+        }
+        let map = |x: f64, y: f64| Point {
+            x: x_mapper.map(x),
+            y: y_mapper.map(y),
+        };
+        let values = values
+            .into_iter()
+            .filter(|(_, x, y)| in_domain(*x, x_domain) && in_domain(*y, y_domain))
+            .collect::<Vec<_>>();
+        if layer_index == 0 {
+            self.prepare_guides(
+                plot, x_domain, y_domain, x_scale, y_scale, &x_mapper, &y_mapper, output,
+            )?;
+        }
+        let mut series_groups = series_groups(dataset, &layer.encodings, &self.state);
+        for rows in &mut series_groups {
+            rows.retain(|index| {
+                x_coordinates[*index].is_some_and(|value| in_domain(value, x_domain))
+                    && y_coordinates[*index].is_some_and(|value| in_domain(value, y_domain))
+            });
+        }
         let color = self.theme.series_cue(layer_index).color;
         match &layer.mark {
             Mark::Line {
@@ -762,11 +882,8 @@ impl ChartModel {
                             triangles.extend([top0, bottom0, top1, top1, bottom0, bottom1]);
                         }
                     } else {
-                        let baseline = map_value(
-                            *baseline,
-                            y_domain,
-                            [plot.origin.y + plot.size.height, plot.origin.y],
-                        );
+                        y_mapper.validate(*baseline)?;
+                        let baseline = y_mapper.map(*baseline);
                         let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
                         let mut segment = Vec::new();
                         for index in rows.iter().copied() {
@@ -968,11 +1085,8 @@ impl ChartModel {
                         let baseline_value = x2_column
                             .and_then(|column| coordinate(&column.values[*index], *index))
                             .unwrap_or(0.0);
-                        let baseline = map_value(
-                            baseline_value,
-                            x_domain,
-                            [plot.origin.x, plot.origin.x + plot.size.width],
-                        );
+                        x_mapper.validate(baseline_value)?;
+                        let baseline = x_mapper.map(baseline_value);
                         let top = (point.y - thickness / 2.0).max(plot.origin.y);
                         let bottom =
                             (point.y + thickness / 2.0).min(plot.origin.y + plot.size.height);
@@ -986,11 +1100,8 @@ impl ChartModel {
                         let baseline_value = y2_column
                             .and_then(|column| coordinate(&column.values[*index], *index))
                             .unwrap_or(0.0);
-                        let baseline = map_value(
-                            baseline_value,
-                            y_domain,
-                            [plot.origin.y + plot.size.height, plot.origin.y],
-                        );
+                        y_mapper.validate(baseline_value)?;
+                        let baseline = y_mapper.map(baseline_value);
                         let left = (point.x - thickness / 2.0).max(plot.origin.x);
                         let right =
                             (point.x + thickness / 2.0).min(plot.origin.x + plot.size.width);
@@ -1138,8 +1249,10 @@ impl ChartModel {
         y_domain: [f64; 2],
         x_scale: Option<&str>,
         y_scale: Option<&str>,
+        x_mapper: &AxisMapper,
+        y_mapper: &AxisMapper,
         output: &mut RetainedSurfaceOutput,
-    ) {
+    ) -> Result<(), ChartError> {
         for axis in &self.spec.axes {
             let count = axis
                 .tick_count
@@ -1155,9 +1268,10 @@ impl ChartModel {
             };
             for index in 0..count {
                 let t = index as f32 / (count - 1) as f32;
-                let value = domain[0] + (domain[1] - domain[0]) * f64::from(t);
                 if is_x {
-                    let x = plot.origin.x + plot.size.width * t;
+                    let start = x_mapper.map(domain[0]);
+                    let x = start + (x_mapper.map(domain[1]) - start) * t;
+                    let value = x_mapper.invert(x);
                     if axis.grid {
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(x, plot.origin.y, 1.0, plot.size.height),
@@ -1184,7 +1298,9 @@ impl ChartModel {
                         wrap: false,
                     });
                 } else {
-                    let y = plot.origin.y + plot.size.height * (1.0 - t);
+                    let start = y_mapper.map(domain[0]);
+                    let y = start + (y_mapper.map(domain[1]) - start) * t;
+                    let value = y_mapper.invert(y);
                     if axis.grid {
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(plot.origin.x, y, plot.size.width, 1.0),
@@ -1212,11 +1328,8 @@ impl ChartModel {
                     ..
                 } => {
                     if x_scale == Some(scale.as_ref()) {
-                        let x = map_value(
-                            *value,
-                            x_domain,
-                            [plot.origin.x, plot.origin.x + plot.size.width],
-                        );
+                        x_mapper.validate(*value)?;
+                        let x = x_mapper.map(*value);
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(x, plot.origin.y, 1.5, plot.size.height),
                             color: self.theme.selection,
@@ -1232,11 +1345,8 @@ impl ChartModel {
                             );
                         }
                     } else if y_scale == Some(scale.as_ref()) {
-                        let y = map_value(
-                            *value,
-                            y_domain,
-                            [plot.origin.y + plot.size.height, plot.origin.y],
-                        );
+                        y_mapper.validate(*value)?;
+                        let y = y_mapper.map(*value);
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(plot.origin.x, y, plot.size.width, 1.5),
                             color: self.theme.selection,
@@ -1261,16 +1371,10 @@ impl ChartModel {
                     ..
                 } => {
                     if x_scale == Some(scale.as_ref()) {
-                        let a = map_value(
-                            *start,
-                            x_domain,
-                            [plot.origin.x, plot.origin.x + plot.size.width],
-                        );
-                        let b = map_value(
-                            *end,
-                            x_domain,
-                            [plot.origin.x, plot.origin.x + plot.size.width],
-                        );
+                        x_mapper.validate(*start)?;
+                        x_mapper.validate(*end)?;
+                        let a = x_mapper.map(*start);
+                        let b = x_mapper.map(*end);
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(
                                 a.min(b),
@@ -1291,16 +1395,10 @@ impl ChartModel {
                             );
                         }
                     } else if y_scale == Some(scale.as_ref()) {
-                        let a = map_value(
-                            *start,
-                            y_domain,
-                            [plot.origin.y + plot.size.height, plot.origin.y],
-                        );
-                        let b = map_value(
-                            *end,
-                            y_domain,
-                            [plot.origin.y + plot.size.height, plot.origin.y],
-                        );
+                        y_mapper.validate(*start)?;
+                        y_mapper.validate(*end)?;
+                        let a = y_mapper.map(*start);
+                        let b = y_mapper.map(*end);
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(
                                 plot.origin.x,
@@ -1323,22 +1421,17 @@ impl ChartModel {
                     }
                 }
                 crate::Annotation::Text { text, x, y } => {
+                    x_mapper.validate(*x)?;
+                    y_mapper.validate(*y)?;
                     let point = Point {
-                        x: map_value(
-                            *x,
-                            x_domain,
-                            [plot.origin.x, plot.origin.x + plot.size.width],
-                        ),
-                        y: map_value(
-                            *y,
-                            y_domain,
-                            [plot.origin.y + plot.size.height, plot.origin.y],
-                        ),
+                        x: x_mapper.map(*x),
+                        y: y_mapper.map(*y),
                     };
                     annotation_label(output, plot, text, point.x, point.y, self.theme.foreground);
                 }
             }
         }
+        Ok(())
     }
 
     fn prepare_arc(
@@ -1856,9 +1949,8 @@ fn extent(values: impl Iterator<Item = f64>) -> [f64; 2] {
 fn normalized_domain(domain: [f64; 2]) -> [f64; 2] {
     extent(domain.into_iter())
 }
-fn map_value(value: f64, domain: [f64; 2], range: [f32; 2]) -> f32 {
-    (range[0] as f64 + (value - domain[0]) / (domain[1] - domain[0]) * (range[1] - range[0]) as f64)
-        as f32
+fn in_domain(value: f64, domain: [f64; 2]) -> bool {
+    value >= domain[0].min(domain[1]) && value <= domain[0].max(domain[1])
 }
 fn inset(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
     Rect::new(
@@ -2904,5 +2996,105 @@ mod tests {
             scales: crate::FacetScalePolicy::Shared,
         });
         assert!(ChartModel::new(Arc::new(spec), data, constrained).is_err());
+    }
+
+    #[test]
+    fn declared_log_scale_and_controlled_viewport_drive_native_coordinates() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            ["a", "b", "c"]
+                .into_iter()
+                .map(RowKey::from)
+                .collect::<Vec<_>>(),
+            vec![
+                Column::new(
+                    "x",
+                    [1.0, 10.0, 100.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "y",
+                    [1.0, 2.0, 3.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(18, vec![dataset], &limits).unwrap());
+        let mut spec = Recipes::line("Log", FieldRef::new("d", "x"), FieldRef::new("d", "y"));
+        spec.scales
+            .iter_mut()
+            .find(|scale| scale.name.as_ref() == "x")
+            .unwrap()
+            .kind = ScaleKind::Log { base: 10.0 };
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data.clone(), limits.clone()).unwrap())
+                .unwrap();
+        let input = |content| {
+            RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 400.0, 240.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content,
+                    ..Default::default()
+                },
+            )
+        };
+        view.update(input(18)).unwrap();
+        let x = view.hits().iter().map(hit_center_x).collect::<Vec<_>>();
+        assert!(((x[1] - x[0]) - (x[2] - x[1])).abs() < 0.01);
+
+        let state = ChartState {
+            viewport: Some(crate::Viewport {
+                x: Some([1.0, 10.0]),
+                y: None,
+            }),
+            ..Default::default()
+        };
+        view.update_state(state, input(19)).unwrap();
+        assert_eq!(view.hits().len(), 2);
+        assert!(view.hits().iter().all(|hit| hit_center_x(hit) <= 382.0));
+
+        let invalid = ChartState {
+            viewport: Some(crate::Viewport {
+                x: Some([10.0, 1.0]),
+                y: None,
+            }),
+            ..Default::default()
+        };
+        let accepted = view.snapshot().clone();
+        assert!(view.update_state(invalid, input(20)).is_err());
+        assert_eq!(view.snapshot(), &accepted);
+
+        let invalid_dataset = Dataset::new(
+            DatasetId::from("d"),
+            [RowKey::from("zero"), RowKey::from("one")],
+            vec![
+                Column::new("x", vec![DataValue::Number(0.0), DataValue::Number(1.0)]),
+                Column::new("y", vec![DataValue::Number(1.0), DataValue::Number(2.0)]),
+            ],
+        )
+        .unwrap();
+        let invalid_data = Arc::new(ChartData::new(20, vec![invalid_dataset], &limits).unwrap());
+        let mut invalid_spec = Recipes::line(
+            "Invalid log",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "y"),
+        );
+        invalid_spec
+            .scales
+            .iter_mut()
+            .find(|scale| scale.name.as_ref() == "x")
+            .unwrap()
+            .kind = ScaleKind::Log { base: 10.0 };
+        let mut invalid_view =
+            ChartView::new(ChartModel::new(Arc::new(invalid_spec), invalid_data, limits).unwrap())
+                .unwrap();
+        assert!(invalid_view.update(input(20)).is_err());
     }
 }
