@@ -327,6 +327,28 @@ impl ChartSpec {
             if !scale_names.insert(scale.name.as_ref()) {
                 return Err(ChartError::DuplicateKey(scale.name.to_string()));
             }
+            if scale
+                .domain
+                .is_some_and(|domain| domain.into_iter().any(|value| !value.is_finite()))
+            {
+                return Err(ChartError::invalid(
+                    crate::ChartStage::Validate,
+                    format!("scale `{}` has a nonfinite domain", scale.name),
+                ));
+            }
+            if let ScaleKind::Log { base } = scale.kind
+                && (!base.is_finite()
+                    || base <= 0.0
+                    || base == 1.0
+                    || scale
+                        .domain
+                        .is_some_and(|domain| domain.into_iter().any(|value| value <= 0.0)))
+            {
+                return Err(ChartError::invalid(
+                    crate::ChartStage::Validate,
+                    format!("scale `{}` has an invalid logarithmic policy", scale.name),
+                ));
+            }
         }
         for layer in &self.layers {
             let mut derived: BTreeSet<String> = BTreeSet::new();
@@ -388,6 +410,64 @@ impl ChartSpec {
                     crate::ChartStage::Validate,
                     format!("legend references unknown scale `{}`", legend.scale),
                 ));
+            }
+        }
+        if let Some(facet) = &self.facet {
+            let fields = facet
+                .row
+                .iter()
+                .chain(facet.column.iter())
+                .collect::<Vec<_>>();
+            if fields.is_empty() {
+                return Err(ChartError::invalid(
+                    crate::ChartStage::Validate,
+                    "facet requires a row or column field",
+                ));
+            }
+            let dataset_name = fields[0].dataset.as_ref();
+            if fields
+                .iter()
+                .any(|field| field.dataset.as_ref() != dataset_name)
+            {
+                return Err(ChartError::invalid(
+                    crate::ChartStage::Validate,
+                    "facet row and column fields must share a dataset",
+                ));
+            }
+            let dataset = data
+                .dataset(dataset_name)
+                .ok_or_else(|| ChartError::MissingDataset(dataset_name.to_owned()))?;
+            let mut counts = [1_usize, 1_usize];
+            for (index, field) in [facet.row.as_ref(), facet.column.as_ref()]
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(field) = field {
+                    let column =
+                        dataset
+                            .column(&field.column)
+                            .ok_or_else(|| ChartError::MissingColumn {
+                                dataset: field.dataset.to_string(),
+                                column: field.column.to_string(),
+                            })?;
+                    counts[index] = column
+                        .values
+                        .iter()
+                        .map(super::model::facet_value_key)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        .max(1);
+                }
+            }
+            let count = counts[0].checked_mul(counts[1]).ok_or_else(|| {
+                ChartError::invalid(crate::ChartStage::Validate, "facet count overflow")
+            })?;
+            if count > limits.max_facets {
+                return Err(ChartError::Limit {
+                    resource: "facets",
+                    actual: count,
+                    limit: limits.max_facets,
+                });
             }
         }
         let label_bytes = self.title.len()

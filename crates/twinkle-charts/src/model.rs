@@ -162,7 +162,9 @@ impl ChartModel {
             focusable: true,
         });
         let mut hits = Vec::new();
-        if plot.size.width > 1.0 && plot.size.height > 1.0 {
+        if plot.size.width > 1.0 && plot.size.height > 1.0 && self.spec.facet.is_some() {
+            self.prepare_facets(plot, input, &mut output, &mut hits)?;
+        } else if plot.size.width > 1.0 && plot.size.height > 1.0 {
             for (layer_index, layer) in self
                 .spec
                 .layers
@@ -263,6 +265,173 @@ impl ChartModel {
             ..self.diagnostics.clone()
         };
         Ok((output, hits, hit_x_order, diagnostics))
+    }
+
+    fn prepare_facets(
+        &self,
+        plot: Rect,
+        input: RetainedSurfaceInput,
+        output: &mut RetainedSurfaceOutput,
+        hits: &mut Vec<ChartHit>,
+    ) -> Result<(), ChartError> {
+        let facet = self.spec.facet.as_ref().expect("facet branch checked");
+        let field = facet.row.as_ref().or(facet.column.as_ref()).unwrap();
+        let source = self
+            .data
+            .dataset(&field.dataset)
+            .ok_or_else(|| ChartError::MissingDataset(field.dataset.to_string()))?;
+        let row_column = facet
+            .row
+            .as_ref()
+            .map(|field| {
+                source
+                    .column(&field.column)
+                    .ok_or_else(|| ChartError::MissingColumn {
+                        dataset: field.dataset.to_string(),
+                        column: field.column.to_string(),
+                    })
+            })
+            .transpose()?;
+        let column_column = facet
+            .column
+            .as_ref()
+            .map(|field| {
+                source
+                    .column(&field.column)
+                    .ok_or_else(|| ChartError::MissingColumn {
+                        dataset: field.dataset.to_string(),
+                        column: field.column.to_string(),
+                    })
+            })
+            .transpose()?;
+        let row_values = facet_values(row_column);
+        let column_values = facet_values(column_column);
+        let facet_count = row_values
+            .len()
+            .checked_mul(column_values.len())
+            .ok_or_else(|| {
+                ChartError::invalid(crate::ChartStage::Layout, "facet count overflow")
+            })?;
+        if facet_count > self.limits.max_facets {
+            return Err(ChartError::Limit {
+                resource: "facets",
+                actual: facet_count,
+                limit: self.limits.max_facets,
+            });
+        }
+        let cell_width = plot.size.width / column_values.len().max(1) as f32;
+        let cell_height = plot.size.height / row_values.len().max(1) as f32;
+        let shared_spec = if facet.scales == crate::FacetScalePolicy::Shared {
+            spec_with_shared_domains(&self.spec, &self.data)
+        } else {
+            (*self.spec).clone()
+        };
+
+        for (row_index, row_value) in row_values.iter().enumerate() {
+            for (column_index, column_value) in column_values.iter().enumerate() {
+                let facet_label = match (facet.row.is_some(), facet.column.is_some()) {
+                    (true, true) => format!("{} / {}", row_value.label, column_value.label),
+                    (true, false) => row_value.label.clone(),
+                    (false, true) => column_value.label.clone(),
+                    (false, false) => unreachable!(),
+                };
+                let indices = (0..source.len())
+                    .filter(|index| {
+                        row_column.is_none_or(|column| {
+                            facet_value_key(&column.values[*index]) == row_value.key
+                        }) && column_column.is_none_or(|column| {
+                            facet_value_key(&column.values[*index]) == column_value.key
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let mut datasets = Vec::with_capacity(self.data.datasets().len());
+                for dataset in self.data.datasets() {
+                    if dataset.id == source.id {
+                        let keys = indices
+                            .iter()
+                            .map(|index| dataset.keys()[*index].clone())
+                            .collect::<Vec<_>>();
+                        let columns = dataset
+                            .columns()
+                            .iter()
+                            .map(|column| crate::Column {
+                                name: column.name.clone(),
+                                values: indices
+                                    .iter()
+                                    .map(|index| column.values[*index].clone())
+                                    .collect::<Vec<_>>()
+                                    .into(),
+                                unit: column.unit.clone(),
+                            })
+                            .collect::<Vec<_>>();
+                        datasets.push(crate::Dataset::new(dataset.id.clone(), keys, columns)?);
+                    } else {
+                        datasets.push(dataset.clone());
+                    }
+                }
+                let data = Arc::new(ChartData::new(
+                    self.data.revision(),
+                    datasets,
+                    &self.limits,
+                )?);
+                let mut spec = shared_spec.clone();
+                spec.facet = None;
+                spec.title = Arc::from(facet_label.clone());
+                spec.summary = Arc::from(format!("Facet {facet_label}. {}", self.spec.summary));
+                let submodel = ChartModel::new(Arc::new(spec), data, self.limits.clone())?
+                    .with_theme(self.theme.clone())?
+                    .with_state(self.state.clone());
+                let bounds = Rect::new(
+                    plot.origin.x + column_index as f32 * cell_width,
+                    plot.origin.y + row_index as f32 * cell_height,
+                    cell_width,
+                    cell_height,
+                );
+                let (mut prepared, mut facet_hits, _, _) = submodel.prepare(
+                    RetainedSurfaceInput::new(bounds, input.scale_factor, input.revisions),
+                )?;
+                if matches!(prepared.paint.first(), Some(PaintCommand::Fill { .. })) {
+                    prepared.paint.remove(0);
+                }
+                output.paint.extend(prepared.paint);
+                output.damage.extend(prepared.damage);
+                let prefix = format!(
+                    "facet/{}/{}",
+                    stable_id_fragment(&row_value.key),
+                    stable_id_fragment(&column_value.key)
+                );
+                for interaction in prepared.interactions {
+                    if interaction.id.as_str() == "chart" {
+                        continue;
+                    }
+                    output.interactions.push(RetainedSurfaceInteraction {
+                        id: UiId::from(format!("{prefix}/{}", interaction.id.as_str())),
+                        ..interaction
+                    });
+                }
+                for semantic in prepared.semantics {
+                    let is_root = semantic.id.as_str() == "chart";
+                    output
+                        .semantics
+                        .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                            id: UiId::from(format!("{prefix}/{}", semantic.id.as_str())),
+                            role: if is_root {
+                                SemanticRole::Group
+                            } else {
+                                semantic.role
+                            },
+                            label: if is_root {
+                                Some(format!("{facet_label} facet"))
+                            } else {
+                                semantic.label
+                            },
+                            ..semantic
+                        });
+                }
+                hits.append(&mut facet_hits);
+            }
+        }
+        Ok(())
     }
 
     fn prepare_layer(
@@ -447,6 +616,32 @@ impl ChartModel {
                     include_domain_value(&mut y_domain, y_scale, scale, *end);
                 }
                 _ => {}
+            }
+        }
+        if let Some(domain) = self
+            .spec
+            .scales
+            .iter()
+            .find(|scale| Some(scale.name.as_ref()) == x_scale)
+            .and_then(|scale| scale.domain)
+        {
+            x_domain = normalized_domain(domain);
+        }
+        if let Some(domain) = self
+            .spec
+            .scales
+            .iter()
+            .find(|scale| Some(scale.name.as_ref()) == y_scale)
+            .and_then(|scale| scale.domain)
+        {
+            y_domain = normalized_domain(domain);
+        }
+        if let Some(viewport) = self.state.viewport {
+            if let Some(domain) = viewport.x {
+                x_domain = normalized_domain(domain);
+            }
+            if let Some(domain) = viewport.y {
+                y_domain = normalized_domain(domain);
             }
         }
         let categorical_x_count = x_column
@@ -1406,7 +1601,7 @@ impl ChartView {
         self.host
             .snapshot()
             .try_element(id, |interaction| {
-                if let Some(label) = interaction.id.as_str().strip_prefix("chart/legend/") {
+                if let Some((_, label)) = interaction.id.as_str().split_once("chart/legend/") {
                     let label: Arc<str> = Arc::from(label);
                     let currently_visible = visible
                         .as_ref()
@@ -1463,7 +1658,7 @@ fn format_tick(value: f64, unit: Option<&str>) -> String {
     unit.map_or(value.clone(), |unit| format!("{value} {unit}"))
 }
 
-fn format_data_value(value: &DataValue) -> String {
+pub(crate) fn format_data_value(value: &DataValue) -> String {
     match value {
         DataValue::Null => "Missing".into(),
         DataValue::Number(value) => value.to_string(),
@@ -1471,6 +1666,95 @@ fn format_data_value(value: &DataValue) -> String {
         DataValue::Category(value) => value.to_string(),
         DataValue::Boolean(value) => value.to_string(),
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct FacetValue {
+    key: String,
+    label: String,
+}
+
+pub(crate) fn facet_value_key(value: &DataValue) -> String {
+    match value {
+        DataValue::Null => "null".into(),
+        DataValue::Number(value) => format!("number:{:016x}", value.to_bits()),
+        DataValue::Timestamp(value) => format!("timestamp:{value}"),
+        DataValue::Category(value) => format!("category:{}:{value}", value.len()),
+        DataValue::Boolean(value) => format!("boolean:{value}"),
+    }
+}
+
+fn facet_values(column: Option<&crate::Column>) -> Vec<FacetValue> {
+    let Some(column) = column else {
+        return vec![FacetValue {
+            key: "all".into(),
+            label: "All".into(),
+        }];
+    };
+    let mut values = Vec::new();
+    for value in column.values.iter() {
+        let candidate = FacetValue {
+            key: facet_value_key(value),
+            label: format_data_value(value),
+        };
+        if !values
+            .iter()
+            .any(|value: &FacetValue| value.key == candidate.key)
+        {
+            values.push(candidate);
+        }
+    }
+    if values.is_empty() {
+        values.push(FacetValue {
+            key: "no-data".into(),
+            label: "No data".into(),
+        });
+    }
+    values
+}
+
+fn stable_id_fragment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len().saturating_mul(2).max(2));
+    for byte in value.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    if encoded.is_empty() {
+        encoded.push_str("00");
+    }
+    encoded
+}
+
+fn spec_with_shared_domains(spec: &ChartSpec, data: &ChartData) -> ChartSpec {
+    let mut shared = spec.clone();
+    for scale in &mut shared.scales {
+        if scale.domain.is_some() {
+            continue;
+        }
+        let mut values = Vec::new();
+        for encoding in shared
+            .layers
+            .iter()
+            .flat_map(|layer| layer.encodings.iter())
+            .filter(|encoding| encoding.scale.as_deref() == Some(scale.name.as_ref()))
+        {
+            let Some(column) = data
+                .dataset(&encoding.field.dataset)
+                .and_then(|dataset| dataset.column(&encoding.field.column))
+            else {
+                continue;
+            };
+            values.extend(column.values.iter().filter_map(|value| match value {
+                DataValue::Number(value) if value.is_finite() => Some(*value),
+                DataValue::Timestamp(value) => Some(*value as f64),
+                _ => None,
+            }));
+        }
+        if !values.is_empty() {
+            scale.domain = Some(extent(values.into_iter()));
+        }
+    }
+    shared
 }
 
 fn annotation_label(
@@ -1569,6 +1853,9 @@ fn extent(values: impl Iterator<Item = f64>) -> [f64; 2] {
         [min, max]
     }
 }
+fn normalized_domain(domain: [f64; 2]) -> [f64; 2] {
+    extent(domain.into_iter())
+}
 fn map_value(value: f64, domain: [f64; 2], range: [f32; 2]) -> f32 {
     (range[0] as f64 + (value - domain[0]) / (domain[1] - domain[0]) * (range[1] - range[0]) as f64)
         as f32
@@ -1592,6 +1879,10 @@ fn distance(rect: Rect, point: Point) -> f32 {
 }
 fn hit_center_x(hit: &ChartHit) -> f32 {
     hit.bounds.origin.x + hit.bounds.size.width / 2.0
+}
+#[cfg(test)]
+fn hit_center_y(hit: &ChartHit) -> f32 {
+    hit.bounds.origin.y + hit.bounds.size.height / 2.0
 }
 fn stroke_polyline(points: &[Point], width: f32) -> Vec<Point> {
     let mut out = Vec::with_capacity(points.len().saturating_sub(1) * 6);
@@ -2469,5 +2760,149 @@ mod tests {
         assert_eq!(hidden.output.interactions.len(), 3);
         assert_eq!(hidden.input.unwrap().revisions.content, 17);
         assert_eq!(view.hits().len(), 0);
+    }
+
+    #[test]
+    fn facets_are_bounded_stable_and_support_shared_or_independent_domains() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            (0..4)
+                .map(|index| RowKey::from(format!("r{index}")))
+                .collect::<Vec<_>>(),
+            vec![
+                Column::new(
+                    "x",
+                    vec![0.0, 1.0, 0.0, 1.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "value",
+                    vec![1.0, 2.0, 100.0, 200.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "region",
+                    ["small", "small", "large", "large"]
+                        .into_iter()
+                        .map(|value| DataValue::Category(Arc::from(value)))
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(16, vec![dataset], &limits).unwrap());
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 600.0, 260.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 16,
+                ..Default::default()
+            },
+        );
+        let render = |data: Arc<ChartData>, policy| {
+            let mut spec = Recipes::line(
+                "Facets",
+                FieldRef::new("d", "x"),
+                FieldRef::new("d", "value"),
+            );
+            spec.facet = Some(crate::Facet {
+                row: None,
+                column: Some(FieldRef::new("d", "region")),
+                scales: policy,
+            });
+            let mut view =
+                ChartView::new(ChartModel::new(Arc::new(spec), data, limits.clone()).unwrap())
+                    .unwrap();
+            view.update(input).unwrap();
+            (
+                view.hits().to_vec(),
+                view.snapshot().output.semantics.clone(),
+            )
+        };
+        let (shared, semantics) = render(data.clone(), crate::FacetScalePolicy::Shared);
+        assert_eq!(shared.len(), 4);
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|semantic| semantic.role == SemanticRole::Group)
+                .count(),
+            2
+        );
+        assert!(semantics.iter().any(|semantic| {
+            semantic.id.as_str().starts_with("facet/")
+                && semantic.id.as_str().ends_with("/chart")
+                && semantic.label.as_deref() == Some("small facet")
+        }));
+        let shared_small_delta = (hit_center_y(&shared[0]) - hit_center_y(&shared[1])).abs();
+        let shared_large_delta = (hit_center_y(&shared[2]) - hit_center_y(&shared[3])).abs();
+        assert!(shared_small_delta * 20.0 < shared_large_delta);
+
+        let (independent, _) = render(data.clone(), crate::FacetScalePolicy::Independent);
+        let independent_small_delta =
+            (hit_center_y(&independent[0]) - hit_center_y(&independent[1])).abs();
+        let independent_large_delta =
+            (hit_center_y(&independent[2]) - hit_center_y(&independent[3])).abs();
+        assert!((independent_small_delta - independent_large_delta).abs() < 0.01);
+
+        let reordered = Dataset::new(
+            DatasetId::from("d"),
+            ["r2", "r3", "r0", "r1"]
+                .into_iter()
+                .map(RowKey::from)
+                .collect::<Vec<_>>(),
+            vec![
+                Column::new(
+                    "x",
+                    [0.0, 1.0, 0.0, 1.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "value",
+                    [100.0, 200.0, 1.0, 2.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "region",
+                    ["large", "large", "small", "small"]
+                        .into_iter()
+                        .map(|value| DataValue::Category(Arc::from(value)))
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let reordered_data = Arc::new(ChartData::new(17, vec![reordered], &limits).unwrap());
+        let (_, reordered_semantics) = render(reordered_data, crate::FacetScalePolicy::Shared);
+        let group_ids = |items: &[twinkle_ui::retained_surface::RetainedSurfaceSemantic]| {
+            items
+                .iter()
+                .filter(|semantic| semantic.role == SemanticRole::Group)
+                .map(|semantic| semantic.id.as_str().to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(group_ids(&semantics), group_ids(&reordered_semantics));
+
+        let mut constrained = limits;
+        constrained.max_facets = 1;
+        let mut spec = Recipes::line(
+            "Too many",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "value"),
+        );
+        spec.facet = Some(crate::Facet {
+            row: None,
+            column: Some(FieldRef::new("d", "region")),
+            scales: crate::FacetScalePolicy::Shared,
+        });
+        assert!(ChartModel::new(Arc::new(spec), data, constrained).is_err());
     }
 }
