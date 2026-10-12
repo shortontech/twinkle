@@ -21,11 +21,17 @@ name = "twinkle-pipeline-bench"
 path = "src/bin/twinkle_pipeline_bench.rs"
 required-features = ["jsx"]
 
+[[bin]]
+name = "twinkle-chart-dashboard"
+path = "src/bin/twinkle_chart_dashboard.rs"
+required-features = ["charts"]
+
 [features]
 pipeline-allocator = ["jsx"]
 pipeline-attribution = ["twinkle/pipeline-attribution", "twinkle-jsx-runtime?/pipeline-attribution"]
 default = []
 jsx = ["dep:twinkle-jsx-runtime", "dep:twinkle-redux-jsx", "dep:twinkle-presentation", "dep:twinkle-protocol", "dep:serde_json"]
+charts = ["dep:twinkle-charts"]
 
 [dependencies]
 twinkle-jsx-runtime = { version = "0.2.0", path = "../twinkle-jsx-runtime", optional = true }
@@ -35,6 +41,7 @@ twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol", optional =
 serde_json = { workspace = true, optional = true }
 twinkle = { package = "twinkle-ui", version = "0.2.0", path = "../twinkle" }
 twinkle-testkit = { version = "0.2.0", path = "../twinkle-testkit" }
+twinkle-charts = { version = "0.1.0", path = "../twinkle-charts", optional = true }
 image.workspace = true
 
 [dev-dependencies]

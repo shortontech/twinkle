@@ -4093,6 +4093,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "twinkle-charts",
  "twinkle-input",
  "twinkle-jsx-runtime",
  "twinkle-presentation",

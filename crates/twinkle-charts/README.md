@@ -143,3 +143,17 @@ secondary shape/dash cues when the palette is exhausted.
 explicit logical dimensions, scale, background, pixel, and byte bounds. File
 dialogs, paths, clipboard access, and effects remain application/host authority.
 
+## Runnable consumers
+
+```text
+cargo run -p twinkle-charts --example dashboard
+cargo run --release -p twinkle-charts --example measure
+cargo run -p twinkle-workbench --features charts --bin twinkle-chart-dashboard
+```
+
+The optional workbench dashboard is an external stateful consumer of the public
+crate API. It demonstrates hover inspection, keyboard/controller navigation,
+legend state, captured pan, wheel and button zoom, exact table mode, responsive
+containment, and bounded in-memory CSV/raster export. The base workbench does not
+acquire the chart dependency.
+
