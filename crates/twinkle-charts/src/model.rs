@@ -1725,7 +1725,9 @@ impl RetainedSurfaceModel for ChartModel {
             }
             RetainedSurfaceLifecycle::Detached | RetainedSurfaceLifecycle::Destroyed => {
                 self.hits.clear();
+                self.hits.shrink_to_fit();
                 self.hit_x_order.clear();
+                self.hit_x_order.shrink_to_fit();
             }
             _ => {}
         }
@@ -1771,6 +1773,14 @@ impl ChartView {
     }
     pub fn diagnostics(&self) -> &ChartDiagnostics {
         self.host.model().diagnostics()
+    }
+    /// Ownership counters from the retained-surface admission boundary.
+    ///
+    /// These complement [`ChartDiagnostics`] with the bytes held by the
+    /// accepted paint snapshot and make lifecycle contraction observable
+    /// without exposing the retained host itself.
+    pub fn retained_diagnostics(&self) -> twinkle_ui::retained_surface::RetainedSurfaceDiagnostics {
+        self.host.diagnostics()
     }
     pub fn hits(&self) -> &[ChartHit] {
         self.host.model().hits()
@@ -1856,6 +1866,12 @@ impl ChartView {
     }
     pub fn renderer_lost(&mut self) {
         self.host.renderer_lost();
+    }
+    /// Permanently release the accepted presentation and chart-owned indexes.
+    /// Subsequent updates fail; construct a new view for a remount.
+    pub fn destroy(&mut self) {
+        self.host.destroy();
+        self.navigation = crate::ChartNavigation::default();
     }
 }
 
@@ -3520,5 +3536,103 @@ mod tests {
                 .count()
                 >= 3
         );
+    }
+
+    #[test]
+    fn lifecycle_contracts_output_and_indexes_then_reattaches() {
+        let mut view = ChartView::new(model()).unwrap();
+        let input = RetainedSurfaceInput::new(
+            Rect::new(12.0, 8.0, 400.0, 240.0),
+            1.25,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 7,
+                ..Default::default()
+            },
+        );
+        view.update(input).unwrap();
+        let accepted = view.retained_diagnostics();
+        assert!(accepted.output_retained_bytes > 0);
+        assert!(accepted.model_retained_bytes > 0);
+        assert!(!view.hits().is_empty());
+
+        view.renderer_lost();
+        let lost = view.retained_diagnostics();
+        assert_eq!(lost.output_retained_bytes, 0);
+        assert_eq!(lost.paint_commands, 0);
+        // Spatial indexes are renderer-independent and survive device loss.
+        assert!(!view.hits().is_empty());
+
+        view.update(input).unwrap();
+        assert!(view.retained_diagnostics().output_retained_bytes > 0);
+        view.detach();
+        let detached = view.retained_diagnostics();
+        assert_eq!(detached.output_retained_bytes, 0);
+        assert_eq!(detached.model_retained_bytes, 0);
+        assert!(view.snapshot().input.is_none());
+        assert!(view.hits().is_empty());
+        assert!(view.active_hit().is_none());
+
+        view.update(input).unwrap();
+        assert_eq!(view.hits().len(), 2);
+        assert!(view.retained_diagnostics().output_retained_bytes > 0);
+    }
+
+    #[test]
+    fn replacement_shrinks_owned_index_and_destroy_is_terminal() {
+        let limits = ChartLimits::default();
+        let keys = (0..2_000)
+            .map(|index| RowKey::from(format!("row-{index}")))
+            .collect::<Vec<_>>();
+        let values = (0..2_000)
+            .map(|index| DataValue::Number(index as f64))
+            .collect::<Vec<_>>();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            keys,
+            vec![Column::new("x", values.clone()), Column::new("y", values)],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(1, vec![dataset], &limits).unwrap());
+        let spec = Arc::new(Recipes::scatter(
+            "Many points",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "y"),
+        ));
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::clone(&spec), data, limits.clone()).unwrap())
+                .unwrap();
+        let input = |revision| {
+            RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 600.0, 400.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content: revision,
+                    ..Default::default()
+                },
+            )
+        };
+        view.update(input(1)).unwrap();
+        assert_eq!(view.hits().len(), 2_000);
+        let large_bytes = view.retained_diagnostics().model_retained_bytes;
+
+        let small = Dataset::new(
+            DatasetId::from("d"),
+            [RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new("x", [DataValue::Number(0.0), DataValue::Number(1.0)]),
+                Column::new("y", [DataValue::Number(1.0), DataValue::Number(0.0)]),
+            ],
+        )
+        .unwrap();
+        let small = Arc::new(ChartData::new(2, vec![small], &limits).unwrap());
+        view.replace_and_update(spec, small, input(2)).unwrap();
+        assert_eq!(view.hits().len(), 2);
+        assert!(view.retained_diagnostics().model_retained_bytes < large_bytes);
+
+        view.destroy();
+        assert!(view.hits().is_empty());
+        assert!(view.snapshot().input.is_none());
+        assert_eq!(view.retained_diagnostics().output_retained_bytes, 0);
+        assert!(view.update(input(3)).is_err());
     }
 }
