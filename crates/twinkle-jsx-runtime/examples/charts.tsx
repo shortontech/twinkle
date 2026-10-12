@@ -49,5 +49,16 @@ function ChartGallery() {
     <Chart {...common} id="bubble" spec={{family:"bubble",title:"Orders and revenue",dataset:"sales",x:"orders",y:"revenue",size:"orders"}} />
     <Chart {...common} id="share" spec={{family:"donut",title:"Revenue share",dataset:"sales",category:"region",value:"revenue",innerRadius:0.55}} />
     <Chart {...common} id="distribution" spec={{family:"histogram",title:"Order distribution",dataset:"sales",value:"orders",start:0,end:16,bins:4}} />
+    <Chart {...common} id="composed" spec={{
+      family:"custom", title:"Revenue composition", dataset:"sales",
+      scales:[{name:"x",kind:"linear"},{name:"y",kind:"linear",unit:"USD"},{name:"series",kind:"color"}],
+      layers:[
+        {mark:{kind:"bar"},encodings:[{channel:"x",field:"month",scale:"x"},{channel:"y",field:"revenue",scale:"y"},{channel:"series",field:"region",scale:"series"}]},
+        {mark:{kind:"line",points:true},encodings:[{channel:"x",field:"month",scale:"x"},{channel:"y",field:"revenue",scale:"y"},{channel:"series",field:"region",scale:"series"}]},
+      ],
+      axes:[{scale:"x",title:"Month"},{scale:"y",title:"Revenue",unit:"USD",grid:true}],
+      legends:[{scale:"series",title:"Region",toggleable:true}],
+      annotations:[{kind:"rule",scale:"y",value:20,label:"Target"}],
+    }} onToggleSeries={toggle} />
   </Column>;
 }

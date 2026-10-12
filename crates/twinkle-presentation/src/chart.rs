@@ -6,9 +6,11 @@ use twinkle::retained_surface::{
 };
 use twinkle::{Rect, SemanticRole, UiId};
 use twinkle_charts::{
-    BinOptions, Channel, ChartData, ChartEvent, ChartInspector, ChartLimits, ChartModel,
-    ChartState, ChartTheme, ChartView, Column, DataValue, Dataset, DatasetId, Encoding, FieldRef,
-    Legend, Recipes, RowKey, Scale, ScaleKind, Viewport, project_inspection_overlay,
+    AggregateOp, Annotation, Axis, BinOptions, Channel, ChartData, ChartEvent, ChartInspector,
+    ChartLimits, ChartModel, ChartSpec, ChartState, ChartTheme, ChartView, Column, DataValue,
+    Dataset, DatasetId, Encoding, Facet, FacetScalePolicy, FieldRef, Interpolation, Layer, Legend,
+    Mark, MissingPolicy, Orientation, Recipes, RowKey, Scale, ScaleKind, StackMode, Symbol,
+    Transform, Viewport, VisibilityDomainPolicy, project_inspection_overlay,
 };
 
 #[derive(Clone)]
@@ -45,7 +47,10 @@ impl ChartDeclaration {
             value.get("data").ok_or("chart needs data")?,
             &limits,
         )?);
-        let spec = Arc::new(parse_spec(value.get("spec").ok_or("chart needs a spec")?)?);
+        let spec = Arc::new(parse_spec(
+            value.get("spec").ok_or("chart needs a spec")?,
+            &limits,
+        )?);
         let needs_toggle = spec.legends.iter().any(|legend| legend.toggleable);
         let toggle_action = action(value, "toggleAction")?;
         if needs_toggle && toggle_action.is_none() {
@@ -330,13 +335,16 @@ fn parse_value(value: &Value, kind: &str, max_label_bytes: usize) -> Result<Data
     }
 }
 
-fn parse_spec(value: &Value) -> Result<twinkle_charts::ChartSpec, String> {
+fn parse_spec(value: &Value, limits: &ChartLimits) -> Result<twinkle_charts::ChartSpec, String> {
     let family = value
         .get("family")
         .and_then(Value::as_str)
         .ok_or("chart spec needs a family")?;
     let title = bounded_string(value, "title", 4096)?;
     let dataset = bounded_string(value, "dataset", 256)?;
+    if family == "custom" {
+        return parse_custom_spec(value, title, dataset, limits);
+    }
     let field = |name: &str| -> Result<FieldRef, String> {
         Ok(FieldRef::new(
             dataset.clone(),
@@ -460,6 +468,427 @@ fn parse_spec(value: &Value) -> Result<twinkle_charts::ChartSpec, String> {
         });
     }
     Ok(spec)
+}
+
+fn parse_custom_spec(
+    value: &Value,
+    title: String,
+    default_dataset: String,
+    limits: &ChartLimits,
+) -> Result<ChartSpec, String> {
+    let summary = value
+        .get("summary")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|text| !text.is_empty() && text.len() <= limits.max_label_bytes)
+                .map(str::to_owned)
+                .ok_or("chart summary is invalid")
+        })
+        .transpose()?
+        .unwrap_or_else(|| title.clone());
+    let mut spec = ChartSpec::new(title, summary);
+    spec.visibility_domain = match value
+        .get("visibilityDomain")
+        .and_then(Value::as_str)
+        .unwrap_or("original")
+    {
+        "original" => VisibilityDomainPolicy::Original,
+        "visible-series" => VisibilityDomainPolicy::VisibleSeries,
+        _ => return Err("custom chart visibilityDomain is unsupported".into()),
+    };
+
+    for scale in bounded_array(value, "scales", limits.max_layers.saturating_mul(4))? {
+        let name = bounded_string(scale, "name", limits.max_label_bytes)?;
+        let kind_name = scale
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or("custom chart scale needs a kind")?;
+        let kind = match kind_name {
+            "linear" => ScaleKind::Linear,
+            "log" => ScaleKind::Log {
+                base: optional_finite(scale, "base")?.unwrap_or(10.0),
+            },
+            "time" => ScaleKind::Time,
+            "ordinal" => ScaleKind::Ordinal,
+            "band" => ScaleKind::Band {
+                inner_padding: bounded_fraction(scale, "innerPadding", 0.1)?,
+                outer_padding: bounded_fraction(scale, "outerPadding", 0.05)?,
+            },
+            "color" => ScaleKind::Color,
+            "size" => ScaleKind::Size,
+            _ => return Err("custom chart scale kind is unsupported".into()),
+        };
+        spec.scales.push(Scale {
+            name: Arc::from(name),
+            kind,
+            domain: optional_domain(scale.get("domain"))?,
+            clamp: optional_bool(scale, "clamp", true)?,
+            reversed: optional_bool(scale, "reversed", false)?,
+            unit: optional_bounded_string(scale, "unit", limits.max_label_bytes)?.map(Arc::from),
+        });
+    }
+
+    for layer in bounded_array(value, "layers", limits.max_layers)? {
+        let mark_value = layer.get("mark").ok_or("custom chart layer needs a mark")?;
+        let mut parsed = Layer::new(parse_mark(mark_value)?);
+        parsed.visible = optional_bool(layer, "visible", true)?;
+        for encoding in bounded_array(layer, "encodings", 32)? {
+            let channel = parse_channel(
+                encoding
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .ok_or("custom chart encoding needs a channel")?,
+            )?;
+            let dataset = optional_bounded_string(encoding, "dataset", 256)?
+                .unwrap_or_else(|| default_dataset.clone());
+            let field = bounded_string(encoding, "field", 256)?;
+            parsed.encodings.push(Encoding {
+                channel,
+                field: FieldRef::new(dataset, field),
+                scale: optional_bounded_string(encoding, "scale", limits.max_label_bytes)?
+                    .map(Arc::from),
+            });
+        }
+        for transform in bounded_array(layer, "transforms", limits.max_transforms)? {
+            parsed.transforms.push(parse_transform(transform, limits)?);
+        }
+        spec.layers.push(parsed);
+    }
+    if spec.layers.is_empty() {
+        return Err("custom chart needs at least one layer".into());
+    }
+
+    for axis in bounded_array(value, "axes", limits.max_layers.saturating_mul(2))? {
+        spec.axes.push(Axis {
+            scale: Arc::from(bounded_string(axis, "scale", limits.max_label_bytes)?),
+            title: optional_bounded_string(axis, "title", limits.max_label_bytes)?.map(Arc::from),
+            unit: optional_bounded_string(axis, "unit", limits.max_label_bytes)?.map(Arc::from),
+            tick_count: optional_usize(axis, "tickCount")?,
+            grid: optional_bool(axis, "grid", false)?,
+        });
+    }
+    for legend in bounded_array(value, "legends", limits.max_series)? {
+        spec.legends.push(Legend {
+            scale: Arc::from(bounded_string(legend, "scale", limits.max_label_bytes)?),
+            title: optional_bounded_string(legend, "title", limits.max_label_bytes)?.map(Arc::from),
+            toggleable: optional_bool(legend, "toggleable", false)?,
+        });
+    }
+    for annotation in bounded_array(value, "annotations", limits.max_annotations)? {
+        spec.annotations.push(parse_annotation(annotation, limits)?);
+    }
+    spec.facet = value
+        .get("facet")
+        .map(|facet| {
+            Ok::<_, String>(Facet {
+                row: optional_field_ref(facet, "row", &default_dataset)?,
+                column: optional_field_ref(facet, "column", &default_dataset)?,
+                scales: match facet
+                    .get("scales")
+                    .and_then(Value::as_str)
+                    .unwrap_or("shared")
+                {
+                    "shared" => FacetScalePolicy::Shared,
+                    "independent" => FacetScalePolicy::Independent,
+                    _ => return Err("custom chart facet scale policy is unsupported".into()),
+                },
+            })
+        })
+        .transpose()?;
+    Ok(spec)
+}
+
+fn parse_mark(value: &Value) -> Result<Mark, String> {
+    let (kind, options) = value
+        .as_str()
+        .map(|kind| (kind, None))
+        .or_else(|| {
+            value
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| (kind, Some(value)))
+        })
+        .ok_or("custom chart mark is invalid")?;
+    let options = options.unwrap_or(&Value::Null);
+    Ok(match kind {
+        "rect" => Mark::Rect,
+        "bar" => Mark::Bar {
+            orientation: match options
+                .get("orientation")
+                .and_then(Value::as_str)
+                .unwrap_or("vertical")
+            {
+                "vertical" => Orientation::Vertical,
+                "horizontal" => Orientation::Horizontal,
+                _ => return Err("custom chart bar orientation is unsupported".into()),
+            },
+        },
+        "line" => Mark::Line {
+            interpolation: parse_interpolation(options)?,
+            points: optional_bool(options, "points", false)?,
+        },
+        "area" => Mark::Area {
+            interpolation: parse_interpolation(options)?,
+            baseline: optional_finite(options, "baseline")?.unwrap_or(0.0),
+        },
+        "point" => Mark::Point {
+            symbol: match options
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or("circle")
+            {
+                "circle" => Symbol::Circle,
+                "square" => Symbol::Square,
+                "triangle" => Symbol::Triangle,
+                "diamond" => Symbol::Diamond,
+                "cross" => Symbol::Cross,
+                _ => return Err("custom chart point symbol is unsupported".into()),
+            },
+        },
+        "arc" => {
+            let inner_radius = optional_finite(options, "innerRadius")?.unwrap_or(0.0);
+            if !(0.0..1.0).contains(&inner_radius) {
+                return Err("custom chart innerRadius must be in [0, 1)".into());
+            }
+            Mark::Arc {
+                inner_radius: inner_radius as f32,
+            }
+        }
+        "rule" => Mark::Rule,
+        "text" => Mark::Text,
+        _ => return Err("custom chart mark kind is unsupported".into()),
+    })
+}
+
+fn parse_interpolation(value: &Value) -> Result<Interpolation, String> {
+    match value
+        .get("interpolation")
+        .and_then(Value::as_str)
+        .unwrap_or("straight")
+    {
+        "straight" => Ok(Interpolation::Straight),
+        "step-before" => Ok(Interpolation::StepBefore),
+        "step-after" => Ok(Interpolation::StepAfter),
+        _ => Err("custom chart interpolation is unsupported".into()),
+    }
+}
+
+fn parse_channel(value: &str) -> Result<Channel, String> {
+    Ok(match value {
+        "x" => Channel::X,
+        "x2" => Channel::X2,
+        "y" => Channel::Y,
+        "y2" => Channel::Y2,
+        "series" => Channel::Series,
+        "group" => Channel::Group,
+        "fill" => Channel::Fill,
+        "stroke" => Channel::Stroke,
+        "opacity" => Channel::Opacity,
+        "symbol" => Channel::Symbol,
+        "size" => Channel::Size,
+        "text" => Channel::Text,
+        _ => return Err("custom chart encoding channel is unsupported".into()),
+    })
+}
+
+fn parse_transform(value: &Value, limits: &ChartLimits) -> Result<Transform, String> {
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or("custom chart transform needs a kind")?;
+    Ok(match kind {
+        "sort" => Transform::Sort {
+            field: bounded_string(value, "field", 256)?,
+            descending: optional_bool(value, "descending", false)?,
+        },
+        "bin" => Transform::Bin {
+            field: bounded_string(value, "field", 256)?,
+            output: bounded_string(value, "output", 256)?,
+            options: BinOptions {
+                start: finite_number(value, "start")?,
+                end: finite_number(value, "end")?,
+                count: required_positive_usize(value, "count")?,
+                density: optional_bool(value, "density", false)?,
+            },
+        },
+        "aggregate" => Transform::Aggregate {
+            group_by: bounded_array(value, "groupBy", limits.max_columns)?
+                .iter()
+                .map(|field| {
+                    field
+                        .as_str()
+                        .filter(|field| !field.is_empty() && field.len() <= 256)
+                        .map(str::to_owned)
+                        .ok_or_else(|| "custom chart aggregate groupBy field is invalid".into())
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            field: optional_bounded_string(value, "field", 256)?,
+            output: bounded_string(value, "output", 256)?,
+            operation: match value
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or("custom chart aggregate needs an operation")?
+            {
+                "count" => AggregateOp::Count,
+                "sum" => AggregateOp::Sum,
+                "mean" => AggregateOp::Mean,
+                "min" => AggregateOp::Min,
+                "max" => AggregateOp::Max,
+                _ => return Err("custom chart aggregate operation is unsupported".into()),
+            },
+            missing: match value
+                .get("missing")
+                .and_then(Value::as_str)
+                .unwrap_or("omit")
+            {
+                "omit" => MissingPolicy::Omit,
+                "propagate" => MissingPolicy::Propagate,
+                _ => return Err("custom chart aggregate missing policy is unsupported".into()),
+            },
+        },
+        "stack" => Transform::Stack {
+            category: bounded_string(value, "category", 256)?,
+            series: bounded_string(value, "series", 256)?,
+            value: bounded_string(value, "value", 256)?,
+            mode: match value.get("mode").and_then(Value::as_str).unwrap_or("raw") {
+                "raw" => StackMode::Raw,
+                "normalized" => StackMode::Normalized,
+                _ => return Err("custom chart stack mode is unsupported".into()),
+            },
+        },
+        _ => return Err("custom chart transform kind is unsupported".into()),
+    })
+}
+
+fn parse_annotation(value: &Value, limits: &ChartLimits) -> Result<Annotation, String> {
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or("custom chart annotation needs a kind")?;
+    Ok(match kind {
+        "rule" => Annotation::Rule {
+            scale: Arc::from(bounded_string(value, "scale", limits.max_label_bytes)?),
+            value: finite_number(value, "value")?,
+            label: optional_bounded_string(value, "label", limits.max_label_bytes)?.map(Arc::from),
+            include_in_domain: optional_bool(value, "includeInDomain", false)?,
+        },
+        "band" => Annotation::Band {
+            scale: Arc::from(bounded_string(value, "scale", limits.max_label_bytes)?),
+            start: finite_number(value, "start")?,
+            end: finite_number(value, "end")?,
+            label: optional_bounded_string(value, "label", limits.max_label_bytes)?.map(Arc::from),
+            include_in_domain: optional_bool(value, "includeInDomain", false)?,
+        },
+        "text" => Annotation::Text {
+            text: Arc::from(bounded_string(value, "text", limits.max_label_bytes)?),
+            x: finite_number(value, "x")?,
+            y: finite_number(value, "y")?,
+        },
+        _ => return Err("custom chart annotation kind is unsupported".into()),
+    })
+}
+
+fn bounded_array<'a>(value: &'a Value, name: &str, limit: usize) -> Result<&'a [Value], String> {
+    let values = match value.get(name) {
+        None => &[],
+        Some(value) => value
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| format!("custom chart {name} must be an array"))?,
+    };
+    if values.len() > limit {
+        return Err(format!("custom chart {name} exceeds its limit"));
+    }
+    Ok(values)
+}
+
+fn optional_bounded_string(
+    value: &Value,
+    name: &str,
+    limit: usize,
+) -> Result<Option<String>, String> {
+    value
+        .get(name)
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.is_empty() && value.len() <= limit)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("custom chart {name} is invalid"))
+        })
+        .transpose()
+}
+
+fn optional_bool(value: &Value, name: &str, default: bool) -> Result<bool, String> {
+    value
+        .get(name)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| format!("custom chart {name} must be boolean"))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
+
+fn optional_finite(value: &Value, name: &str) -> Result<Option<f64>, String> {
+    value
+        .get(name)
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| format!("custom chart {name} must be finite"))
+        })
+        .transpose()
+}
+
+fn bounded_fraction(value: &Value, name: &str, default: f64) -> Result<f64, String> {
+    let value = optional_finite(value, name)?.unwrap_or(default);
+    (0.0..1.0)
+        .contains(&value)
+        .then_some(value)
+        .ok_or_else(|| format!("custom chart {name} must be in [0, 1)"))
+}
+
+fn optional_usize(value: &Value, name: &str) -> Result<Option<usize>, String> {
+    value
+        .get(name)
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| format!("custom chart {name} must be a nonnegative integer"))
+        })
+        .transpose()
+}
+
+fn required_positive_usize(value: &Value, name: &str) -> Result<usize, String> {
+    optional_usize(value, name)?
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("custom chart {name} must be positive"))
+}
+
+fn optional_field_ref(
+    value: &Value,
+    name: &str,
+    default_dataset: &str,
+) -> Result<Option<FieldRef>, String> {
+    let Some(field) = value.get(name) else {
+        return Ok(None);
+    };
+    if let Some(field) = field.as_str() {
+        if field.is_empty() || field.len() > 256 {
+            return Err(format!("custom chart facet {name} is invalid"));
+        }
+        return Ok(Some(FieldRef::new(default_dataset, field)));
+    }
+    Ok(Some(FieldRef::new(
+        optional_bounded_string(field, "dataset", 256)?
+            .unwrap_or_else(|| default_dataset.to_owned()),
+        bounded_string(field, "field", 256)?,
+    )))
 }
 
 fn parse_state(value: Option<&Value>) -> Result<ChartState, String> {
@@ -739,6 +1168,118 @@ mod tests {
     }
 
     #[test]
+    fn custom_grammar_descriptor_lowers_to_the_native_composition_engine() {
+        let mut value = declaration();
+        value["spec"] = json!({
+            "family":"custom","title":"Revenue composition","summary":"Layered revenue",
+            "dataset":"sales","visibilityDomain":"visible-series",
+            "scales":[
+                {"name":"x","kind":"linear"},
+                {"name":"y","kind":"linear","domain":[0,30],"unit":"USD"},
+                {"name":"series","kind":"color"}
+            ],
+            "layers":[
+                {"mark":{"kind":"bar","orientation":"vertical"},"encodings":[
+                    {"channel":"x","field":"month","scale":"x"},
+                    {"channel":"y","field":"revenue","scale":"y"},
+                    {"channel":"series","field":"region","scale":"series"}
+                ]},
+                {"mark":{"kind":"line","interpolation":"step-after","points":true},
+                 "transforms":[{"kind":"sort","field":"month"}],"encodings":[
+                    {"channel":"x","field":"month","scale":"x"},
+                    {"channel":"y","field":"revenue","scale":"y"},
+                    {"channel":"series","field":"region","scale":"series"}
+                ]}
+            ],
+            "axes":[
+                {"scale":"x","title":"Month","tickCount":4,"grid":true},
+                {"scale":"y","title":"Revenue","unit":"USD","grid":true}
+            ],
+            "legends":[{"scale":"series","title":"Region","toggleable":true}],
+            "annotations":[
+                {"kind":"rule","scale":"y","value":20,"label":"Target"},
+                {"kind":"band","scale":"y","start":10,"end":15,"label":"Expected"},
+                {"kind":"text","text":"Quarter","x":2,"y":25}
+            ],
+            "facet":{"column":"region","scales":"shared"}
+        });
+        let spec = parse_spec(&value["spec"], &ChartLimits::default()).unwrap();
+        assert_eq!(spec.layers.len(), 2);
+        assert_eq!(spec.scales.len(), 3);
+        assert_eq!(spec.axes.len(), 2);
+        assert_eq!(spec.annotations.len(), 3);
+        assert_eq!(
+            spec.visibility_domain,
+            VisibilityDomainPolicy::VisibleSeries
+        );
+        assert!(matches!(
+            spec.layers[1].mark,
+            Mark::Line {
+                interpolation: Interpolation::StepAfter,
+                points: true
+            }
+        ));
+        let chart = ChartDeclaration::parse(&value, None).unwrap();
+        assert!(
+            chart
+                .snapshot
+                .output
+                .paint
+                .iter()
+                .any(|command| matches!(command, twinkle::backend::PaintCommand::Path { .. }))
+        );
+    }
+
+    #[test]
+    fn custom_grammar_descriptor_covers_every_public_primitive() {
+        let encodings = [
+            "x", "x2", "y", "y2", "series", "group", "fill", "stroke", "opacity", "symbol", "size",
+            "text",
+        ]
+        .into_iter()
+        .map(|channel| json!({"channel":channel,"field":"revenue"}))
+        .collect::<Vec<_>>();
+        let value = json!({
+            "family":"custom","title":"Everything","dataset":"sales",
+            "visibilityDomain":"original",
+            "scales":[
+                {"name":"linear","kind":"linear"},{"name":"log","kind":"log","base":2},
+                {"name":"time","kind":"time"},{"name":"ordinal","kind":"ordinal"},
+                {"name":"band","kind":"band","innerPadding":0.2,"outerPadding":0.1},
+                {"name":"color","kind":"color"},{"name":"size","kind":"size"}
+            ],
+            "layers":[
+                {"mark":"rect","encodings":encodings,"transforms":[
+                    {"kind":"sort","field":"month","descending":true},
+                    {"kind":"bin","field":"revenue","output":"bucket","start":0,"end":30,"count":3},
+                    {"kind":"aggregate","groupBy":["region"],"field":"revenue","output":"total","operation":"sum","missing":"omit"},
+                    {"kind":"stack","category":"month","series":"region","value":"revenue","mode":"normalized"}
+                ]},
+                {"mark":{"kind":"bar","orientation":"horizontal"},"encodings":[]},
+                {"mark":{"kind":"line","interpolation":"step-before","points":true},"encodings":[]},
+                {"mark":{"kind":"area","interpolation":"step-after","baseline":1},"encodings":[]},
+                {"mark":{"kind":"point","symbol":"diamond"},"encodings":[]},
+                {"mark":{"kind":"arc","innerRadius":0.5},"encodings":[]},
+                {"mark":"rule","encodings":[]},{"mark":"text","encodings":[]}
+            ],
+            "axes":[{"scale":"linear"}],"legends":[{"scale":"color"}],
+            "annotations":[
+                {"kind":"rule","scale":"linear","value":2},
+                {"kind":"band","scale":"linear","start":1,"end":3},
+                {"kind":"text","text":"note","x":1,"y":2}
+            ],
+            "facet":{"row":{"dataset":"sales","field":"region"},"column":"month","scales":"independent"}
+        });
+        let spec = parse_spec(&value, &ChartLimits::default()).unwrap();
+        assert_eq!(spec.scales.len(), 7);
+        assert_eq!(spec.layers.len(), 8);
+        assert_eq!(spec.layers[0].encodings.len(), 12);
+        assert_eq!(spec.layers[0].transforms.len(), 4);
+        assert_eq!(spec.annotations.len(), 3);
+        assert_eq!(spec.facet.unwrap().scales, FacetScalePolicy::Independent);
+    }
+
+    #[test]
     fn hostile_or_incoherent_chart_descriptors_are_rejected() {
         let mut invalid = declaration();
         invalid["data"]["datasets"][0]["columns"][0]["values"] = json!([1]);
@@ -752,6 +1293,11 @@ mod tests {
         let mut invalid_inspection = declaration();
         invalid_inspection["state"]["inspection"] = json!({"dataset":"sales","row":4});
         assert!(ChartDeclaration::parse(&invalid_inspection, None).is_err());
+        let mut malformed_grammar = declaration();
+        malformed_grammar["spec"] = json!({
+            "family":"custom","title":"Bad","dataset":"sales","layers":"not-an-array"
+        });
+        assert!(ChartDeclaration::parse(&malformed_grammar, None).is_err());
 
         let mut removed_inspection = declaration();
         removed_inspection["state"]["inspection"] = json!({"dataset":"sales","row":"removed"});

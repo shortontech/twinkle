@@ -177,3 +177,13 @@ inspector as passive plot-local paint and tooltip semantics; a removed identity
 clears it without reviving stale data. The compiling gallery is
 `crates/twinkle-jsx-runtime/examples/charts.tsx`.
 
+JSX is not limited to the recipe names. A `family: "custom"` specification maps
+bounded JSON-safe descriptors directly into the Rust `ChartSpec` grammar:
+named linear/log/time/ordinal/band/color/size scales; rect, bar, line, area,
+point, arc, rule, and text marks; every encoding channel; ordered sort, bin,
+aggregate, and stack transforms; axes, legends, rule/band/text annotations;
+shared or independent facets; and original/visible-series domain policy. Field
+references may override the declaration's default dataset. Admission validates
+the resulting typed Rust specification and uses the same preparation, limits,
+rendering, interaction, semantics, diagnostics, and rollback path as recipes.
+

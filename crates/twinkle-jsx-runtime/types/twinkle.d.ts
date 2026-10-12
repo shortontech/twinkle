@@ -210,7 +210,7 @@ type TwinkleChartFamily = "line" | "area" | "stacked-area" | "scatter" | "bubble
     "bar" | "horizontal-bar" | "grouped-bar" | "grouped-horizontal-bar" |
     "stacked-bar" | "stacked-horizontal-bar" | "pie" | "donut" | "histogram" |
     "heatmap" | "sparkline";
-interface TwinkleChartSpec {
+interface TwinkleChartRecipeSpec {
     readonly family: TwinkleChartFamily;
     readonly title: string;
     readonly summary?: string;
@@ -221,6 +221,38 @@ interface TwinkleChartSpec {
     readonly innerRadius?: number;
     readonly start?: number; readonly end?: number; readonly bins?: number; readonly density?: boolean;
 }
+type TwinkleChartChannel = "x" | "x2" | "y" | "y2" | "series" | "group" | "fill" | "stroke" | "opacity" | "symbol" | "size" | "text";
+type TwinkleChartMark = "rect" | "rule" | "text" | Readonly<
+    {kind:"bar";orientation?:"vertical"|"horizontal"} |
+    {kind:"line";interpolation?:"straight"|"step-before"|"step-after";points?:boolean} |
+    {kind:"area";interpolation?:"straight"|"step-before"|"step-after";baseline?:number} |
+    {kind:"point";symbol?:"circle"|"square"|"triangle"|"diamond"|"cross"} |
+    {kind:"arc";innerRadius?:number}
+>;
+type TwinkleChartTransform = Readonly<
+    {kind:"sort";field:string;descending?:boolean} |
+    {kind:"bin";field:string;output:string;start:number;end:number;count:number;density?:boolean} |
+    {kind:"aggregate";groupBy:ReadonlyArray<string>;field?:string;output:string;operation:"count"|"sum"|"mean"|"min"|"max";missing?:"omit"|"propagate"} |
+    {kind:"stack";category:string;series:string;value:string;mode?:"raw"|"normalized"}
+>;
+interface TwinkleChartGrammarSpec {
+    readonly family: "custom";
+    readonly title: string;
+    readonly summary?: string;
+    readonly dataset: string;
+    readonly visibilityDomain?: "original" | "visible-series";
+    readonly scales?: ReadonlyArray<Readonly<{name:string;kind:"linear"|"log"|"time"|"ordinal"|"band"|"color"|"size";domain?:readonly [number,number];clamp?:boolean;reversed?:boolean;unit?:string;base?:number;innerPadding?:number;outerPadding?:number}>>;
+    readonly layers: ReadonlyArray<Readonly<{mark:TwinkleChartMark;encodings:ReadonlyArray<Readonly<{channel:TwinkleChartChannel;field:string;dataset?:string;scale?:string}>>;transforms?:ReadonlyArray<TwinkleChartTransform>;visible?:boolean}>>;
+    readonly axes?: ReadonlyArray<Readonly<{scale:string;title?:string;unit?:string;tickCount?:number;grid?:boolean}>>;
+    readonly legends?: ReadonlyArray<Readonly<{scale:string;title?:string;toggleable?:boolean}>>;
+    readonly annotations?: ReadonlyArray<Readonly<
+        {kind:"rule";scale:string;value:number;label?:string;includeInDomain?:boolean} |
+        {kind:"band";scale:string;start:number;end:number;label?:string;includeInDomain?:boolean} |
+        {kind:"text";text:string;x:number;y:number}
+    >>;
+    readonly facet?: Readonly<{row?:string|Readonly<{dataset?:string;field:string}>;column?:string|Readonly<{dataset?:string;field:string}>;scales?:"shared"|"independent"}>;
+}
+type TwinkleChartSpec = TwinkleChartRecipeSpec | TwinkleChartGrammarSpec;
 interface TwinkleChartState {
     readonly selectedRows?: ReadonlyArray<string>;
     readonly visibleSeries?: ReadonlyArray<string>;
