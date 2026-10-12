@@ -1,0 +1,384 @@
+use std::sync::Arc;
+
+use twinkle_charts::{
+    BinOptions, Channel, ChartData, ChartLimits, ChartModel, ChartSpec, ChartTable, ChartTheme,
+    ChartView, Column, DataValue, Dataset, DatasetId, Encoding, Facet, FacetScalePolicy, FieldRef,
+    Interpolation, Layer, Mark, Recipes, RowKey,
+};
+use twinkle_ui::{
+    Rect, SemanticRole,
+    retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions},
+};
+
+fn field(name: &str) -> FieldRef {
+    FieldRef::new("fixture", name)
+}
+
+fn fixture_data(revision: u64) -> Arc<ChartData> {
+    let categories = [
+        "A label deliberately long enough to stress guide placement",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+    ];
+    let keys = (0..categories.len())
+        .map(|index| RowKey::from(format!("row-{index}")))
+        .collect::<Vec<_>>();
+    let dataset = Dataset::new(
+        DatasetId::from("fixture"),
+        keys,
+        vec![
+            Column::new(
+                "x",
+                (0..categories.len())
+                    .map(|index| DataValue::Number(if index == 2 { 1.0 } else { index as f64 }))
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "value",
+                [
+                    -8.0, 3.0, 3.0, 1.0e9, 0.0, 7.0, -2.0, 9.0, 4.0, 6.0, 1.0, 8.0,
+                ]
+                .into_iter()
+                .map(DataValue::Number)
+                .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "positive",
+                (1..=categories.len())
+                    .map(|value| DataValue::Number(value as f64))
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "size",
+                (0..categories.len())
+                    .map(|index| DataValue::Number((index % 4) as f64))
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "category",
+                categories
+                    .into_iter()
+                    .map(|value| DataValue::Category(Arc::from(value)))
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "series",
+                (0..categories.len())
+                    .map(|index| DataValue::Category(Arc::from(format!("series-{index}"))))
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "facet",
+                (0..categories.len())
+                    .map(|index| DataValue::Category(Arc::from(format!("facet-{}", index % 3))))
+                    .collect::<Vec<_>>(),
+            ),
+        ],
+    )
+    .unwrap();
+    Arc::new(ChartData::new(revision, vec![dataset], &ChartLimits::default()).unwrap())
+}
+
+fn with_series(mut spec: ChartSpec) -> ChartSpec {
+    spec.layers[0].encodings.push(Encoding {
+        channel: Channel::Series,
+        field: field("series"),
+        scale: None,
+    });
+    spec
+}
+
+fn fixtures() -> Vec<(&'static str, ChartSpec)> {
+    let mut step = with_series(Recipes::line(
+        "Multi-series step line",
+        field("x"),
+        field("value"),
+    ));
+    step.layers[0].mark = Mark::Line {
+        interpolation: Interpolation::StepAfter,
+        points: true,
+    };
+
+    let mut combo = Recipes::bar("Layered combo", field("x"), field("positive"));
+    combo.layers.push(
+        Layer::new(Mark::Line {
+            interpolation: Interpolation::Straight,
+            points: true,
+        })
+        .encode(Encoding {
+            channel: Channel::X,
+            field: field("x"),
+            scale: Some(Arc::from("x")),
+        })
+        .encode(Encoding {
+            channel: Channel::Y,
+            field: field("value"),
+            scale: Some(Arc::from("y")),
+        }),
+    );
+
+    let mut shared_facet = Recipes::line("Shared facets", field("x"), field("value"));
+    shared_facet.facet = Some(Facet {
+        row: None,
+        column: Some(field("facet")),
+        scales: FacetScalePolicy::Shared,
+    });
+    let mut independent_facet = shared_facet.clone();
+    independent_facet.title = Arc::from("Independent facets");
+    independent_facet.facet.as_mut().unwrap().scales = FacetScalePolicy::Independent;
+
+    vec![
+        ("line", Recipes::line("Line", field("x"), field("value"))),
+        ("line-step-multi", step),
+        ("area", Recipes::area("Area", field("x"), field("value"))),
+        (
+            "stacked-area",
+            Recipes::stacked_area(
+                "Stacked area",
+                field("x"),
+                field("series"),
+                field("value"),
+                false,
+            ),
+        ),
+        (
+            "normalized-area",
+            Recipes::stacked_area(
+                "Normalized area",
+                field("x"),
+                field("series"),
+                field("value"),
+                true,
+            ),
+        ),
+        (
+            "bar",
+            Recipes::bar("Bar", field("category"), field("value")),
+        ),
+        (
+            "horizontal-bar",
+            Recipes::horizontal_bar("Horizontal bar", field("category"), field("value")),
+        ),
+        (
+            "grouped-bar",
+            Recipes::grouped_bar(
+                "Grouped bar",
+                field("category"),
+                field("series"),
+                field("value"),
+            ),
+        ),
+        (
+            "stacked-bar",
+            Recipes::stacked_bar(
+                "Stacked bar",
+                field("category"),
+                field("series"),
+                field("value"),
+                false,
+            ),
+        ),
+        (
+            "normalized-horizontal-bar",
+            Recipes::stacked_horizontal_bar(
+                "Normalized horizontal bar",
+                field("category"),
+                field("series"),
+                field("value"),
+                true,
+            ),
+        ),
+        (
+            "scatter",
+            Recipes::scatter("Scatter", field("x"), field("value")),
+        ),
+        (
+            "bubble",
+            Recipes::bubble("Bubble", field("x"), field("value"), field("size")),
+        ),
+        (
+            "pie",
+            Recipes::pie("Pie", field("category"), field("positive")),
+        ),
+        (
+            "donut",
+            Recipes::donut("Donut", field("category"), field("positive"), 0.55),
+        ),
+        (
+            "histogram",
+            Recipes::histogram(
+                "Histogram",
+                field("value"),
+                BinOptions {
+                    start: -10.0,
+                    end: 1.0e9,
+                    count: 8,
+                    density: false,
+                },
+            ),
+        ),
+        (
+            "heatmap",
+            Recipes::heatmap("Heatmap", field("x"), field("size"), field("value")),
+        ),
+        (
+            "sparkline",
+            Recipes::sparkline("Sparkline", field("x"), field("value")),
+        ),
+        ("combo", combo),
+        ("shared-facet", shared_facet),
+        ("independent-facet", independent_facet),
+    ]
+}
+
+#[test]
+fn every_family_is_deterministic_across_theme_size_and_scale_matrix() {
+    let data = fixture_data(41);
+    let limits = ChartLimits::default();
+    let themes = [
+        ChartTheme::default(),
+        ChartTheme::dark(),
+        ChartTheme::high_contrast(),
+    ];
+    let sizes = [(112.0, 84.0), (960.0, 540.0)];
+    let scales = [1.0, 1.25, 1.5, 2.0];
+
+    for (fixture_name, spec) in fixtures() {
+        for (theme_index, theme) in themes.iter().enumerate() {
+            for (width, height) in sizes {
+                for scale_factor in scales {
+                    let input = RetainedSurfaceInput::new(
+                        Rect::new(17.0, 23.0, width, height),
+                        scale_factor,
+                        RetainedSurfaceRevisions {
+                            content: data.revision(),
+                            theme: theme_index as u64,
+                            ..Default::default()
+                        },
+                    );
+                    let render = || {
+                        let model = ChartModel::new(
+                            Arc::new(spec.clone()),
+                            Arc::clone(&data),
+                            limits.clone(),
+                        )
+                        .unwrap()
+                        .with_theme(theme.clone())
+                        .unwrap();
+                        let mut view = ChartView::new(model).unwrap();
+                        view.update(input).unwrap();
+                        (view.snapshot().output.clone(), view.hits().to_vec())
+                    };
+                    let first = render();
+                    let second = render();
+                    assert_eq!(first, second, "nondeterministic fixture {fixture_name}");
+                    assert!(!first.0.paint.is_empty(), "no paint for {fixture_name}");
+                    assert!(
+                        first.0.semantics.iter().any(|record| {
+                            record.role == SemanticRole::GraphicalCustomControl
+                                && record
+                                    .label
+                                    .as_deref()
+                                    .is_some_and(|label| !label.is_empty())
+                        }),
+                        "missing chart semantics for {fixture_name}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_data_and_exact_table_remain_bounded_and_reachable() {
+    let limits = ChartLimits {
+        max_visible_table_rows: 5,
+        ..ChartLimits::default()
+    };
+    let empty = Dataset::new(
+        DatasetId::from("fixture"),
+        Vec::<RowKey>::new(),
+        vec![
+            Column::new("x", Vec::<DataValue>::new()),
+            Column::new("value", Vec::<DataValue>::new()),
+        ],
+    )
+    .unwrap();
+    let empty = Arc::new(ChartData::new(42, vec![empty], &limits).unwrap());
+    let mut view = ChartView::new(
+        ChartModel::new(
+            Arc::new(Recipes::line("Empty", field("x"), field("value"))),
+            Arc::clone(&empty),
+            limits.clone(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    view.update(RetainedSurfaceInput::new(
+        Rect::new(0.0, 0.0, 64.0, 48.0),
+        2.0,
+        RetainedSurfaceRevisions {
+            content: 42,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    assert!(view.hits().is_empty());
+    assert!(view.snapshot().output.paint.iter().any(
+        |command| matches!(command, twinkle_ui::backend::PaintCommand::Text { text, .. } if text == "No data")
+    ));
+
+    let data = fixture_data(43);
+    let table = ChartTable::new(Arc::clone(&data), limits);
+    let mut offset = 0;
+    let mut reached = Vec::new();
+    loop {
+        let page = table.page("fixture", offset).unwrap();
+        assert!(page.rows.len() <= 5);
+        reached.extend(page.rows.iter().map(|row| row.key.clone()));
+        let Some(next) = table.next_offset(&page) else {
+            break;
+        };
+        offset = next;
+    }
+    assert_eq!(reached, data.dataset("fixture").unwrap().keys());
+}
+
+#[test]
+fn first_failure_has_bounded_semantic_fallback_and_table_action() {
+    let data = fixture_data(44);
+    let spec = Recipes::pie("Invalid negative pie", field("category"), field("value"));
+    let mut view =
+        ChartView::new(ChartModel::new(Arc::new(spec), data, ChartLimits::default()).unwrap())
+            .unwrap();
+    let input = RetainedSurfaceInput::new(
+        Rect::new(7.0, 11.0, 180.0, 96.0),
+        1.5,
+        RetainedSurfaceRevisions {
+            content: 44,
+            ..Default::default()
+        },
+    );
+    assert!(view.update(input).is_err());
+    assert!(view.last_error().is_some());
+    let snapshot = view.snapshot();
+    assert_eq!(snapshot.input, Some(input));
+    assert_eq!(snapshot.output.interactions.len(), 1);
+    assert_eq!(snapshot.output.interactions[0].bounds, input.bounds);
+    assert!(snapshot.output.paint.len() <= 3);
+    assert!(snapshot.output.semantics.iter().any(|record| {
+        record.state.as_deref().is_some_and(|state| {
+            state.contains("Chart unavailable") && state.contains("exact paged data table")
+        })
+    }));
+    snapshot.try_element("error-chart", |_| ()).unwrap();
+}

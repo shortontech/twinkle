@@ -17,7 +17,13 @@ declarations into this same engine.
   replace the retained model.
 - `replace_and_update` and `update_state` stage a candidate. Validation,
   preparation, or host-admission failure preserves the previous paint, hits,
-  semantics, and revision.
+  semantics, and revision. `last_error` exposes the rejected candidate. If the
+  first preparation fails, `snapshot` instead exposes a bounded semantic error
+  presentation whose activation still requests the exact data table.
+- `retained_diagnostics` reports host-owned output/model bytes. `renderer_lost`
+  drops accepted renderer output while retaining reconstructable indexes;
+  `detach` contracts chart indexes for a later reattach, and `destroy` is a
+  terminal release after which the application must create a new `ChartView`.
 
 ```rust
 use std::sync::Arc;

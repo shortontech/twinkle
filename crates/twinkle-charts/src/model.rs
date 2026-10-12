@@ -1742,6 +1742,8 @@ impl RetainedSurfaceModel for ChartModel {
 pub struct ChartView {
     host: RetainedSurfaceHost<ChartModel>,
     navigation: crate::ChartNavigation,
+    fallback: RetainedSurfaceSnapshot,
+    last_error: Option<ChartError>,
 }
 impl ChartView {
     pub fn new(model: ChartModel) -> Result<Self, ChartError> {
@@ -1753,6 +1755,8 @@ impl ChartView {
             host: RetainedSurfaceHost::new(model, limits)
                 .map_err(|message| ChartError::invalid(crate::ChartStage::Validate, message))?,
             navigation: crate::ChartNavigation::default(),
+            fallback: RetainedSurfaceSnapshot::default(),
+            last_error: None,
         })
     }
     pub fn update(
@@ -1760,16 +1764,28 @@ impl ChartView {
         input: RetainedSurfaceInput,
     ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
         let mut candidate = self.host.begin_candidate();
-        candidate
-            .update(input)
-            .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+        if let Err(message) = candidate.update(input) {
+            let error = ChartError::invalid(crate::ChartStage::Geometry, message);
+            self.record_error(input, &error);
+            return Err(error);
+        }
         let old = self.host.finalize_candidate(candidate);
         drop(old);
+        self.fallback = RetainedSurfaceSnapshot::default();
+        self.last_error = None;
         self.navigation.reconcile(self.host.model().hits());
-        Ok(self.host.snapshot())
+        Ok(self.snapshot())
     }
     pub fn snapshot(&self) -> &RetainedSurfaceSnapshot {
-        self.host.snapshot()
+        if self.host.snapshot().input.is_some() {
+            self.host.snapshot()
+        } else {
+            &self.fallback
+        }
+    }
+    /// Most recent rejected candidate, cleared by the next accepted update.
+    pub fn last_error(&self) -> Option<&ChartError> {
+        self.last_error.as_ref()
     }
     pub fn diagnostics(&self) -> &ChartDiagnostics {
         self.host.model().diagnostics()
@@ -1812,14 +1828,21 @@ impl ChartView {
         input: RetainedSurfaceInput,
     ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
         let mut candidate = self.host.begin_candidate();
-        candidate.model_mut().replace(spec, data)?;
-        candidate
-            .update(input)
-            .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+        if let Err(error) = candidate.model_mut().replace(spec, data) {
+            self.record_error(input, &error);
+            return Err(error);
+        }
+        if let Err(message) = candidate.update(input) {
+            let error = ChartError::invalid(crate::ChartStage::Geometry, message);
+            self.record_error(input, &error);
+            return Err(error);
+        }
         let old = self.host.finalize_candidate(candidate);
         drop(old);
+        self.fallback = RetainedSurfaceSnapshot::default();
+        self.last_error = None;
         self.navigation.reconcile(self.host.model().hits());
-        Ok(self.host.snapshot())
+        Ok(self.snapshot())
     }
     pub fn update_state(
         &mut self,
@@ -1828,13 +1851,17 @@ impl ChartView {
     ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
         let mut candidate = self.host.begin_candidate();
         candidate.model_mut().state = state;
-        candidate
-            .update(input)
-            .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+        if let Err(message) = candidate.update(input) {
+            let error = ChartError::invalid(crate::ChartStage::Geometry, message);
+            self.record_error(input, &error);
+            return Err(error);
+        }
         let old = self.host.finalize_candidate(candidate);
         drop(old);
+        self.fallback = RetainedSurfaceSnapshot::default();
+        self.last_error = None;
         self.navigation.reconcile(self.host.model().hits());
-        Ok(self.host.snapshot())
+        Ok(self.snapshot())
     }
     pub fn element<Message: Clone>(
         &self,
@@ -1842,8 +1869,7 @@ impl ChartView {
         mut message: impl FnMut(ChartEvent) -> Message,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
         let visible = self.host.model().state.visible_series.clone();
-        self.host
-            .snapshot()
+        self.snapshot()
             .try_element(id, |interaction| {
                 if let Some((_, label)) = interaction.id.as_str().split_once("chart/legend/") {
                     let label: Arc<str> = Arc::from(label);
@@ -1863,6 +1889,7 @@ impl ChartView {
     pub fn detach(&mut self) {
         self.host.detach();
         self.navigation = crate::ChartNavigation::default();
+        self.fallback = RetainedSurfaceSnapshot::default();
     }
     pub fn renderer_lost(&mut self) {
         self.host.renderer_lost();
@@ -1872,6 +1899,90 @@ impl ChartView {
     pub fn destroy(&mut self) {
         self.host.destroy();
         self.navigation = crate::ChartNavigation::default();
+        self.fallback = RetainedSurfaceSnapshot::default();
+    }
+
+    fn record_error(&mut self, input: RetainedSurfaceInput, error: &ChartError) {
+        self.last_error = Some(error.clone());
+        if self.host.snapshot().input.is_none() {
+            self.fallback = chart_error_snapshot(
+                input,
+                self.host.model().spec.title.as_ref(),
+                &error.to_string(),
+                &self.host.model().theme,
+            );
+        }
+    }
+}
+
+fn chart_error_snapshot(
+    input: RetainedSurfaceInput,
+    title: &str,
+    error: &str,
+    theme: &ChartTheme,
+) -> RetainedSurfaceSnapshot {
+    let truncate = |value: &str| value.chars().take(512).collect::<String>();
+    let title_height = input.bounds.size.height.min(22.0).max(0.0);
+    let error_y = input.bounds.origin.y + title_height;
+    let error_height = (input.bounds.size.height - title_height).max(0.0);
+    let state = format!(
+        "Chart unavailable: {}. Activate for the exact paged data table.",
+        truncate(error)
+    );
+    RetainedSurfaceSnapshot {
+        input: Some(input),
+        output: RetainedSurfaceOutput {
+            measured: input.bounds.size,
+            paint: vec![
+                PaintCommand::Fill {
+                    rect: input.bounds,
+                    color: theme.background,
+                },
+                PaintCommand::Text {
+                    bounds: Rect::new(
+                        input.bounds.origin.x,
+                        input.bounds.origin.y,
+                        input.bounds.size.width,
+                        title_height,
+                    ),
+                    text: truncate(title),
+                    scale: 1.0,
+                    color: theme.foreground,
+                    align: twinkle_ui::TextAlign::Start,
+                    bold: true,
+                    wrap: false,
+                },
+                PaintCommand::Text {
+                    bounds: Rect::new(
+                        input.bounds.origin.x,
+                        error_y,
+                        input.bounds.size.width,
+                        error_height,
+                    ),
+                    text: truncate(error),
+                    scale: 1.0,
+                    color: theme.selection,
+                    align: twinkle_ui::TextAlign::Start,
+                    bold: false,
+                    wrap: true,
+                },
+            ],
+            interactions: vec![RetainedSurfaceInteraction {
+                id: UiId::from("chart"),
+                bounds: input.bounds,
+                action: ActionKind::Activate,
+                focusable: true,
+            }],
+            semantics: vec![twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                id: UiId::from("chart"),
+                bounds: input.bounds,
+                role: SemanticRole::GraphicalCustomControl,
+                label: Some(truncate(title)),
+                state: Some(state),
+                protected: false,
+            }],
+            damage: vec![input.bounds],
+        },
     }
 }
 
