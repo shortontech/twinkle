@@ -1,6 +1,66 @@
 use super::*;
 
 #[test]
+#[ignore = "release-profile sparse active-overlay admission workload"]
+fn sparse_active_overlay_dependency_elision_release_workload() {
+    const WARMUP: usize = 10;
+    const ITERATIONS: usize = 200;
+    const BRANCHES: usize = 200;
+
+    fn fixture() -> Element<TestMessage> {
+        let branches = (0..BRANCHES).map(|index| {
+            let content = Column::new()
+                .child(Text::new(format!("branch {index} primary measurement text")).wrap(true))
+                .child(Text::new("secondary measurement text").wrap(true));
+            if index == 0 {
+                Container::new()
+                    .id(format!("branch-{index}"))
+                    .message(TestMessage::Named("active"))
+                    .interaction_paints([
+                        InteractionPaint::default(),
+                        InteractionPaint {
+                            width: Some(Length::Px(96.0)),
+                            height: Some(Length::Px(48.0)),
+                            ..InteractionPaint::default()
+                        },
+                        InteractionPaint::default(),
+                    ])
+                    .child(content)
+                    .into_element()
+            } else {
+                Container::new()
+                    .id(format!("branch-{index}"))
+                    .child(content)
+                    .into_element()
+            }
+        });
+        Row::new().gap(2.0).children(branches).into_element()
+    }
+
+    let bounds = Rect::new(0.0, 0.0, 800.0, 720.0);
+    let mut state = UiStateStore::default();
+    state.set_pressed(Some(UiId::from("root/branch-0")));
+    for _ in 0..WARMUP {
+        std::hint::black_box(UiFrame::layout_with_state(fixture(), bounds, &mut state));
+    }
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let started = std::time::Instant::now();
+        let frame = UiFrame::layout_with_state(fixture(), bounds, &mut state);
+        samples.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+        std::hint::black_box(frame.resolved_layout().nodes.len());
+    }
+    samples.sort_by(f64::total_cmp);
+    let percentile = |percent: usize| samples[(ITERATIONS * percent).div_ceil(100) - 1];
+    eprintln!(
+        "sparse_active_overlay branches={BRANCHES} warmup={WARMUP} iterations={ITERATIONS} p50_us={:.3} p95_us={:.3} total_us={:.3}",
+        percentile(50),
+        percentile(95),
+        samples.iter().sum::<f64>()
+    );
+}
+
+#[test]
 fn empty_transient_overlay_uses_canonical_recursive_measurement() {
     let root = Row::<()>::new()
         .gap(7.0)

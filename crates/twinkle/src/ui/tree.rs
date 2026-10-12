@@ -2327,7 +2327,7 @@ impl<Message: Clone> UiFrame<Message> {
         }
         tree.retained_nodes
             .invalidate_transient_overlay(transient_overlay.affected_phases());
-        let measurement_overlay = transient_overlay
+        let full_overlay = transient_overlay
             .has_value_overrides()
             .then_some(&transient_overlay);
         let mut measurement = MeasurementSession::default();
@@ -2337,7 +2337,7 @@ impl<Message: Clone> UiFrame<Message> {
             bounds,
             None,
             None,
-            measurement_overlay,
+            full_overlay,
             &mut measurement,
             &mut tree,
             previous,
@@ -8295,13 +8295,10 @@ fn measure_child_effective<Message>(
             let child_id = layout::resolved_child_id(parent_id, child, index);
             crate::pipeline_trace::count_work!(9, 1);
             crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
-            measure_element_effective(
-                child,
-                Some((&child_id, overlay)),
-                constraints,
-                purpose,
-                session,
-            )
+            let child_context = overlay
+                .measurement_affects(&child_id)
+                .then_some((&child_id, overlay));
+            measure_element_effective(child, child_context, constraints, purpose, session)
         }
         None => measure_element_effective(child, None, constraints, purpose, session),
     }
@@ -8318,8 +8315,12 @@ fn effective_child_style<'a, Message>(
             let child_id = layout::resolved_child_id(parent_id, child, index);
             crate::pipeline_trace::count_work!(9, 1);
             crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
-            crate::pipeline_trace::count_work!(8, 1);
-            overlay.style(&child_id, child)
+            if overlay.measurement_affects(&child_id) {
+                crate::pipeline_trace::count_work!(8, 1);
+                overlay.style(&child_id, child)
+            } else {
+                EffectiveStyle::canonical(&child.style)
+            }
         }
         None => EffectiveStyle::canonical(&child.style),
     }

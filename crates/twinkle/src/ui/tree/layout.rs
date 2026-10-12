@@ -41,6 +41,9 @@ pub(super) fn layout_element<Message: Clone>(
         |overlay| overlay.style(id, element),
     );
     let kind = overlay.map_or(&element.kind, |overlay| overlay.kind(id, element));
+    let measurement_context = overlay
+        .filter(|overlay| overlay.measurement_affects(id))
+        .map(|overlay| (id, overlay));
     let reusable = geometry_reuse_safe(element)
         .then(|| tree.reusable_geometry(id, bounds, inherited_clip))
         .flatten()
@@ -81,7 +84,7 @@ pub(super) fn layout_element<Message: Clone>(
                     tree.nodes_measured = tree.nodes_measured.saturating_add(1);
                     measure_element_effective(
                         element,
-                        overlay.map(|overlay| (id, overlay)),
+                        measurement_context,
                         Constraints::loose(bounds.size),
                         MeasurementPurpose::Direct,
                         measurement,
@@ -395,7 +398,7 @@ pub(super) fn layout_element<Message: Clone>(
         Kind::Layer => {
             let content = rect.inset(style.padding);
             for (index, child) in element.children.iter().enumerate() {
-                let child_context = overlay.map(|overlay| (id, overlay));
+                let child_context = measurement_context;
                 let position = effective_child_style(child, child_context, index)
                     .absolute_position
                     .unwrap_or_default();
@@ -441,7 +444,7 @@ pub(super) fn layout_element<Message: Clone>(
                     .map(|(index, child)| {
                         measure_child_effective(
                             child,
-                            overlay.map(|overlay| (id, overlay)),
+                            measurement_context,
                             index,
                             Constraints::loose(Size::new(f32::INFINITY, scroll_rect.size.height)),
                             MeasurementPurpose::Intrinsic,
@@ -474,12 +477,10 @@ pub(super) fn layout_element<Message: Clone>(
                 .enumerate()
                 .map(|(index, child)| match axis {
                     Axis::Horizontal => {
-                        effective_child_style(child, overlay.map(|overlay| (id, overlay)), index)
-                            .min_width
+                        effective_child_style(child, measurement_context, index).min_width
                     }
                     Axis::Vertical => {
-                        effective_child_style(child, overlay.map(|overlay| (id, overlay)), index)
-                            .min_height
+                        effective_child_style(child, measurement_context, index).min_height
                     }
                 })
                 .sum::<f32>()
@@ -503,7 +504,7 @@ pub(super) fn layout_element<Message: Clone>(
                     .map(|(index, child)| {
                         measure_child_effective(
                             child,
-                            overlay.map(|overlay| (id, overlay)),
+                            measurement_context,
                             index,
                             Constraints::loose(Size::new(content.size.width, f32::INFINITY)),
                             MeasurementPurpose::Scroll,
@@ -608,7 +609,7 @@ pub(super) fn layout_element<Message: Clone>(
                 style.align_items,
                 style.justify_content,
                 &element.children,
-                overlay.map(|overlay| (id, overlay)),
+                measurement_context,
                 measurement,
             );
             let child_clip = if scrollable_x || scrollable_y {
@@ -768,7 +769,7 @@ pub(super) fn layout_element<Message: Clone>(
                 .map(|(index, child)| {
                     measure_child_effective(
                         child,
-                        overlay.map(|overlay| (id, overlay)),
+                        measurement_context,
                         index,
                         Constraints::loose(content.size),
                         MeasurementPurpose::Intrinsic,
@@ -791,7 +792,7 @@ pub(super) fn layout_element<Message: Clone>(
                 .map(|(index, child)| {
                     measure_child_effective(
                         child,
-                        overlay.map(|overlay| (id, overlay)),
+                        measurement_context,
                         index,
                         Constraints::loose(Size::new(
                             widths[index % column_count],
@@ -891,10 +892,9 @@ pub(super) fn layout_element<Message: Clone>(
                 let row_y = content.origin.y - offset_y
                     + row_heights[..row].iter().sum::<f32>()
                     + style.gap * row as f32;
-                let alignment =
-                    effective_child_style(child, overlay.map(|overlay| (id, overlay)), index)
-                        .align_self
-                        .unwrap_or(style.align_items);
+                let alignment = effective_child_style(child, measurement_context, index)
+                    .align_self
+                    .unwrap_or(style.align_items);
                 let item_height = measured[index].height.min(row_heights[row]);
                 let row_baseline = if alignment == Align::Baseline {
                     measured[row * column_count..measured.len().min((row + 1) * column_count)]
@@ -1377,6 +1377,21 @@ pub(super) struct TransientStateJournal {
     slider_presentations: std::collections::HashMap<UiId, [ResolvedPartStyle; 3]>,
     dropdown_presentations: std::collections::HashMap<UiId, ResolvedDropdownPresentation>,
     phases: std::collections::HashMap<UiId, super::super::retained::DirtyPhases>,
+    measurement_affected: std::collections::HashSet<UiId>,
+    #[cfg(test)]
+    force_measurement_overlay: bool,
+}
+
+#[derive(Default)]
+struct MeasurementSummaryStats {
+    nodes_visited: usize,
+    direct_targets: usize,
+    metric_style_targets: usize,
+    dropdown_expansion_targets: usize,
+    displayed_text_targets: usize,
+    text_format_targets: usize,
+    slider_presentation_targets: usize,
+    dropdown_presentation_targets: usize,
 }
 
 #[derive(Debug)]
@@ -1447,6 +1462,28 @@ impl TransientStateJournal {
             || !self.dropdown_presentations.is_empty()
     }
 
+    pub(super) fn measurement_affects(&self, id: &UiId) -> bool {
+        #[cfg(test)]
+        if self.force_measurement_overlay {
+            return self.has_value_overrides();
+        }
+        self.measurement_affected.contains(id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn force_measurement_overlay(&mut self, force: bool) {
+        self.force_measurement_overlay = force;
+    }
+
+    #[cfg(test)]
+    pub(super) fn measurement_affected_count(&self) -> usize {
+        self.measurement_affected.len()
+    }
+
+    pub(super) fn measurement_summary_bytes(&self) -> usize {
+        self.measurement_affected.capacity() * std::mem::size_of::<UiId>()
+    }
+
     pub(super) fn style_count(&self) -> usize {
         self.style_patches.len()
     }
@@ -1497,6 +1534,7 @@ impl TransientStateJournal {
                 * std::mem::size_of::<(UiId, ResolvedDropdownPresentation)>()
             + self.phases.capacity()
                 * std::mem::size_of::<(UiId, super::super::retained::DirtyPhases)>()
+            + self.measurement_summary_bytes()
             + self
                 .text_patches
                 .values()
@@ -1520,6 +1558,7 @@ impl TransientStateJournal {
             + usize::from(self.slider_presentations.capacity() != 0)
             + usize::from(self.dropdown_presentations.capacity() != 0)
             + usize::from(self.phases.capacity() != 0)
+            + usize::from(self.measurement_affected.capacity() != 0)
     }
 
     pub(super) fn affected_phases(
@@ -1534,7 +1573,30 @@ impl TransientStateJournal {
         id: &UiId,
         retained: Option<&super::super::retained::RetainedNodeArena>,
     ) {
-        self.finalize_tree(element, id, retained);
+        let _started = crate::pipeline_trace::clock();
+        self.measurement_affected.clear();
+        let mut stats = MeasurementSummaryStats::default();
+        self.finalize_tree(element, id, retained, &mut stats);
+        if self.measurement_affected.is_empty() {
+            self.measurement_affected.shrink_to_fit();
+        }
+        crate::pipeline_trace::event!({
+            "event": "measurement_dependency_summary",
+            "nodesVisited": stats.nodes_visited,
+            "directTargets": stats.direct_targets,
+            "targetCategories": {
+                "metricStyle": stats.metric_style_targets,
+                "dropdownExpansion": stats.dropdown_expansion_targets,
+                "displayedText": stats.displayed_text_targets,
+                "textFormat": stats.text_format_targets,
+                "sliderPresentation": stats.slider_presentation_targets,
+                "dropdownPresentation": stats.dropdown_presentation_targets,
+            },
+            "affectedClosureNodes": self.measurement_affected.len(),
+            "storageBytes": self.measurement_summary_bytes(),
+            "serviceUs": crate::pipeline_trace::micros(_started),
+            "boundary": "Piggybacked on finalized transient-journal traversal. Direct targets are explicit measurement-affecting values; closure contains those targets and every declaration ancestor. Empty and paint/placement-only journals allocate no summary storage."
+        });
     }
 
     pub(super) fn clear_patches(&mut self) {
@@ -1546,6 +1608,8 @@ impl TransientStateJournal {
         self.slider_presentations.clear();
         self.dropdown_presentations.clear();
         self.phases.clear();
+        self.measurement_affected.clear();
+        self.measurement_affected.shrink_to_fit();
     }
 
     fn finalize_tree<Message>(
@@ -1553,10 +1617,14 @@ impl TransientStateJournal {
         element: &Element<Message>,
         id: &UiId,
         retained: Option<&super::super::retained::RetainedNodeArena>,
-    ) {
+        summary: &mut MeasurementSummaryStats,
+    ) -> bool {
+        summary.nodes_visited += 1;
+        let mut descendant_affects_measurement = false;
         for (index, child) in element.children.iter().enumerate() {
             let child_id = retained_child_id_from(retained, id, child, index);
-            self.finalize_tree(child, &child_id, retained);
+            descendant_affects_measurement |=
+                self.finalize_tree(child, &child_id, retained, summary);
         }
         let mut dirty = super::super::retained::DirtyPhases::default();
         if let Some(patch) = self.style_patches.get(id) {
@@ -1649,6 +1717,41 @@ impl TransientStateJournal {
         } else {
             self.phases.insert(id.clone(), dirty);
         }
+        let metric_style = self
+            .style_patches
+            .get(id)
+            .is_some_and(|patch| patch.width.is_some() || patch.height.is_some());
+        let dropdown_expansion = self.dropdown_expanded.contains_key(id);
+        let displayed_text = self.text_patches.get(id).is_some_and(|patch| {
+            if let Kind::Text { value, .. } = &element.kind {
+                patch.value != *value
+            } else {
+                true
+            }
+        });
+        let text_format = self.text_format_patches.contains_key(id);
+        let slider_presentation = self.slider_presentations.contains_key(id);
+        let dropdown_presentation = self.dropdown_presentations.contains_key(id);
+        let direct_affects_measurement = metric_style
+            || dropdown_expansion
+            || displayed_text
+            || text_format
+            || slider_presentation
+            || dropdown_presentation;
+        if direct_affects_measurement {
+            summary.direct_targets += 1;
+        }
+        summary.metric_style_targets += usize::from(metric_style);
+        summary.dropdown_expansion_targets += usize::from(dropdown_expansion);
+        summary.displayed_text_targets += usize::from(displayed_text);
+        summary.text_format_targets += usize::from(text_format);
+        summary.slider_presentation_targets += usize::from(slider_presentation);
+        summary.dropdown_presentation_targets += usize::from(dropdown_presentation);
+        let affects_measurement = direct_affects_measurement || descendant_affects_measurement;
+        if affects_measurement {
+            self.measurement_affected.insert(id.clone());
+        }
+        affects_measurement
     }
 
     pub(super) fn style<'a, Message>(
@@ -3226,5 +3329,214 @@ mod transient_journal_tests {
         );
         assert!(!journal.has_value_overrides());
         assert_eq!(journal.affected_phases().count(), 1);
+    }
+
+    fn dependency_fixture() -> Element<()> {
+        Row::new()
+            .child(
+                Column::new()
+                    .id("left")
+                    .child(Text::new("target").id("target")),
+            )
+            .child(
+                Column::new()
+                    .id("right")
+                    .child(Text::new("sibling").id("sibling")),
+            )
+            .into_element()
+    }
+
+    #[test]
+    fn measurement_dependency_summary_closes_over_ancestors_not_siblings() {
+        let root = dependency_fixture();
+        let root_id = UiId::from("root");
+        let target_id = UiId::from("root/left/target");
+        let mut journal = TransientStateJournal::default();
+        journal.style_patches.insert(
+            target_id.clone(),
+            TransientStylePatch {
+                width: Some(Length::Px(40.0)),
+                ..TransientStylePatch::default()
+            },
+        );
+        journal.finalize(&root, &root_id, None);
+        assert_ne!(journal.measurement_summary_bytes(), 0);
+        journal.clear_patches();
+        journal.style_patches.insert(
+            target_id.clone(),
+            TransientStylePatch {
+                width: Some(Length::Px(80.0)),
+                ..TransientStylePatch::default()
+            },
+        );
+        journal.finalize(&root, &root_id, None);
+        assert_eq!(journal.measurement_affected_count(), 3);
+        assert!(journal.measurement_affects(&root_id));
+        assert!(journal.measurement_affects(&UiId::from("root/left")));
+        assert!(journal.measurement_affects(&target_id));
+        assert!(!journal.measurement_affects(&UiId::from("root/right")));
+        assert!(!journal.measurement_affects(&UiId::from("root/right/sibling")));
+    }
+
+    #[test]
+    fn paint_input_selection_and_scroll_only_values_do_not_affect_measurement() {
+        let root = dependency_fixture();
+        let root_id = UiId::from("root");
+        let target_id = UiId::from("root/left/target");
+        let mut journal = TransientStateJournal::default();
+        journal.style_patches.insert(
+            target_id.clone(),
+            TransientStylePatch {
+                foreground: Some(Some(0xffff_ffff)),
+                scroll_offset: Some(10.0),
+                ..TransientStylePatch::default()
+            },
+        );
+        journal
+            .vertical_scroll_offsets
+            .insert(target_id.clone(), 10.0);
+        journal.text_patches.insert(
+            target_id,
+            TransientTextPatch {
+                value: "target".into(),
+                input_value: "edited input projection".into(),
+                selection_x: Some((1.0, 2.0)),
+                caret_position: Some(Point { x: 2.0, y: 3.0 }),
+            },
+        );
+        journal.finalize(&root, &root_id, None);
+        assert!(journal.has_value_overrides());
+        assert_eq!(journal.measurement_affected_count(), 0);
+        assert_eq!(journal.measurement_summary_bytes(), 0);
+    }
+
+    #[test]
+    fn every_measurement_value_table_seeds_the_dependency_summary() {
+        let root = dependency_fixture();
+        let root_id = UiId::from("root");
+        let target = UiId::from("root/left/target");
+        let mut cases: Vec<Box<dyn FnOnce(&mut TransientStateJournal)>> = vec![
+            Box::new({
+                let target = target.clone();
+                move |journal| {
+                    journal.style_patches.insert(
+                        target,
+                        TransientStylePatch {
+                            height: Some(Length::Px(30.0)),
+                            ..TransientStylePatch::default()
+                        },
+                    );
+                }
+            }),
+            Box::new({
+                let target = target.clone();
+                move |journal| {
+                    journal.dropdown_expanded.insert(target, true);
+                }
+            }),
+            Box::new({
+                let target = target.clone();
+                move |journal| {
+                    journal.text_patches.insert(
+                        target,
+                        TransientTextPatch {
+                            value: "changed".into(),
+                            input_value: "changed".into(),
+                            selection_x: None,
+                            caret_position: None,
+                        },
+                    );
+                }
+            }),
+            Box::new({
+                let target = target.clone();
+                move |journal| {
+                    journal.text_format_patches.insert(
+                        target,
+                        TransientTextFormatPatch {
+                            scale: Some(3.0),
+                            line_height: None,
+                        },
+                    );
+                }
+            }),
+            Box::new({
+                let target = target.clone();
+                move |journal| {
+                    journal
+                        .slider_presentations
+                        .insert(target, [ResolvedPartStyle::default(); 3]);
+                }
+            }),
+            Box::new(move |journal| {
+                journal.dropdown_presentations.insert(
+                    target,
+                    ResolvedDropdownPresentation {
+                        expanded: false,
+                        parts: [ResolvedPartStyle::default(); 3],
+                        resolved_options: Vec::new(),
+                    },
+                );
+            }),
+        ];
+        for populate in cases.drain(..) {
+            let mut journal = TransientStateJournal::default();
+            populate(&mut journal);
+            journal.finalize(&root, &root_id, None);
+            assert!(journal.measurement_affects(&root_id));
+            assert!(journal.measurement_affects(&UiId::from("root/left")));
+            assert!(journal.measurement_affects(&UiId::from("root/left/target")));
+            assert!(!journal.measurement_affects(&UiId::from("root/right")));
+        }
+    }
+
+    #[test]
+    fn dependency_elision_matches_forced_overlay_measurement() {
+        let root = Row::<()>::new()
+            .gap(5.0)
+            .child(
+                Column::new()
+                    .id("left")
+                    .child(Text::new("changed branch").id("target")),
+            )
+            .child(
+                Column::new()
+                    .id("right")
+                    .child(Text::new("unrelated wrapping sibling").wrap(true)),
+            )
+            .into_element();
+        let root_id = UiId::from("root");
+        let mut journal = TransientStateJournal::default();
+        journal.style_patches.insert(
+            UiId::from("root/left/target"),
+            TransientStylePatch {
+                width: Some(Length::Px(90.0)),
+                ..TransientStylePatch::default()
+            },
+        );
+        journal.finalize(&root, &root_id, None);
+        for maximum in [Size::new(180.0, 100.0), Size::new(320.0, f32::INFINITY)] {
+            let constraints = Constraints::loose(maximum);
+            let mut optimized_session = MeasurementSession::default();
+            let optimized = measure_element_effective(
+                &root,
+                Some((&root_id, &journal)),
+                constraints,
+                MeasurementPurpose::Direct,
+                &mut optimized_session,
+            );
+            journal.force_measurement_overlay(true);
+            let mut forced_session = MeasurementSession::default();
+            let forced = measure_element_effective(
+                &root,
+                Some((&root_id, &journal)),
+                constraints,
+                MeasurementPurpose::Direct,
+                &mut forced_session,
+            );
+            journal.force_measurement_overlay(false);
+            assert_eq!(optimized, forced);
+            assert!(optimized_session.overlay_bypasses < forced_session.overlay_bypasses);
+        }
     }
 }
