@@ -125,12 +125,17 @@ units, titles, summaries, scales, guides, and annotations before publication;
 chart-owned presentation labels additionally share the total-label budget.
 The retained-surface host independently bounds paint, interaction, semantic, and
 damage records. Raise limits deliberately; their Cartesian product is not an
-admission promise.
+admission promise. Before allocating large preparation vectors, admission checks
+a conservative peak ceiling covering candidate hit/index ownership plus separate
+coordinate/reduction, tessellation-geometry, and transform-table scratch owners.
+`ChartDiagnostics` reports each scratch ceiling, their total transient bytes,
+accepted steady bytes, and the combined peak; caller-owned source storage remains
+outside chart ownership.
 
 Line/area geometry is reduced against logical pixel width while retaining
 endpoints and bucket extrema. Exact accepted rows remain in the hit index and
 table. `ChartDiagnostics` exposes row/display counts, geometry vertices, index
-bytes, guide/command/semantic counts, retained-byte estimates, rejection and
+bytes, guide/command/semantic counts, steady/transient/peak byte estimates, rejection and
 cache counters, preparation time, and reduction notices.
 
 ## Time, themes, and export

@@ -20,7 +20,10 @@ uses nearest-rank percentiles, and uses a 1200×800 logical viewport at scale 1.
 Cold samples create a new model/view and prepare its first accepted snapshot.
 Warm samples reuse accepted state. `steady_bytes` is the chart diagnostic's
 estimate for prepared geometry and indexes; it excludes caller-owned source
-data and is not process RSS.
+data and is not process RSS. Admission also computes coordinate/reduction,
+tessellation-geometry, and transform-table scratch ceilings before large row
+scratch allocation; their sum is `transient_bytes`, and `peak_bytes` is the
+accepted steady ownership plus that conservative simultaneous scratch ceiling.
 
 The instrumented wrapper installs Twinkle's process-wide counting system
 allocator. It reports per-operation p50/p95 allocation/reallocation calls,
@@ -38,20 +41,20 @@ serially: 11 cold samples and 101 warm samples.
 
 | Scenario | p50 | p95 | Source rows | Displayed rows | Steady bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Line, 1k | 129 µs | 156 µs | 1,000 | 1,000 | 129,680 |
-| Scatter, 1k | 115 µs | 127 µs | 1,000 | 1,000 | 81,728 |
-| Line, 100k | 12.56 ms | 13.07 ms | 100,000 | 4,548 | 10,455,440 |
-| Scatter, 100k | 15.60 ms | 17.24 ms | 100,000 | 50,000 | 10,237,184 |
-| Line, 1M | 151.93 ms | 153.50 ms | 1,000,000 | 4,580 | 83,717,264 |
-| Scatter, 1M | 145.64 ms | 147.71 ms | 1,000,000 | 50,000 | 83,497,472 |
-| Heatmap, 10k | 842 µs | 925 µs | 10,000 | 10,000 | 1,259,648 |
-| Grouped bars, 10k | 2.65 ms | 2.74 ms | 10,000 | 10,000 | 1,259,648 |
-| Stacked bars, 10k | 16.97 ms | 17.07 ms | 10,000 | 10,000 | 1,259,648 |
-| 64 facets | 25.65 ms | 25.99 ms | 6,400 | 6,337 | 816,128 |
-| Indexed inspection, 1M line | 18.43 µs | 18.48 µs | 1,000,000 | 4,580 | 83,717,264 |
-| 16 unchanged 10k charts | 240 ns | 241 ns | 160,000 | no preparation | 23,227,136 |
-| 15 unchanged + one viewport update | 522 µs | 544 µs | 160,000 | 4,002 updated | 22,605,320 |
-| Complete native-frame construction, 10k line | 10.43 µs | 11.42 µs | 10,000 | 4,002 | 829,880 |
+| Line, 1k | 130 µs | 164 µs | 1,000 | 1,000 | 146,064 |
+| Scatter, 1k | 127 µs | 133 µs | 1,000 | 1,000 | 98,112 |
+| Line, 100k | 13.37 ms | 17.33 ms | 100,000 | 4,549 | 12,552,592 |
+| Scatter, 100k | 15.63 ms | 16.92 ms | 100,000 | 50,001 | 12,334,336 |
+| Line, 1M | 162.13 ms | 167.86 ms | 1,000,000 | 4,581 | 100,494,480 |
+| Scatter, 1M | 164.07 ms | 166.43 ms | 1,000,000 | 50,001 | 100,274,688 |
+| Heatmap, 10k | 882 µs | 1.01 ms | 10,000 | 10,000 | 1,521,792 |
+| Grouped bars, 10k | 2.78 ms | 2.89 ms | 10,000 | 10,000 | 1,521,792 |
+| Stacked bars, 10k | 17.54 ms | 18.44 ms | 10,000 | 10,000 | 4,181,253 |
+| 64 facets | 28.52 ms | 30.93 ms | 6,400 | 6,400 | 2,026,218 |
+| Indexed inspection, 1M line | 18.72 µs | 18.84 µs | 1,000,000 | 4,581 | 100,494,480 |
+| 16 unchanged 10k charts | 241 ns | 241 ns | 160,000 | no preparation | 27,421,440 |
+| 15 unchanged + one viewport update | 538 µs | 607 µs | 160,000 | 4,003 updated | 26,668,552 |
+| Complete native-frame construction, 10k line | 11.41 µs | 18.35 µs | 10,000 | 4,003 | 960,952 |
 
 ## Allocation and process-memory run
 

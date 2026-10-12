@@ -153,6 +153,21 @@ struct InspectionSource {
     owned_bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PreparationScratch {
+    coordinate: usize,
+    geometry: usize,
+    transform: usize,
+}
+
+impl PreparationScratch {
+    fn total(self) -> usize {
+        self.coordinate
+            .saturating_add(self.geometry)
+            .saturating_add(self.transform)
+    }
+}
+
 /// Persistent chart preparation state. Clone it to stage a transactional host candidate.
 #[derive(Clone, Debug)]
 pub struct ChartModel {
@@ -282,6 +297,29 @@ impl ChartModel {
         ChartError,
     > {
         self.spec.validate(&self.data, &self.limits)?;
+        let scratch = self.preparation_scratch_ceiling();
+        let transient_bytes = scratch.total();
+        let visible_layers = self
+            .spec
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .count();
+        let indexed_candidate_bytes = self
+            .data
+            .row_count()
+            .saturating_mul(visible_layers.max(1))
+            .saturating_mul(
+                std::mem::size_of::<ChartHit>().saturating_add(std::mem::size_of::<usize>()),
+            );
+        let preflight_peak = transient_bytes.saturating_add(indexed_candidate_bytes);
+        if preflight_peak > self.limits.max_peak_bytes {
+            return Err(ChartError::Limit {
+                resource: "chart preflight peak bytes",
+                actual: preflight_peak,
+                limit: self.limits.max_peak_bytes,
+            });
+        }
         if let Some(viewport) = self.state.viewport {
             for domain in [viewport.x, viewport.y].into_iter().flatten() {
                 if domain.into_iter().any(|value| !value.is_finite()) || domain[0] >= domain[1] {
@@ -456,11 +494,11 @@ impl ChartModel {
                 limit: self.limits.max_steady_bytes,
             });
         }
-        // The baseline synchronous pipeline retains all accepted owners until
-        // admission, so its observable lower bound for peak ownership is the
-        // complete candidate steady set. Reject even this lower bound before
-        // publishing; finer stage scratch accounting can only increase it.
-        let peak_bytes = steady_bytes;
+        // Candidate steady ownership and the admitted scratch ceiling overlap
+        // during synchronous publication. The preflight above rejects the
+        // row/index portion before large preparation vectors are allocated;
+        // this final exact accepted-owner addition catches richer derived data.
+        let peak_bytes = steady_bytes.saturating_add(transient_bytes);
         if peak_bytes > self.limits.max_peak_bytes {
             return Err(ChartError::Limit {
                 resource: "chart peak bytes",
@@ -557,12 +595,62 @@ impl ChartModel {
             interaction_records: output.interactions.len(),
             semantic_records: output.semantics.len(),
             steady_bytes,
+            coordinate_scratch_bytes: scratch.coordinate,
+            geometry_scratch_bytes: scratch.geometry,
+            transform_scratch_bytes: scratch.transform,
+            transient_bytes,
             peak_bytes,
             cache_misses: 1,
             notices,
             ..self.diagnostics.clone()
         };
         Ok((output, hits, hit_x_order, inspection_sources, diagnostics))
+    }
+
+    fn preparation_scratch_ceiling(&self) -> PreparationScratch {
+        let rows = self.data.row_count();
+        let coordinate_work = rows.saturating_mul(
+            std::mem::size_of::<Option<f64>>()
+                .saturating_mul(2)
+                .saturating_add(std::mem::size_of::<(usize, f64, f64)>().saturating_mul(2))
+                .saturating_add(std::mem::size_of::<usize>().saturating_mul(5)),
+        );
+        let geometry_work = self
+            .limits
+            .max_geometry_vertices
+            .saturating_mul(std::mem::size_of::<Point>());
+        let has_transforms = self
+            .spec
+            .layers
+            .iter()
+            .any(|layer| !layer.transforms.is_empty());
+        let transform_work = if has_transforms {
+            let cells = self
+                .data
+                .datasets()
+                .iter()
+                .map(|dataset| dataset.len().saturating_mul(dataset.columns().len()))
+                .sum::<usize>();
+            cells
+                .saturating_mul(
+                    std::mem::size_of::<DataValue>()
+                        .saturating_add(std::mem::size_of::<String>())
+                        .saturating_add(32),
+                )
+                .saturating_add(
+                    rows.saturating_mul(
+                        std::mem::size_of::<crate::RowKey>()
+                            .saturating_add(std::mem::size_of::<BTreeMap<String, DataValue>>()),
+                    ),
+                )
+        } else {
+            0
+        };
+        PreparationScratch {
+            coordinate: coordinate_work,
+            geometry: geometry_work,
+            transform: transform_work,
+        }
     }
 
     fn prepare_facets(
@@ -4016,6 +4104,24 @@ mod tests {
         let mut constrained = ChartLimits::default();
         constrained.max_peak_bytes = 1;
         let base = model();
+        let preflight = ChartModel::new(base.spec.clone(), base.data.clone(), constrained.clone())
+            .unwrap()
+            .prepare(RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 300.0, 180.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content: 7,
+                    ..Default::default()
+                },
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            preflight,
+            ChartError::Limit {
+                resource: "chart preflight peak bytes",
+                ..
+            }
+        ));
         let mut view = ChartView::new(
             ChartModel::new(base.spec.clone(), base.data.clone(), constrained).unwrap(),
         )
@@ -4041,6 +4147,25 @@ mod tests {
         assert!(
             view.snapshot().input.is_some(),
             "bounded fallback is visible"
+        );
+
+        let mut accepted = ChartView::new(model()).unwrap();
+        accepted.update(input).unwrap();
+        assert!(accepted.diagnostics().transient_bytes > 0);
+        assert_eq!(
+            accepted.diagnostics().transient_bytes,
+            accepted
+                .diagnostics()
+                .coordinate_scratch_bytes
+                .saturating_add(accepted.diagnostics().geometry_scratch_bytes)
+                .saturating_add(accepted.diagnostics().transform_scratch_bytes)
+        );
+        assert_eq!(
+            accepted.diagnostics().peak_bytes,
+            accepted
+                .diagnostics()
+                .steady_bytes
+                .saturating_add(accepted.diagnostics().transient_bytes)
         );
 
         let base = model();

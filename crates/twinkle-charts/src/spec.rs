@@ -590,6 +590,11 @@ pub struct ChartDiagnostics {
     pub interaction_records: usize,
     pub semantic_records: usize,
     pub steady_bytes: usize,
+    pub coordinate_scratch_bytes: usize,
+    pub geometry_scratch_bytes: usize,
+    pub transform_scratch_bytes: usize,
+    /// Conservatively admitted upper bound for simultaneous preparation scratch.
+    pub transient_bytes: usize,
     pub peak_bytes: usize,
     pub cache_hits: u64,
     pub cache_misses: u64,
