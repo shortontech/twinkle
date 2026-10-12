@@ -3957,6 +3957,7 @@ name = "twinkle-charts"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "twinkle-testkit",
  "twinkle-ui",
 ]
 

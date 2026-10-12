@@ -109,6 +109,12 @@ and Reset controls. They emit `ChartEvent::Viewport`; pass the request and your
 declared `PanZoomPolicy` to `ChartView::viewport_event` to obtain the concrete
 controlled `ViewportChanged` event.
 
+The `twinkle-testkit` integration scenarios exercise the public application
+boundary rather than model internals: pointer inspection and passive tooltip
+semantics, keyboard activation, accessibility and controller adjustment parity,
+wheel-controlled zoom, focus-loss drag cancellation, and nested-scroll ownership
+when no chart wheel binding is declared.
+
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,
 inspectable/displayed values, missing data, selection, and reduction. Activation

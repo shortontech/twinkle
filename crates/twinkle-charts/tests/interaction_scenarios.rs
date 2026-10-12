@@ -1,0 +1,271 @@
+use std::sync::Arc;
+
+use twinkle_charts::{
+    ChartData, ChartEvent, ChartInputBindings, ChartLimits, ChartModel, ChartState, ChartView,
+    Column, DataValue, Dataset, DatasetId, FieldRef, PanZoomPolicy, Recipes, RowKey,
+    ViewportCommand,
+};
+use twinkle_testkit::{Scenario, Selector};
+use twinkle_ui::{
+    ActionKind, Application, Column as UiColumn, Component, ComponentBuilderExt, DragGesture,
+    DragPhase, Point, Rect, SemanticRole, Spacer, VerticalScroll, ViewContext, WheelGesture,
+    retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions},
+};
+
+const BOUNDS: Rect = Rect::new(0.0, 0.0, 400.0, 240.0);
+
+#[derive(Clone, Debug)]
+enum Message {
+    Chart(ChartEvent),
+    Pointer(Point),
+    Drag(DragGesture),
+    Wheel(WheelGesture),
+    Scroll(f32),
+}
+
+fn pointer(point: Point) -> Message {
+    Message::Pointer(point)
+}
+fn drag(_: Message, gesture: DragGesture) -> Message {
+    Message::Drag(gesture)
+}
+fn wheel(gesture: WheelGesture) -> Message {
+    Message::Wheel(gesture)
+}
+
+struct ChartScenarioApp {
+    chart: ChartView,
+    state: ChartState,
+    revision: u64,
+    events: Vec<ChartEvent>,
+    drag_phases: Vec<DragPhase>,
+    wheel_events: usize,
+}
+
+impl ChartScenarioApp {
+    fn new() -> Self {
+        let limits = ChartLimits::default();
+        let data = Arc::new(
+            ChartData::new(
+                1,
+                vec![
+                    Dataset::new(
+                        DatasetId::from("scenario"),
+                        [RowKey::from("a"), RowKey::from("b"), RowKey::from("c")],
+                        vec![
+                            Column::new(
+                                "x",
+                                vec![
+                                    DataValue::Number(0.0),
+                                    DataValue::Number(1.0),
+                                    DataValue::Number(2.0),
+                                ],
+                            ),
+                            Column::new(
+                                "y",
+                                vec![
+                                    DataValue::Number(1.0),
+                                    DataValue::Number(3.0),
+                                    DataValue::Number(2.0),
+                                ],
+                            ),
+                        ],
+                    )
+                    .unwrap(),
+                ],
+                &limits,
+            )
+            .unwrap(),
+        );
+        let spec = Arc::new(Recipes::line(
+            "Scenario chart",
+            FieldRef::new("scenario", "x"),
+            FieldRef::new("scenario", "y"),
+        ));
+        let mut chart = ChartView::new(ChartModel::new(spec, data, limits).unwrap()).unwrap();
+        chart.update(input(1)).unwrap();
+        Self {
+            chart,
+            state: ChartState::default(),
+            revision: 1,
+            events: Vec::new(),
+            drag_phases: Vec::new(),
+            wheel_events: 0,
+        }
+    }
+
+    fn policy() -> PanZoomPolicy {
+        PanZoomPolicy {
+            x_extent: Some([0.0, 2.0]),
+            y_extent: Some([0.0, 4.0]),
+            minimum_x_span: 0.25,
+            minimum_y_span: 0.5,
+        }
+    }
+
+    fn publish_viewport(&mut self, command: ViewportCommand) {
+        let Some(ChartEvent::ViewportChanged(viewport)) =
+            self.chart.viewport_event(command, Self::policy())
+        else {
+            return;
+        };
+        self.state.viewport = Some(viewport);
+        self.revision += 1;
+        self.chart
+            .update_state(self.state.clone(), input(self.revision))
+            .unwrap();
+    }
+}
+
+impl Application for ChartScenarioApp {
+    type Message = Message;
+
+    fn update(&mut self, message: Message) {
+        match message {
+            Message::Pointer(point) => {
+                let _ = self.chart.inspect_nearest_detail(point);
+            }
+            Message::Chart(ChartEvent::Navigate(command)) => {
+                if let Some(event) = self.chart.navigate(command) {
+                    self.events.push(event);
+                }
+            }
+            Message::Chart(ChartEvent::Viewport(command)) => self.publish_viewport(command),
+            Message::Chart(event) => self.events.push(event),
+            Message::Drag(gesture) => self.drag_phases.push(gesture.phase),
+            Message::Wheel(gesture) => {
+                self.wheel_events += 1;
+                self.publish_viewport(if gesture.delta_y < 0.0 {
+                    ViewportCommand::ZoomIn
+                } else {
+                    ViewportCommand::ZoomOut
+                });
+            }
+            Message::Scroll(_) => {}
+        }
+    }
+
+    fn view(&self, _: ViewContext) -> impl twinkle_ui::View<Message> {
+        self.chart
+            .element_with_input(
+                "scenario-chart",
+                Message::Chart,
+                ChartInputBindings {
+                    pointer_move: Some(pointer),
+                    drag: Some((Message::Pointer(Point { x: 0.0, y: 0.0 }), drag)),
+                    wheel: Some(wheel),
+                },
+            )
+            .unwrap()
+            .into_element()
+    }
+}
+
+fn scroll(offset: f32) -> Message {
+    Message::Scroll(offset)
+}
+
+struct NestedScrollApp {
+    chart: ChartView,
+    offset: f32,
+}
+
+impl NestedScrollApp {
+    fn new() -> Self {
+        Self {
+            chart: ChartScenarioApp::new().chart,
+            offset: 0.0,
+        }
+    }
+}
+
+impl Application for NestedScrollApp {
+    type Message = Message;
+
+    fn update(&mut self, message: Message) {
+        if let Message::Scroll(offset) = message {
+            self.offset = offset;
+        }
+    }
+
+    fn view(&self, _: ViewContext) -> impl twinkle_ui::View<Message> {
+        VerticalScroll::new(Message::Scroll(self.offset), self.offset)
+            .height(200.0)
+            .controlled(true)
+            .on_scroll(scroll)
+            .child(
+                UiColumn::new()
+                    .child(
+                        self.chart
+                            .element_with_pointer("nested-chart", Message::Chart, pointer)
+                            .unwrap(),
+                    )
+                    .child(Spacer::new().height(400.0)),
+            )
+    }
+}
+
+fn input(revision: u64) -> RetainedSurfaceInput {
+    RetainedSurfaceInput::new(
+        BOUNDS,
+        1.0,
+        RetainedSurfaceRevisions {
+            content: revision,
+            ..RetainedSurfaceRevisions::default()
+        },
+    )
+}
+
+#[test]
+fn testkit_routes_pointer_accessibility_controller_wheel_and_drag_capture() {
+    let selector = Selector::role_name(SemanticRole::GraphicalCustomControl, "Scenario chart");
+    let mut scenario = Scenario::new(ChartScenarioApp::new(), 400, 240);
+
+    scenario.pointer_move(&selector).unwrap();
+    assert!(
+        scenario
+            .host()
+            .application()
+            .chart
+            .active_inspection()
+            .is_some()
+    );
+    assert!(scenario.semantic_nodes().iter().any(|node| {
+        node.role == Some(SemanticRole::Tooltip)
+            && node.name.as_deref().is_some_and(|name| name.contains("x:"))
+    }));
+
+    scenario.keyboard_activate(&selector).unwrap();
+    scenario
+        .accessibility_action(&selector, ActionKind::Increment)
+        .unwrap();
+    scenario
+        .controller_semantic_action(&selector, ActionKind::Decrement)
+        .unwrap();
+    assert_eq!(scenario.host().application().events.len(), 3);
+
+    scenario.pointer_scroll(&selector, 0.0, -12.0).unwrap();
+    assert_eq!(scenario.host().application().wheel_events, 1);
+    assert!(scenario.host().application().state.viewport.is_some());
+
+    let point = scenario.pointer_move(&selector).unwrap();
+    scenario
+        .host_mut()
+        .handle_event(twinkle_ui::UiEvent::PointerPressed(point));
+    scenario.window_focus(false).unwrap();
+    assert!(
+        scenario
+            .host()
+            .application()
+            .drag_phases
+            .contains(&DragPhase::Cancelled)
+    );
+}
+
+#[test]
+fn testkit_preserves_nested_scroll_when_chart_has_no_wheel_binding() {
+    let selector = Selector::role_name(SemanticRole::GraphicalCustomControl, "Scenario chart");
+    let mut scenario = Scenario::new(NestedScrollApp::new(), 400, 200);
+    scenario.pointer_scroll(&selector, 0.0, 40.0).unwrap();
+    assert!(scenario.host().application().offset > 0.0);
+}
