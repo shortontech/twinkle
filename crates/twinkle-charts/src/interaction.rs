@@ -28,6 +28,15 @@ impl ChartNavigation {
     pub fn active<'a>(&self, hits: &'a [ChartHit]) -> Option<&'a ChartHit> {
         self.active.and_then(|index| hits.get(index))
     }
+    pub fn set_active_index<'a>(
+        &mut self,
+        hits: &'a [ChartHit],
+        index: usize,
+    ) -> Option<&'a ChartHit> {
+        self.active = (index < hits.len()).then_some(index);
+        self.overlap_cycle = 0;
+        self.active(hits)
+    }
     pub fn set_nearest<'a>(
         &mut self,
         hits: &'a [ChartHit],

@@ -145,20 +145,20 @@ impl ChartModel {
         &self.hits
     }
     pub fn nearest(&self, point: Point) -> Option<&ChartHit> {
+        self.nearest_index(point).map(|index| &self.hits[index])
+    }
+    fn nearest_index(&self, point: Point) -> Option<usize> {
         let insertion = self
             .hit_x_order
             .partition_point(|index| hit_center_x(&self.hits[*index]) < point.x);
         let start = insertion.saturating_sub(512);
         let end = insertion.saturating_add(512).min(self.hit_x_order.len());
-        self.hit_x_order[start..end]
-            .iter()
-            .map(|index| &self.hits[*index])
-            .min_by(|a, b| {
-                distance(a.bounds, point)
-                    .total_cmp(&distance(b.bounds, point))
-                    .then_with(|| a.dataset.cmp(&b.dataset))
-                    .then_with(|| a.row.cmp(&b.row))
-            })
+        self.hit_x_order[start..end].iter().copied().min_by(|a, b| {
+            distance(self.hits[*a].bounds, point)
+                .total_cmp(&distance(self.hits[*b].bounds, point))
+                .then_with(|| self.hits[*a].dataset.cmp(&self.hits[*b].dataset))
+                .then_with(|| self.hits[*a].row.cmp(&self.hits[*b].row))
+        })
     }
 
     fn prepare(
@@ -313,6 +313,51 @@ impl ChartModel {
                 ),
                 affected_rows: hits.len() - displayed_rows,
             });
+        }
+        let missing_values = self
+            .data
+            .datasets()
+            .iter()
+            .flat_map(|dataset| dataset.columns())
+            .flat_map(|column| column.values.iter())
+            .filter(|value| {
+                value.is_null() || matches!(value, DataValue::Number(number) if !number.is_finite())
+            })
+            .count();
+        let displayed_series = hits
+            .iter()
+            .filter_map(|hit| hit.series.as_deref())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let selected = hits
+            .iter()
+            .filter(|hit| self.state.selected_rows.contains(&hit.row))
+            .count();
+        let reduction = if displayed_rows < hits.len() {
+            format!(
+                " Reduced geometry displays {displayed_rows} marks while {} exact values remain inspectable.",
+                hits.len()
+            )
+        } else {
+            String::new()
+        };
+        let series_summary = if displayed_series == 0 {
+            String::new()
+        } else {
+            format!(" {displayed_series} displayed series.")
+        };
+        let state_summary = format!(
+            "{}. {} source rows; {} inspectable plotted values; {missing_values} missing or invalid values.{series_summary} {selected} selected.{reduction} Activate for the exact paged data table.",
+            self.spec.summary,
+            self.data.row_count(),
+            hits.len(),
+        );
+        if let Some(root) = output
+            .semantics
+            .iter_mut()
+            .find(|semantic| semantic.id.as_str() == "chart")
+        {
+            root.state = Some(state_summary);
         }
         let diagnostics = ChartDiagnostics {
             preparation_time: started.elapsed(),
@@ -1021,7 +1066,7 @@ impl ChartModel {
                             width: 1.0,
                         });
                     }
-                    self.push_hit(dataset, *index, bounds, hits);
+                    self.push_hit(dataset, *index, series_column, bounds, hits);
                 }
             }
             Mark::Bar { orientation } => {
@@ -1116,7 +1161,7 @@ impl ChartModel {
                         rect: bounds,
                         color,
                     });
-                    self.push_hit(dataset, *index, bounds, hits);
+                    self.push_hit(dataset, *index, series_column, bounds, hits);
                 }
             }
             _ => {
@@ -1135,6 +1180,7 @@ impl ChartModel {
                 self.push_hit(
                     dataset,
                     index,
+                    series_column,
                     Rect::new(p.x - 5.0, p.y - 5.0, 10.0, 10.0),
                     hits,
                 );
@@ -1545,6 +1591,7 @@ impl ChartModel {
             self.push_hit(
                 dataset,
                 row,
+                None,
                 Rect::new(
                     center.x - radius,
                     center.y - radius,
@@ -1565,6 +1612,7 @@ impl ChartModel {
         &self,
         dataset: &crate::Dataset,
         row: usize,
+        series_column: Option<&crate::Column>,
         bounds: Rect,
         hits: &mut Vec<ChartHit>,
     ) {
@@ -1572,7 +1620,7 @@ impl ChartModel {
         hits.push(ChartHit {
             dataset: dataset.id.0.clone(),
             row: key.clone(),
-            series: None,
+            series: series_column.map(|column| Arc::from(format_data_value(&column.values[row]))),
             bounds,
             revision: self.data.revision(),
         });
@@ -1620,6 +1668,7 @@ impl RetainedSurfaceModel for ChartModel {
 /// Transactional retained host and normal Twinkle projection authority.
 pub struct ChartView {
     host: RetainedSurfaceHost<ChartModel>,
+    navigation: crate::ChartNavigation,
 }
 impl ChartView {
     pub fn new(model: ChartModel) -> Result<Self, ChartError> {
@@ -1630,6 +1679,7 @@ impl ChartView {
         Ok(Self {
             host: RetainedSurfaceHost::new(model, limits)
                 .map_err(|message| ChartError::invalid(crate::ChartStage::Validate, message))?,
+            navigation: crate::ChartNavigation::default(),
         })
     }
     pub fn update(
@@ -1642,6 +1692,7 @@ impl ChartView {
             .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
         let old = self.host.finalize_candidate(candidate);
         drop(old);
+        self.navigation.reconcile(self.host.model().hits());
         Ok(self.host.snapshot())
     }
     pub fn snapshot(&self) -> &RetainedSurfaceSnapshot {
@@ -1656,6 +1707,23 @@ impl ChartView {
     pub fn nearest(&self, point: Point) -> Option<&ChartHit> {
         self.host.model().nearest(point)
     }
+    pub fn active_hit(&self) -> Option<&ChartHit> {
+        self.navigation.active(self.host.model().hits())
+    }
+    pub fn inspect_nearest(&mut self, point: Point) -> Option<ChartEvent> {
+        let index = self.host.model().nearest_index(point)?;
+        let hit = self
+            .navigation
+            .set_active_index(self.host.model().hits(), index)?;
+        Some(ChartEvent::Inspect {
+            dataset: hit.dataset.clone(),
+            row: hit.row.clone(),
+            revision: hit.revision,
+        })
+    }
+    pub fn navigate(&mut self, command: crate::NavigationCommand) -> Option<ChartEvent> {
+        self.navigation.command(self.host.model().hits(), command)
+    }
     pub fn replace_and_update(
         &mut self,
         spec: Arc<ChartSpec>,
@@ -1669,6 +1737,7 @@ impl ChartView {
             .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
         let old = self.host.finalize_candidate(candidate);
         drop(old);
+        self.navigation.reconcile(self.host.model().hits());
         Ok(self.host.snapshot())
     }
     pub fn update_state(
@@ -1683,6 +1752,7 @@ impl ChartView {
             .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
         let old = self.host.finalize_candidate(candidate);
         drop(old);
+        self.navigation.reconcile(self.host.model().hits());
         Ok(self.host.snapshot())
     }
     pub fn element<Message: Clone>(
@@ -1711,6 +1781,7 @@ impl ChartView {
     }
     pub fn detach(&mut self) {
         self.host.detach();
+        self.navigation = crate::ChartNavigation::default();
     }
     pub fn renderer_lost(&mut self) {
         self.host.renderer_lost();
@@ -2219,13 +2290,25 @@ mod tests {
                 .any(|command| matches!(command, PaintCommand::Path { .. }))
         );
         assert_eq!(snapshot.output.interactions.len(), 1);
-        assert!(
-            snapshot
-                .output
-                .semantics
-                .iter()
-                .any(|item| item.role == SemanticRole::GraphicalCustomControl)
-        );
+        let summary = snapshot
+            .output
+            .semantics
+            .iter()
+            .find(|item| item.role == SemanticRole::GraphicalCustomControl)
+            .and_then(|item| item.state.clone())
+            .unwrap();
+        assert!(summary.contains("2 source rows"));
+        assert!(summary.contains("exact paged data table"));
+        assert!(matches!(
+            view.navigate(crate::NavigationCommand::Next),
+            Some(ChartEvent::Inspect { revision: 7, .. })
+        ));
+        assert!(matches!(
+            view.navigate(crate::NavigationCommand::Select),
+            Some(ChartEvent::Select { revision: 7, .. })
+        ));
+        assert!(view.inspect_nearest(Point { x: 380.0, y: 20.0 }).is_some());
+        assert!(view.active_hit().is_some());
     }
 
     #[test]
@@ -2493,6 +2576,18 @@ mod tests {
                 .count(),
             2
         );
+        let mut line = crate::Recipes::line("Lines", x.clone(), value.clone());
+        line.layers[0].encodings.push(crate::Encoding {
+            channel: Channel::Series,
+            field: series.clone(),
+            scale: None,
+        });
+        let mut series_view =
+            ChartView::new(ChartModel::new(Arc::new(line), data.clone(), limits.clone()).unwrap())
+                .unwrap();
+        series_view.update(input).unwrap();
+        assert_eq!(series_view.hits()[0].series.as_deref(), Some("one"));
+        assert_eq!(series_view.hits()[1].series.as_deref(), Some("two"));
         let area = crate::Recipes::stacked_area("Areas", x, series, value, true);
         assert_eq!(
             render(area)
