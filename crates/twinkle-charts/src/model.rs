@@ -377,81 +377,118 @@ impl ChartModel {
                 [plot.origin.y + plot.size.height, plot.origin.y],
             ),
         };
+        let series_groups = series_groups(dataset, &layer.encodings);
         let color = self.theme.series_cue(layer_index).color;
         match &layer.mark {
-            Mark::Line { .. } => {
-                let mut triangles = Vec::new();
-                let mut segment = Vec::new();
+            Mark::Line {
+                interpolation,
+                points,
+            } => {
                 let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
-                for (index, y) in y_column.values.iter().enumerate() {
-                    match (x_coordinates[index], coordinate(y, index)) {
-                        (Some(x), Some(y)) => segment.push(map(x, y)),
-                        _ => {
-                            triangles.extend(stroke_polyline(
-                                &reduce_extrema(&segment, max_points),
-                                2.0,
-                            ));
-                            segment.clear();
-                        }
-                    }
-                }
-                triangles.extend(stroke_polyline(&reduce_extrema(&segment, max_points), 2.0));
-                if !triangles.is_empty() {
-                    output
-                        .paint
-                        .push(path_command(triangles, plot, color, values.len())?);
-                }
-            }
-            Mark::Area { baseline, .. } => {
-                let mut triangles = Vec::new();
-                if let Some(base_column) = y2_column {
-                    for pair in values.windows(2) {
-                        if pair[1].0 != pair[0].0 + 1 {
-                            continue;
-                        }
-                        let Some(base0) = coordinate(&base_column.values[pair[0].0], pair[0].0)
-                        else {
-                            continue;
-                        };
-                        let Some(base1) = coordinate(&base_column.values[pair[1].0], pair[1].0)
-                        else {
-                            continue;
-                        };
-                        let top0 = map(pair[0].1, pair[0].2);
-                        let top1 = map(pair[1].1, pair[1].2);
-                        let bottom0 = map(pair[0].1, base0);
-                        let bottom1 = map(pair[1].1, base1);
-                        triangles.extend([top0, bottom0, top1, top1, bottom0, bottom1]);
-                    }
-                } else {
-                    let baseline = map_value(
-                        *baseline,
-                        y_domain,
-                        [plot.origin.y + plot.size.height, plot.origin.y],
-                    );
+                for (series_index, rows) in series_groups.iter().enumerate() {
+                    let mut triangles = Vec::new();
                     let mut segment = Vec::new();
-                    let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
-                    for (index, y) in y_column.values.iter().enumerate() {
-                        match (x_coordinates[index], coordinate(y, index)) {
+                    let mut markers = Vec::new();
+                    for index in rows.iter().copied() {
+                        match (
+                            x_coordinates[index],
+                            coordinate(&y_column.values[index], index),
+                        ) {
                             (Some(x), Some(y)) => segment.push(map(x, y)),
                             _ => {
-                                triangles.extend(area_triangles(
-                                    &reduce_extrema(&segment, max_points),
-                                    baseline,
-                                ));
+                                let reduced = reduce_extrema(
+                                    &interpolate_points(&segment, *interpolation),
+                                    max_points,
+                                );
+                                triangles.extend(stroke_polyline(&reduced, 2.0));
+                                if *points {
+                                    markers.extend(reduced);
+                                }
                                 segment.clear();
                             }
                         }
                     }
-                    triangles.extend(area_triangles(
-                        &reduce_extrema(&segment, max_points),
-                        baseline,
-                    ));
+                    let reduced =
+                        reduce_extrema(&interpolate_points(&segment, *interpolation), max_points);
+                    triangles.extend(stroke_polyline(&reduced, 2.0));
+                    if *points {
+                        markers.extend(reduced);
+                    }
+                    let series_color = self.theme.series_cue(layer_index + series_index).color;
+                    if !triangles.is_empty() {
+                        output.paint.push(path_command(
+                            triangles,
+                            plot,
+                            series_color,
+                            rows.len().max(2),
+                        )?);
+                    }
+                    for point in markers.into_iter().take(16_384) {
+                        output.paint.push(PaintCommand::RoundedFill {
+                            rect: Rect::new(point.x - 2.5, point.y - 2.5, 5.0, 5.0),
+                            color: series_color,
+                            radius: 2.5,
+                        });
+                    }
                 }
-                if !triangles.is_empty() {
-                    output
-                        .paint
-                        .push(fill_path_command(triangles, color, values.len())?);
+            }
+            Mark::Area { baseline, .. } => {
+                for (series_index, rows) in series_groups.iter().enumerate() {
+                    let mut triangles = Vec::new();
+                    if let Some(base_column) = y2_column {
+                        for pair in rows.windows(2) {
+                            let (left, right) = (pair[0], pair[1]);
+                            let (Some(x0), Some(y0), Some(x1), Some(y1), Some(base0), Some(base1)) = (
+                                x_coordinates[left],
+                                coordinate(&y_column.values[left], left),
+                                x_coordinates[right],
+                                coordinate(&y_column.values[right], right),
+                                coordinate(&base_column.values[left], left),
+                                coordinate(&base_column.values[right], right),
+                            ) else {
+                                continue;
+                            };
+                            let top0 = map(x0, y0);
+                            let top1 = map(x1, y1);
+                            let bottom0 = map(x0, base0);
+                            let bottom1 = map(x1, base1);
+                            triangles.extend([top0, bottom0, top1, top1, bottom0, bottom1]);
+                        }
+                    } else {
+                        let baseline = map_value(
+                            *baseline,
+                            y_domain,
+                            [plot.origin.y + plot.size.height, plot.origin.y],
+                        );
+                        let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
+                        let mut segment = Vec::new();
+                        for index in rows.iter().copied() {
+                            match (
+                                x_coordinates[index],
+                                coordinate(&y_column.values[index], index),
+                            ) {
+                                (Some(x), Some(y)) => segment.push(map(x, y)),
+                                _ => {
+                                    triangles.extend(area_triangles(
+                                        &reduce_extrema(&segment, max_points),
+                                        baseline,
+                                    ));
+                                    segment.clear();
+                                }
+                            }
+                        }
+                        triangles.extend(area_triangles(
+                            &reduce_extrema(&segment, max_points),
+                            baseline,
+                        ));
+                    }
+                    if !triangles.is_empty() {
+                        output.paint.push(fill_path_command(
+                            triangles,
+                            self.theme.series_cue(layer_index + series_index).color,
+                            rows.len().max(2),
+                        )?);
+                    }
                 }
             }
             Mark::Point { .. } => {
@@ -780,6 +817,30 @@ fn column_coordinates(column: &crate::Column) -> Vec<Option<f64>> {
         })
         .collect()
 }
+fn series_groups(dataset: &crate::Dataset, encodings: &[Encoding]) -> Vec<Vec<usize>> {
+    let Some(column) = channel(encodings, Channel::Series)
+        .and_then(|encoding| dataset.column(&encoding.field.column))
+    else {
+        return vec![(0..dataset.len()).collect()];
+    };
+    let mut positions = BTreeMap::<String, usize>::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, value) in column.values.iter().enumerate() {
+        let key = match value {
+            DataValue::Null => "null".to_owned(),
+            DataValue::Number(value) => format!("n:{:016x}", value.to_bits()),
+            DataValue::Timestamp(value) => format!("t:{value}"),
+            DataValue::Category(value) => format!("c:{}:{value}", value.len()),
+            DataValue::Boolean(value) => format!("b:{value}"),
+        };
+        let group = *positions.entry(key).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[group].push(index);
+    }
+    groups
+}
 fn extent(values: impl Iterator<Item = f64>) -> [f64; 2] {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
@@ -872,6 +933,29 @@ fn area_triangles(points: &[Point], baseline: f32) -> Vec<Point> {
         ]);
     }
     triangles
+}
+
+fn interpolate_points(points: &[Point], interpolation: crate::Interpolation) -> Vec<Point> {
+    if interpolation == crate::Interpolation::Straight || points.len() < 2 {
+        return points.to_vec();
+    }
+    let mut result = Vec::with_capacity(points.len().saturating_mul(2).saturating_sub(1));
+    result.push(points[0]);
+    for pair in points.windows(2) {
+        result.push(match interpolation {
+            crate::Interpolation::StepBefore => Point {
+                x: pair[0].x,
+                y: pair[1].y,
+            },
+            crate::Interpolation::StepAfter => Point {
+                x: pair[1].x,
+                y: pair[0].y,
+            },
+            crate::Interpolation::Straight => unreachable!(),
+        });
+        result.push(pair[1]);
+    }
+    result
 }
 
 /// Bucket reduction preserves both endpoints and the ordered min/max extrema
@@ -1201,5 +1285,94 @@ mod tests {
                     .abs()
                     < 0.01
         );
+    }
+
+    #[test]
+    fn multi_series_lines_and_stacked_areas_prepare_separate_paths() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            (0..6)
+                .map(|index| RowKey::from(format!("r{index}")))
+                .collect::<Vec<_>>(),
+            vec![
+                Column::new(
+                    "x",
+                    vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "series",
+                    ["one", "two", "one", "two", "one", "two"]
+                        .into_iter()
+                        .map(|value| DataValue::Category(Arc::from(value)))
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "value",
+                    vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0]
+                        .into_iter()
+                        .map(DataValue::Number)
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(11, vec![dataset], &limits).unwrap());
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 11,
+                ..Default::default()
+            },
+        );
+        let render = |spec| {
+            let mut view = ChartView::new(
+                ChartModel::new(Arc::new(spec), data.clone(), limits.clone()).unwrap(),
+            )
+            .unwrap();
+            view.update(input).unwrap().output.paint.clone()
+        };
+        let x = FieldRef::new("d", "x");
+        let series = FieldRef::new("d", "series");
+        let value = FieldRef::new("d", "value");
+        let mut line = crate::Recipes::line("Lines", x.clone(), value.clone());
+        line.layers[0].encodings.push(crate::Encoding {
+            channel: Channel::Series,
+            field: series.clone(),
+            scale: None,
+        });
+        assert_eq!(
+            render(line)
+                .iter()
+                .filter(|command| matches!(command, PaintCommand::Path { .. }))
+                .count(),
+            2
+        );
+        let area = crate::Recipes::stacked_area("Areas", x, series, value, true);
+        assert_eq!(
+            render(area)
+                .iter()
+                .filter(|command| matches!(command, PaintCommand::Path { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn step_interpolation_inserts_orthogonal_corner_without_crossing_gaps() {
+        let points = [Point { x: 0.0, y: 1.0 }, Point { x: 2.0, y: 3.0 }];
+        assert_eq!(
+            interpolate_points(&points, crate::Interpolation::StepBefore),
+            vec![points[0], Point { x: 0.0, y: 3.0 }, points[1]]
+        );
+        assert_eq!(
+            interpolate_points(&points, crate::Interpolation::StepAfter),
+            vec![points[0], Point { x: 2.0, y: 1.0 }, points[1]]
+        );
+        assert!(interpolate_points(&[], crate::Interpolation::StepAfter).is_empty());
     }
 }
