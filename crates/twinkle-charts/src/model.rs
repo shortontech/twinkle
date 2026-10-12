@@ -2226,6 +2226,7 @@ fn dataset_owned_bytes(dataset: &crate::Dataset) -> usize {
 }
 
 /// Transactional retained host and normal Twinkle projection authority.
+#[derive(Clone, Debug)]
 pub struct ChartView {
     host: RetainedSurfaceHost<ChartModel>,
     navigation: crate::ChartNavigation,

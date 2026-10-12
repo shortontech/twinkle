@@ -227,6 +227,12 @@ inspector as passive plot-local paint and tooltip semantics; a removed identity
 clears it without reviving stale data. The compiling gallery is
 `crates/twinkle-jsx-runtime/examples/charts.tsx`.
 
+Primitive JSX `width`/`height` patches fork the accepted retained chart authority,
+reprepare only the bounds-dependent closure, and publish atomically. Data/spec,
+indexes, controlled inspection, and callbacks survive the resize; an invalid size
+rolls the entire native patch back. Fully constraint-driven sizing from a parent
+Flex/Grid allocation remains distinct from this explicit-dimension path.
+
 JSX is not limited to the recipe names. A `family: "custom"` specification maps
 bounded JSON-safe descriptors directly into the Rust `ChartSpec` grammar:
 named linear/log/time/ordinal/band/color/size scales; rect, bar, line, area,

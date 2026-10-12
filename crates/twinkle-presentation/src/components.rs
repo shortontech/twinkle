@@ -5561,6 +5561,13 @@ impl RetainedPanelTree {
                                 update_box_scalars(typed, source)?;
                             } else if matches!(typed, PanelNode::Surface { .. }) {
                                 update_surface_scalars(typed, source)?;
+                            } else if matches!(property.as_str(), "width" | "height")
+                                && matches!(typed, PanelNode::Chart(_))
+                            {
+                                #[cfg(feature = "charts")]
+                                if let PanelNode::Chart(chart) = typed {
+                                    chart.resize(source)?;
+                                }
                             } else {
                                 if typed.container_children().is_some() {
                                     return Err(format!(
@@ -6849,6 +6856,61 @@ mod class_lookup_tests {
     use super::{PanelNode, RetainedPanelTree};
     use serde_json::{Value, json};
     use twinkle_protocol::{NativePatchCounters, NativePatchEnvelope, NativePatchOperation};
+
+    #[cfg(feature = "charts")]
+    #[test]
+    fn chart_dimension_patch_reuses_retained_projection_and_rolls_back_invalid_size() {
+        let source = json!({
+            "kind":"chart", "__nativeId":"chart", "id":"chart", "width":320,
+            "height":180, "tableAction":0, "children":[],
+            "data":{"revision":1,"datasets":[{"id":"d","keys":["a","b"],"columns":[
+                {"name":"x","type":"number","values":[0,1]},
+                {"name":"y","type":"number","values":[1,2]}
+            ]}]},
+            "spec":{"family":"line","title":"Trend","dataset":"d","x":"x","y":"y"}
+        });
+        let manifest = twinkle_protocol::SurfaceBounds {
+            surfaces: Vec::new(),
+        };
+        let stylesheet = super::StyleSheet::default();
+        let mut retained = RetainedPanelTree::admit(&source, &manifest, None, 1).unwrap();
+        let patch = NativePatchEnvelope {
+            version: 1,
+            operations: vec![NativePatchOperation::SetPrimitive {
+                target: "chart".into(),
+                property: "width".into(),
+                value: json!(640),
+            }],
+            counters: NativePatchCounters::default(),
+        };
+        retained
+            .apply_patch(&patch, &manifest, None, &stylesheet, 2, 16)
+            .unwrap();
+        let PanelNode::Chart(chart) = retained.node() else {
+            panic!("expected chart")
+        };
+        assert_eq!(chart.snapshot.input.unwrap().bounds.size.width, 640.0);
+        assert_eq!(chart.retained_update_calls(), 2);
+
+        let accepted = retained.clone();
+        let invalid = NativePatchEnvelope {
+            version: 1,
+            operations: vec![NativePatchOperation::SetPrimitive {
+                target: "chart".into(),
+                property: "height".into(),
+                value: json!(0),
+            }],
+            counters: NativePatchCounters::default(),
+        };
+        assert!(
+            retained
+                .apply_patch(&invalid, &manifest, None, &stylesheet, 3, 16)
+                .is_err()
+        );
+        assert_eq!(retained.node(), accepted.node());
+        assert_eq!(retained.source(), accepted.source());
+        assert_eq!(retained.generation(), 2);
+    }
 
     #[test]
     fn primitive_patch_paths_follow_native_ui_identity_without_leaf_ids() {

@@ -380,6 +380,19 @@ pub struct RetainedSurfaceHost<M: RetainedSurfaceModel> {
     destroyed: bool,
 }
 
+impl<M: RetainedSurfaceModel + Clone> Clone for RetainedSurfaceHost<M> {
+    fn clone(&self) -> Self {
+        Self {
+            model: self.model.clone(),
+            limits: self.limits,
+            accepted: self.accepted.clone(),
+            diagnostics: self.diagnostics,
+            attached: self.attached,
+            destroyed: self.destroyed,
+        }
+    }
+}
+
 /// Fully validated retained-surface candidate that has not replaced the
 /// accepted presentation yet. Hosts may prepare several candidates, validate
 /// every other transaction participant, then finalize each with no model

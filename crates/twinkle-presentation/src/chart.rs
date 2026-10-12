@@ -18,6 +18,15 @@ enum ChartProjectionAction {
     Event(ChartEvent),
 }
 
+#[derive(Clone, Debug)]
+struct RetainedChartView(ChartView);
+
+impl PartialEq for RetainedChartView {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.snapshot() == other.0.snapshot() && self.0.hits() == other.0.hits()
+    }
+}
+
 /// Host-admitted immutable projection of a JSX chart declaration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChartDeclaration {
@@ -35,6 +44,10 @@ pub struct ChartDeclaration {
     pub(crate) pan_action: Option<usize>,
     pub(crate) zoom_action: Option<usize>,
     pub(crate) retained_bytes: usize,
+    width: f32,
+    height: f32,
+    controlled_inspection: Option<(String, RowKey)>,
+    retained: RetainedChartView,
 }
 
 impl ChartDeclaration {
@@ -77,7 +90,8 @@ impl ChartDeclaration {
         let inspector = view.inspector();
         let mut snapshot = view.snapshot().clone();
         let has_overlay = controlled_inspection
-            .and_then(|(dataset, row)| inspector.inspect_identity(&dataset, &row))
+            .as_ref()
+            .and_then(|(dataset, row)| inspector.inspect_identity(dataset, row))
             .is_some_and(|(hit, detail)| {
                 project_inspection_overlay(&mut snapshot, &hit, &detail, &ChartTheme::default())
             });
@@ -102,7 +116,57 @@ impl ChartDeclaration {
             pan_action: action(value, "chartPanAction")?,
             zoom_action: action(value, "chartZoomAction")?,
             retained_bytes,
+            width,
+            height,
+            controlled_inspection,
+            retained: RetainedChartView(view),
         })
+    }
+
+    pub(crate) fn resize(&mut self, value: &Value) -> Result<(), String> {
+        let width = dimension(value, "width")?;
+        let height = dimension(value, "height")?;
+        if self.width == width && self.height == height {
+            return Ok(());
+        }
+        let mut input = self
+            .snapshot
+            .input
+            .ok_or("accepted chart projection has no retained input")?;
+        input.bounds = Rect::new(0.0, 0.0, width, height);
+        self.retained
+            .0
+            .update(input)
+            .map_err(|error| error.to_string())?;
+        self.width = width;
+        self.height = height;
+        self.inspector = self.retained.0.inspector();
+        self.snapshot = self.retained.0.snapshot().clone();
+        let has_overlay = self
+            .controlled_inspection
+            .as_ref()
+            .and_then(|(dataset, row)| self.inspector.inspect_identity(dataset, row))
+            .is_some_and(|(hit, detail)| {
+                project_inspection_overlay(
+                    &mut self.snapshot,
+                    &hit,
+                    &detail,
+                    &ChartTheme::default(),
+                )
+            });
+        self.retained_bytes = self
+            .retained
+            .0
+            .diagnostics()
+            .steady_bytes
+            .saturating_add(self.inspector.retained_bytes())
+            .saturating_add(if has_overlay { 2 * 1024 } else { 0 });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_update_calls(&self) -> u64 {
+        self.retained.0.retained_diagnostics().update_calls
     }
 
     pub fn event(&self, event: ChartEvent) -> (usize, Value) {
@@ -1165,6 +1229,38 @@ mod tests {
         assert_eq!(payload["kind"], "pan");
         assert_eq!(payload["phase"], "move");
         assert_eq!(payload["x"], 220.0);
+    }
+
+    #[test]
+    fn retained_chart_resize_reuses_authority_and_preserves_controlled_inspection() {
+        let mut value = declaration();
+        let mut chart = ChartDeclaration::parse(&value, None).unwrap();
+        let original = chart.clone();
+        let old_hit = chart.retained.0.hits()[0].bounds;
+        assert_eq!(chart.retained.0.retained_diagnostics().update_calls, 1);
+
+        value["width"] = json!(840);
+        value["height"] = json!(360);
+        chart.resize(&value).unwrap();
+        assert_eq!(chart.retained.0.retained_diagnostics().update_calls, 2);
+        assert_eq!(
+            chart.snapshot.input.unwrap().bounds,
+            Rect::new(0.0, 0.0, 840.0, 360.0)
+        );
+        assert_ne!(chart.retained.0.hits()[0].bounds, old_hit);
+        assert!(chart.snapshot.output.semantics.iter().any(|semantic| {
+            semantic.id.as_str() == "chart/inspection"
+                && semantic
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("10 USD"))
+        }));
+
+        let accepted = chart.clone();
+        value["width"] = json!(0);
+        assert!(chart.resize(&value).is_err());
+        assert_eq!(chart, accepted);
+        assert_ne!(chart, original);
     }
 
     #[test]
