@@ -190,6 +190,7 @@ impl ChartModel {
         data: Arc<ChartData>,
         limits: ChartLimits,
     ) -> Result<Self, ChartError> {
+        data.validate(&limits)?;
         spec.validate(&data, &limits)?;
         let theme = ChartTheme::default();
         theme.validate()?;
@@ -221,6 +222,7 @@ impl ChartModel {
         spec: Arc<ChartSpec>,
         data: Arc<ChartData>,
     ) -> Result<(), ChartError> {
+        data.validate(&self.limits)?;
         spec.validate(&data, &self.limits)?;
         self.spec = spec;
         self.data = data;
@@ -4213,6 +4215,192 @@ mod tests {
         assert_eq!(view.hits(), hits);
         assert_eq!(view.inspection(&hits[0]), Some(accepted_inspection));
         assert_eq!(view.snapshot().input.unwrap().revisions.content, 7);
+    }
+
+    #[test]
+    fn structural_cap_replacement_matrix_preserves_then_contracts_accepted_state() {
+        fn data_with(rows: usize, extra_column: bool, revision: u64) -> Arc<ChartData> {
+            let keys = (0..rows)
+                .map(|index| RowKey::from(format!("r{index}")))
+                .collect::<Vec<_>>();
+            let mut columns = vec![
+                Column::new(
+                    "x",
+                    (0..rows)
+                        .map(|index| DataValue::Number(index as f64))
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "y",
+                    (0..rows)
+                        .map(|index| DataValue::Number((index + 1) as f64))
+                        .collect::<Vec<_>>(),
+                ),
+            ];
+            if extra_column {
+                columns.push(Column::new(
+                    "extra",
+                    (0..rows)
+                        .map(|index| DataValue::Number(index as f64))
+                        .collect::<Vec<_>>(),
+                ));
+            }
+            let dataset = Dataset::new(DatasetId::from("d"), keys, columns).unwrap();
+            Arc::new(ChartData::new(revision, vec![dataset], &ChartLimits::default()).unwrap())
+        }
+
+        fn base_spec() -> Arc<ChartSpec> {
+            Arc::new(Recipes::line(
+                "Trend",
+                FieldRef::new("d", "x"),
+                FieldRef::new("d", "y"),
+            ))
+        }
+
+        fn assert_atomic_rejection(
+            limits: ChartLimits,
+            candidate_spec: Arc<ChartSpec>,
+            candidate_data: Arc<ChartData>,
+            revision: u64,
+        ) {
+            let accepted_data = data_with(2, false, 7);
+            let mut view = ChartView::new(
+                ChartModel::new(base_spec(), accepted_data.clone(), limits.clone()).unwrap(),
+            )
+            .unwrap();
+            let accepted_input = RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 400.0, 240.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content: 7,
+                    ..Default::default()
+                },
+            );
+            view.update(accepted_input).unwrap();
+            let snapshot = view.snapshot().clone();
+            let hits = view.hits().to_vec();
+            let inspection = view.inspection(&hits[0]).unwrap();
+
+            let rejected = RetainedSurfaceInput::new(
+                accepted_input.bounds,
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content: revision,
+                    ..Default::default()
+                },
+            );
+            assert!(
+                view.replace_and_update(candidate_spec, candidate_data, rejected)
+                    .is_err()
+            );
+            assert_eq!(view.snapshot(), &snapshot);
+            assert_eq!(view.hits(), hits);
+            assert_eq!(view.inspection(&hits[0]), Some(inspection));
+
+            let replacement = data_with(1, false, revision + 1);
+            view.replace_and_update(
+                base_spec(),
+                replacement,
+                RetainedSurfaceInput::new(
+                    accepted_input.bounds,
+                    1.0,
+                    twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                        content: revision + 1,
+                        ..Default::default()
+                    },
+                ),
+            )
+            .unwrap();
+            assert_eq!(view.hits().len(), 1);
+            view.detach();
+            assert_eq!(view.retained_diagnostics().output_retained_bytes, 0);
+            view.destroy();
+            assert!(view.hits().is_empty());
+        }
+
+        let mut row_limits = ChartLimits::default();
+        row_limits.max_rows = 2;
+        assert_atomic_rejection(row_limits, base_spec(), data_with(3, false, 20), 20);
+
+        let mut column_limits = ChartLimits::default();
+        column_limits.max_columns = 2;
+        assert_atomic_rejection(column_limits, base_spec(), data_with(2, true, 21), 21);
+
+        let mut layer_limits = ChartLimits::default();
+        layer_limits.max_layers = 1;
+        let mut layered = (*base_spec()).clone();
+        layered.layers.push(layered.layers[0].clone());
+        assert_atomic_rejection(layer_limits, Arc::new(layered), data_with(2, false, 22), 22);
+
+        let mut transform_limits = ChartLimits::default();
+        transform_limits.max_transforms = 0;
+        let mut transformed = (*base_spec()).clone();
+        transformed.layers[0]
+            .transforms
+            .push(crate::Transform::Sort {
+                field: "x".into(),
+                descending: false,
+            });
+        assert_atomic_rejection(
+            transform_limits,
+            Arc::new(transformed),
+            data_with(2, false, 23),
+            23,
+        );
+
+        let mut tick_limits = ChartLimits::default();
+        tick_limits.max_ticks_per_axis = 1;
+        let mut guided = (*base_spec()).clone();
+        guided.axes.push(crate::Axis {
+            scale: Arc::from("x"),
+            title: Some(Arc::from("X")),
+            unit: None,
+            tick_count: Some(2),
+            grid: true,
+        });
+        assert_atomic_rejection(tick_limits, Arc::new(guided), data_with(2, false, 24), 24);
+
+        let mut annotation_limits = ChartLimits::default();
+        annotation_limits.max_annotations = 0;
+        let mut annotated = (*base_spec()).clone();
+        annotated.annotations.push(crate::Annotation::Text {
+            text: Arc::from("note"),
+            x: 0.0,
+            y: 0.0,
+        });
+        assert_atomic_rejection(
+            annotation_limits,
+            Arc::new(annotated),
+            data_with(2, false, 25),
+            25,
+        );
+
+        let mut label_limits = ChartLimits::default();
+        label_limits.max_label_bytes = 24;
+        let mut long_label = (*base_spec()).clone();
+        long_label.title = Arc::from("x".repeat(25));
+        assert_atomic_rejection(
+            label_limits,
+            Arc::new(long_label),
+            data_with(2, false, 26),
+            26,
+        );
+
+        let mut total_label_limits = ChartLimits::default();
+        total_label_limits.max_total_label_bytes =
+            base_spec().title.len() + base_spec().summary.len();
+        let mut total_labels = (*base_spec()).clone();
+        total_labels.annotations.push(crate::Annotation::Text {
+            text: Arc::from("extra"),
+            x: 0.0,
+            y: 0.0,
+        });
+        assert_atomic_rejection(
+            total_label_limits,
+            Arc::new(total_labels),
+            data_with(2, false, 27),
+            27,
+        );
     }
 
     #[test]

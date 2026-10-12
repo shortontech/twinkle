@@ -203,6 +203,13 @@ impl ChartData {
         limits: &ChartLimits,
     ) -> Result<Self, ChartError> {
         let datasets = datasets.into();
+        let data = Self { revision, datasets };
+        data.validate(limits)?;
+        Ok(data)
+    }
+
+    pub(crate) fn validate(&self, limits: &ChartLimits) -> Result<(), ChartError> {
+        let datasets = &self.datasets;
         let rows = datasets
             .iter()
             .try_fold(0usize, |total, data| total.checked_add(data.len()))
@@ -246,7 +253,7 @@ impl ChartData {
                 }
             }
         }
-        Ok(Self { revision, datasets })
+        Ok(())
     }
     pub const fn revision(&self) -> u64 {
         self.revision

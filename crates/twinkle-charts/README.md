@@ -143,6 +143,13 @@ coordinate/reduction, tessellation-geometry, and transform-table scratch owners.
 `ChartDiagnostics` reports each scratch ceiling, their total transient bytes,
 accepted steady bytes, and the combined peak; caller-owned source storage remains
 outside chart ownership.
+Model construction and replacement revalidate immutable data against the model's
+own limits, even when that snapshot was originally created under looser limits.
+The cap-churn matrix rejects oversized rows, columns, layers, transforms, ticks,
+annotations, and per-item/total labels while preserving accepted paint, hits,
+semantics, inspection data, and revision; each case then shrinks, detaches, and
+destroys the chart to prove contraction. Dedicated tests cover series, facets,
+geometry, steady/peak bytes, and exact-table page limits.
 
 Line/area geometry is reduced against logical pixel width while retaining
 endpoints and bucket extrema. Exact accepted rows remain in the hit index and
