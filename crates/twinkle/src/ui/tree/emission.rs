@@ -451,6 +451,8 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_value_mapper: element.seeded_value_mapper,
                 drag_seed: element.declared_drag_seed().cloned(),
                 pointer_move_mapper: element.declared_pointer_move_mapper(),
+                pointer_move_seed: element.declared_pointer_move_seed().cloned(),
+                seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
 
                 wheel_mapper: element.declared_wheel_mapper(),
 
@@ -481,6 +483,8 @@ pub(super) fn emit_element<Message: Clone>(
             seeded_value_mapper: None,
             drag_seed: None,
             pointer_move_mapper: element.declared_pointer_move_mapper(),
+            pointer_move_seed: element.declared_pointer_move_seed().cloned(),
+            seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
             wheel_mapper: element.declared_wheel_mapper(),
             drag_mapper: None,
             drop_message: element.declared_drop_message().cloned(),
@@ -522,6 +526,8 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_value_mapper: None,
                 drag_seed: element.declared_drag_seed().cloned(),
                 pointer_move_mapper: element.declared_pointer_move_mapper(),
+                pointer_move_seed: element.declared_pointer_move_seed().cloned(),
+                seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
 
                 wheel_mapper: element.declared_wheel_mapper(),
 
@@ -551,6 +557,8 @@ pub(super) fn emit_element<Message: Clone>(
             seeded_value_mapper: None,
             drag_seed: element.declared_drag_seed().cloned(),
             pointer_move_mapper: element.declared_pointer_move_mapper(),
+            pointer_move_seed: element.declared_pointer_move_seed().cloned(),
+            seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
 
             wheel_mapper: element.declared_wheel_mapper(),
 
@@ -565,6 +573,7 @@ pub(super) fn emit_element<Message: Clone>(
         && element.declared_drag_seed().is_none()
         && element.drop_mapper.is_none()
         && (element.declared_pointer_move_mapper().is_some()
+            || element.declared_seeded_pointer_move_mapper().is_some()
             || element.declared_wheel_mapper().is_some())
         && !is_scroll_container(element)
         && let Some(hit_rect) = node
@@ -583,6 +592,8 @@ pub(super) fn emit_element<Message: Clone>(
             seeded_value_mapper: None,
             drag_seed: None,
             pointer_move_mapper: element.declared_pointer_move_mapper(),
+            pointer_move_seed: element.declared_pointer_move_seed().cloned(),
+            seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
             wheel_mapper: element.declared_wheel_mapper(),
             drag_mapper: None,
             drop_message: None,
@@ -661,6 +672,8 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_value_mapper: None,
                 drag_seed: None,
                 pointer_move_mapper: None,
+                pointer_move_seed: None,
+                seeded_pointer_move_mapper: None,
 
                 wheel_mapper: None,
 
@@ -919,6 +932,8 @@ pub(super) fn emit_element<Message: Clone>(
                             seeded_value_mapper: None,
                             drag_seed: None,
                             pointer_move_mapper: None,
+                            pointer_move_seed: None,
+                            seeded_pointer_move_mapper: None,
 
                             wheel_mapper: None,
 
@@ -1434,6 +1449,8 @@ pub(super) fn emit_element<Message: Clone>(
                             seeded_value_mapper: None,
                             drag_seed: None,
                             pointer_move_mapper: None,
+                            pointer_move_seed: None,
+                            seeded_pointer_move_mapper: None,
 
                             wheel_mapper: None,
 

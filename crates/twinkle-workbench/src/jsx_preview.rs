@@ -155,6 +155,8 @@ impl Application for JsxPreview {
             PluginMessage::Text(action, value) => Some((action, Value::String(value))),
             PluginMessage::Value(action, value) => Some((action, json!(value))),
             PluginMessage::Chart(action, value) => Some((action, value)),
+            #[cfg(feature = "charts")]
+            PluginMessage::ChartInspect(..) => None,
             PluginMessage::Scroll => None,
             PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
         };

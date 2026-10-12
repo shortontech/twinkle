@@ -6,9 +6,9 @@ use twinkle::retained_surface::{
 };
 use twinkle::{Rect, SemanticRole, UiId};
 use twinkle_charts::{
-    BinOptions, Channel, ChartData, ChartEvent, ChartLimits, ChartModel, ChartState, ChartView,
-    Column, DataValue, Dataset, DatasetId, Encoding, FieldRef, Legend, Recipes, RowKey, Scale,
-    ScaleKind, Viewport,
+    BinOptions, Channel, ChartData, ChartEvent, ChartInspector, ChartLimits, ChartModel,
+    ChartState, ChartView, Column, DataValue, Dataset, DatasetId, Encoding, FieldRef, Legend,
+    Recipes, RowKey, Scale, ScaleKind, Viewport,
 };
 
 #[derive(Clone)]
@@ -22,6 +22,7 @@ pub struct ChartDeclaration {
     pub(crate) id: String,
     pub(crate) class_name: Option<String>,
     pub(crate) snapshot: RetainedSurfaceSnapshot,
+    pub(crate) inspector: ChartInspector,
     pub(crate) table_action: usize,
     pub(crate) toggle_action: Option<usize>,
     pub(crate) navigate_action: Option<usize>,
@@ -64,11 +65,16 @@ impl ChartDeclaration {
             },
         ))
         .map_err(|error| error.to_string())?;
-        let retained_bytes = view.diagnostics().steady_bytes;
+        let inspector = view.inspector();
+        let retained_bytes = view
+            .diagnostics()
+            .steady_bytes
+            .saturating_add(inspector.retained_bytes());
         Ok(Self {
             id,
             class_name,
             snapshot: view.snapshot().clone(),
+            inspector,
             table_action: action(value, "tableAction")?
                 .ok_or("chart needs an onTableMode callback")?,
             toggle_action,
@@ -197,6 +203,28 @@ impl ChartDeclaration {
             }
         }))
     }
+}
+
+pub(crate) fn inspection_payload(inspection: &twinkle_charts::ChartInspection) -> Value {
+    json!({
+        "kind": "inspect",
+        "dataset": inspection.dataset.as_ref(),
+        "row": inspection.row.0.as_ref(),
+        "series": inspection.series.as_deref(),
+        "revision": inspection.revision,
+        "cells": inspection.cells.iter().map(|cell| json!({
+            "column": cell.column.as_ref(),
+            "unit": cell.unit.as_deref(),
+            "formatted": cell.formatted,
+            "value": match &cell.value {
+                DataValue::Number(value) => json!(value),
+                DataValue::Timestamp(value) => json!(value),
+                DataValue::Category(value) => json!(value.as_ref()),
+                DataValue::Boolean(value) => json!(value),
+                DataValue::Null => Value::Null,
+            },
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn parse_data(value: &Value, limits: &ChartLimits) -> Result<ChartData, String> {
@@ -555,6 +583,8 @@ mod tests {
 
     #[test]
     fn typed_json_chart_uses_native_engine_and_bounded_callbacks() {
+        use crate::components::{PluginMessage, PluginUiMessage};
+
         let chart = ChartDeclaration::parse(&declaration(), Some("dashboard".into())).unwrap();
         assert_eq!(chart.snapshot.input.unwrap().revisions.content, 3);
         assert!(
@@ -614,6 +644,29 @@ mod tests {
                 .0,
             13
         );
+
+        let element = twinkle::Component::into_element(
+            chart
+                .element(PluginMessage::Chart)
+                .expect("accepted chart projects"),
+        )
+        .on_pointer_move_seeded(
+            PluginMessage::ChartInspect(11, chart.inspector.clone()),
+            PluginMessage::pointer,
+        );
+        let frame = twinkle::UiFrame::layout(element, Rect::new(0.0, 0.0, 420.0, 240.0));
+        let pointer = frame.handle_event(
+            &mut twinkle::UiStateStore::default(),
+            twinkle::UiEvent::PointerMoved(twinkle::Point { x: 210.0, y: 120.0 }),
+        );
+        assert_eq!(pointer.messages.len(), 1);
+        let PluginMessage::Chart(action, payload) = &pointer.messages[0] else {
+            panic!("expected exact chart inspection message")
+        };
+        assert_eq!(*action, 11);
+        assert_eq!(payload["kind"], "inspect");
+        assert_eq!(payload["revision"], 3);
+        assert_eq!(payload["cells"].as_array().unwrap().len(), 3);
     }
 
     #[test]

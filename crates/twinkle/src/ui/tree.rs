@@ -97,6 +97,8 @@ struct HitRegion<Message> {
     message_mapper: Option<fn(f32) -> Message>,
     seeded_value_mapper: Option<fn(Message, f32) -> Message>,
     pointer_move_mapper: Option<fn(Point) -> Message>,
+    pointer_move_seed: Option<Message>,
+    seeded_pointer_move_mapper: Option<fn(Message, Point) -> Message>,
     wheel_mapper: Option<fn(WheelGesture) -> Message>,
     drag_seed: Option<Message>,
     drag_mapper: Option<fn(Message, DragGesture) -> Message>,
@@ -1181,13 +1183,21 @@ impl<Message: Clone> UiFrame<Message> {
             .hits
             .iter()
             .rev()
-            .find(|hit| &hit.id == id && hit.pointer_move_mapper.is_some())
+            .find(|hit| {
+                &hit.id == id
+                    && (hit.pointer_move_mapper.is_some()
+                        || hit.seeded_pointer_move_mapper.is_some())
+            })
             .or_else(|| {
                 self.hits.iter().rev().find(|hit| {
-                    hit.pointer_move_mapper.is_some() && self.is_descendant_or_self(&hit.id, id)
+                    (hit.pointer_move_mapper.is_some() || hit.seeded_pointer_move_mapper.is_some())
+                        && self.is_descendant_or_self(&hit.id, id)
                 })
             })?;
-        Some((hit.pointer_move_mapper?)(position))
+        hit.seeded_pointer_move_mapper
+            .zip(hit.pointer_move_seed.as_ref())
+            .map(|(map, seed)| map(seed.clone(), position))
+            .or_else(|| hit.pointer_move_mapper.map(|map| map(position)))
     }
 
     fn wheel_message(&self, id: &UiId, gesture: WheelGesture) -> Option<Message> {
@@ -1750,6 +1760,8 @@ impl<Message: Clone> UiFrame<Message> {
                 seeded_value_mapper: None,
                 drag_seed: None,
                 pointer_move_mapper: None,
+                pointer_move_seed: None,
+                seeded_pointer_move_mapper: None,
 
                 wheel_mapper: None,
 

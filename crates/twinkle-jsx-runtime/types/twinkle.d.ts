@@ -226,6 +226,12 @@ interface TwinkleChartState {
     readonly visibleSeries?: ReadonlyArray<string>;
     readonly viewport?: { readonly x?: readonly [number, number]; readonly y?: readonly [number, number] };
 }
+interface TwinkleChartInspectionCell {
+    readonly column: string;
+    readonly unit?: string;
+    readonly formatted: string;
+    readonly value: number | string | boolean | null;
+}
 interface TwinkleChartProps extends TwinkleProps {
     id: string;
     width: number;
@@ -237,7 +243,7 @@ interface TwinkleChartProps extends TwinkleProps {
     onToggleSeries?: (event: Readonly<{series:string;visible:boolean}>) => void;
     onNavigate?: (event: Readonly<{kind:"navigate";command:string}>) => void;
     onSelectDatum?: (event: Readonly<{kind:"select";dataset:string;row:string;series?:string;revision:number}>) => void;
-    onInspectDatum?: (event: Readonly<{kind:"inspect";dataset:string;row:string;revision:number}>) => void;
+    onInspectDatum?: (event: Readonly<{kind:"inspect";dataset:string;row:string;series?:string;revision:number;cells:ReadonlyArray<TwinkleChartInspectionCell>}>) => void;
     onViewportChange?: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => void;
     onViewportCommand?: (event: Readonly<{kind:"viewportCommand";command:string}>) => void;
 }

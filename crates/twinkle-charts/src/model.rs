@@ -98,6 +98,38 @@ pub struct ChartInspection {
     pub cells: Vec<crate::ChartTableCell>,
 }
 
+/// Immutable, bounded inspection handle for an accepted chart generation.
+///
+/// Hosts may retain this alongside a projected snapshot to resolve pointer
+/// coordinates without retaining mutable chart state or scanning source rows.
+#[derive(Clone, Debug)]
+pub struct ChartInspector {
+    model: Arc<ChartModel>,
+}
+
+impl PartialEq for ChartInspector {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.model, &other.model)
+            || (self.model.data.revision() == other.model.data.revision()
+                && self.model.hits == other.model.hits)
+    }
+}
+
+impl ChartInspector {
+    pub fn inspect_nearest(&self, point: Point) -> Option<ChartInspection> {
+        let hit = self.model.nearest(point)?;
+        self.model.inspection(hit)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.model.hits.is_empty()
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.model.retained_bytes()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct InspectionSource {
     dataset: Arc<crate::Dataset>,
@@ -2073,6 +2105,11 @@ impl ChartView {
     }
     pub fn inspection(&self, hit: &ChartHit) -> Option<ChartInspection> {
         self.host.model().inspection(hit)
+    }
+    pub fn inspector(&self) -> ChartInspector {
+        ChartInspector {
+            model: Arc::new(self.host.model().clone()),
+        }
     }
     pub fn active_inspection(&self) -> Option<ChartInspection> {
         self.active_hit()

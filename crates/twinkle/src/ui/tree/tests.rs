@@ -50,6 +50,42 @@ fn pointer_motion_mapper_uses_one_hit_tested_surface_message() {
 }
 
 #[test]
+fn seeded_pointer_motion_preserves_target_authority() {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Message {
+        target: u32,
+        point: Point,
+    }
+    fn pointer(mut seed: Message, point: Point) -> Message {
+        seed.point = point;
+        seed
+    }
+
+    let frame = UiFrame::layout(
+        Layer::new()
+            .id("seeded-surface")
+            .width(120.0)
+            .height(80.0)
+            .into_element()
+            .on_pointer_move_seeded(
+                Message {
+                    target: 17,
+                    point: Point { x: 0.0, y: 0.0 },
+                },
+                pointer,
+            ),
+        Rect::new(0.0, 0.0, 120.0, 80.0),
+    );
+    let point = Point { x: 45.0, y: 55.0 };
+    assert_eq!(
+        frame
+            .handle_event(&mut UiStateStore::default(), UiEvent::PointerMoved(point))
+            .messages,
+        vec![Message { target: 17, point }]
+    );
+}
+
+#[test]
 #[ignore = "release-profile stationary sparse paint-output reuse workload"]
 fn stationary_sparse_paint_output_reuse_release_workload() {
     const NODES: usize = 4_096;

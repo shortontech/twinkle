@@ -26,11 +26,15 @@ function ChartGallery() {
     height: 260,
     state: {visibleSeries},
     onTableMode: table,
-    onNavigate: (event: Readonly<{kind:"navigate";command:string}>) => twinkle.request(event),
-    onSelectDatum: (event: Readonly<{kind:"select";dataset:string;row:string;series?:string;revision:number}>) => twinkle.request(event),
-    onInspectDatum: (event: Readonly<{kind:"inspect";dataset:string;row:string;revision:number}>) => twinkle.request(event),
-    onViewportChange: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => twinkle.request(event),
-    onViewportCommand: (event: Readonly<{kind:"viewportCommand";command:string}>) => twinkle.request(event),
+    onNavigate: (event: Readonly<{kind:"navigate";command:string}>) => twinkle.request({type:"chart-event", ...event}),
+    onSelectDatum: (event: Readonly<{kind:"select";dataset:string;row:string;series?:string;revision:number}>) => twinkle.request({type:"chart-event", ...event}),
+    onInspectDatum: (event: Readonly<{kind:"inspect";dataset:string;row:string;series?:string;revision:number;cells:ReadonlyArray<TwinkleChartInspectionCell>}>) => twinkle.request({
+      type:"chart-event", kind:event.kind, dataset:event.dataset, row:event.row,
+      series:event.series ?? null, revision:event.revision,
+      cells:event.cells.map(cell => ({column:cell.column, unit:cell.unit ?? null, formatted:cell.formatted, value:cell.value})),
+    }),
+    onViewportChange: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => twinkle.request({type:"chart-event", ...event}),
+    onViewportCommand: (event: Readonly<{kind:"viewportCommand";command:string}>) => twinkle.request({type:"chart-event", ...event}),
   };
   return <Column>
     <Chart {...common} id="trend" spec={{family:"line",title:"Revenue trend",dataset:"sales",x:"month",y:"revenue",series:"region"}} onToggleSeries={toggle} />

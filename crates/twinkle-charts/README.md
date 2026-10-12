@@ -165,6 +165,9 @@ engine. `onTableMode`, `onToggleSeries`, `onNavigate`, `onSelectDatum`,
 `onInspectDatum`, `onViewportChange`, and `onViewportCommand` are independent
 generation-scoped callbacks. Optional event-specific callbacks fall back to
 `onTableMode` for source compatibility; new applications should handle them on
-their typed channels. The compiling gallery is
+their typed channels. When `onInspectDatum` is present, pointer motion uses an
+immutable accepted-generation `ChartInspector` and the native bounded hit index;
+the callback receives exact typed cells, units, formatted values, row identity,
+and revision without a JavaScript-side scan. The compiling gallery is
 `crates/twinkle-jsx-runtime/examples/charts.tsx`.
 

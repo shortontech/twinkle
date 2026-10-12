@@ -23,7 +23,9 @@ pub use export::{
     export_raster_cancellable,
 };
 pub use interaction::{ChartNavigation, NavigationCommand, PanZoomPolicy, ViewportCommand};
-pub use model::{ChartHit, ChartInputBindings, ChartInspection, ChartModel, ChartView};
+pub use model::{
+    ChartHit, ChartInputBindings, ChartInspection, ChartInspector, ChartModel, ChartView,
+};
 pub use scale::{BandScale, ContinuousScale, LinearScale, LogScale, ScaleValue};
 pub use spec::*;
 pub use table::{

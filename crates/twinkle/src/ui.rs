@@ -1609,6 +1609,8 @@ struct ElementEvents<Message> {
     focus_message: Option<Message>,
     blur_message: Option<Message>,
     pointer_move_mapper: Option<fn(Point) -> Message>,
+    pointer_move_seed: Option<Message>,
+    seeded_pointer_move_mapper: Option<fn(Message, Point) -> Message>,
     wheel_mapper: Option<fn(WheelGesture) -> Message>,
     drag_seed: Option<Message>,
     drop_message: Option<Message>,
@@ -1628,6 +1630,8 @@ impl<Message> Default for ElementEvents<Message> {
             focus_message: None,
             blur_message: None,
             pointer_move_mapper: None,
+            pointer_move_seed: None,
+            seeded_pointer_move_mapper: None,
             wheel_mapper: None,
             drag_seed: None,
             drop_message: None,
@@ -1707,6 +1711,20 @@ impl<Message> Element<Message> {
             .and_then(|events| events.pointer_move_mapper)
     }
 
+    pub(crate) fn declared_pointer_move_seed(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.pointer_move_seed.as_ref())
+    }
+
+    pub(crate) fn declared_seeded_pointer_move_mapper(
+        &self,
+    ) -> Option<fn(Message, Point) -> Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.seeded_pointer_move_mapper)
+    }
+
     pub(crate) fn declared_wheel_mapper(&self) -> Option<fn(WheelGesture) -> Message> {
         self.events.as_ref().and_then(|events| events.wheel_mapper)
     }
@@ -1736,6 +1754,7 @@ impl<Message> Element<Message> {
                 || events.focus_message.is_some()
                 || events.blur_message.is_some()
                 || events.pointer_move_mapper.is_some()
+                || events.pointer_move_seed.is_some()
                 || events.wheel_mapper.is_some()
                 || events.drag_seed.is_some()
                 || events.drop_message.is_some()
@@ -2128,6 +2147,19 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Emit hit-tested pointer motion using target-specific typed seed data.
+    /// This is the scoped/callback-bearing counterpart to [`Self::on_pointer_move`].
+    pub fn on_pointer_move_seeded(
+        mut self,
+        seed: Message,
+        map: fn(Message, Point) -> Message,
+    ) -> Self {
+        let events = self.events_mut();
+        events.pointer_move_seed = Some(seed);
+        events.seeded_pointer_move_mapper = Some(map);
+        self
+    }
+
     /// Opt into wheel/trackpad delivery for this hit-tested target. Declaring
     /// this hook consumes the gesture before an enclosing scroll container.
     pub fn on_wheel(mut self, map: fn(WheelGesture) -> Message) -> Self {
@@ -2261,6 +2293,7 @@ impl<Message> Element<Message> {
             self.message_mapper.is_none()
                 && self.seeded_value_mapper.is_none()
                 && self.declared_pointer_move_mapper().is_none()
+                && self.declared_seeded_pointer_move_mapper().is_none()
                 && self.declared_wheel_mapper().is_none()
                 && self.drag_mapper.is_none()
                 && self.drop_mapper.is_none()
@@ -2281,6 +2314,8 @@ impl<Message> Element<Message> {
                 focus_message: events.focus_message.map(&mut *map),
                 blur_message: events.blur_message.map(&mut *map),
                 pointer_move_mapper: None,
+                pointer_move_seed: None,
+                seeded_pointer_move_mapper: None,
                 wheel_mapper: None,
                 drag_seed: None,
                 drop_message: None,

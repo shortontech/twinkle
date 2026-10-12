@@ -120,6 +120,8 @@ impl Application for JsxApp {
             PluginMessage::Button { click, .. } => Some(click),
             PluginMessage::Scroll | PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
             PluginMessage::Chart(action, _) => Some(action),
+            #[cfg(feature = "charts")]
+            PluginMessage::ChartInspect(..) => None,
         };
         if let Some(action) = action {
             match self.dispatch(action) {

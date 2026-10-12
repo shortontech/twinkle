@@ -7,7 +7,7 @@ use std::{
 
 use serde_json::Value;
 use twinkle::{
-    AnyView, Column, ComponentBuilderExt, Container, DragGesture, DropGesture, Dropdown,
+    AnyView, Column, Component, ComponentBuilderExt, Container, DragGesture, DropGesture, Dropdown,
     DropdownPartStyle, Grid, Icon, Image, ImageFit, Layer, Length, OverlayMenuItem, Point, Row,
     SemanticRole, Shortcut, Slider, Spacer, Text, TextField as UiTextField, VerticalScroll,
 };
@@ -62,7 +62,10 @@ fn virtual_row_id(source: &crate::virtual_source::VirtualSource, ordinal: usize)
 #[derive(Clone, Debug, PartialEq)]
 pub enum PluginMessage {
     Click(usize),
-    Button { click: usize, drag: usize },
+    Button {
+        click: usize,
+        drag: usize,
+    },
     Context(usize),
     Drag(usize, DragGesture),
     Drop(usize, DropGesture),
@@ -70,6 +73,9 @@ pub enum PluginMessage {
     Value(usize, f32),
     Scroll,
     Chart(usize, Value),
+    #[doc(hidden)]
+    #[cfg(feature = "charts")]
+    ChartInspect(usize, twinkle_charts::ChartInspector),
 }
 
 /// Convert plugin control events at construction time, including controls
@@ -82,6 +88,9 @@ pub trait PluginUiMessage: Clone + 'static {
     fn drag(seed: Self, gesture: DragGesture) -> Self;
     fn drop(seed: Self, gesture: DropGesture) -> Self;
     fn value(seed: Self, value: f32) -> Self;
+    fn pointer(seed: Self, _point: Point) -> Self {
+        seed
+    }
 }
 
 impl PluginUiMessage for PluginMessage {
@@ -101,6 +110,17 @@ impl PluginUiMessage for PluginMessage {
             unreachable!("plugin slider seed retains its handler")
         };
         Self::Value(action, value)
+    }
+
+    fn pointer(seed: Self, point: Point) -> Self {
+        #[cfg(feature = "charts")]
+        if let Self::ChartInspect(action, inspector) = seed {
+            let inspection = inspector
+                .inspect_nearest(point)
+                .expect("non-empty accepted inspector resolves a nearest datum");
+            return Self::Chart(action, crate::chart::inspection_payload(&inspection));
+        }
+        seed
     }
 
     fn drop(seed: Self, gesture: DropGesture) -> Self {
@@ -4029,14 +4049,26 @@ impl PanelNode {
                     chart.class_name.as_deref(),
                 );
                 let scope = scope.map(str::to_owned);
-                let element = chart
+                let mut element = chart
                     .element(|action, payload| {
                         Message::from_plugin_scoped(
                             PluginMessage::Chart(action, payload),
                             scope.as_deref(),
                         )
                     })
-                    .expect("admitted chart snapshot has a native projection");
+                    .expect("admitted chart snapshot has a native projection")
+                    .into_element();
+                if let Some(action) = chart.inspect_action
+                    && !chart.inspector.is_empty()
+                {
+                    element = element.on_pointer_move_seeded(
+                        Message::from_plugin_scoped(
+                            PluginMessage::ChartInspect(action, chart.inspector.clone()),
+                            scope.as_deref(),
+                        ),
+                        Message::pointer,
+                    );
+                }
                 with_margin(
                     AnyView::new(apply_container_style(
                         Container::new().id(chart.id.clone()).child(element),
