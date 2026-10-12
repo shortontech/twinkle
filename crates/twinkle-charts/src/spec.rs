@@ -329,14 +329,18 @@ impl ChartSpec {
             }
         }
         for layer in &self.layers {
-            let mut derived = BTreeSet::new();
+            let mut derived: BTreeSet<String> = BTreeSet::new();
             for transform in &layer.transforms {
                 match transform {
                     Transform::Bin { output, .. } | Transform::Aggregate { output, .. } => {
-                        derived.insert(output.as_str());
+                        derived.insert(output.clone());
                     }
                     Transform::Stack { value, .. } => {
-                        derived.insert(value.as_str());
+                        derived.insert(value.clone());
+                        derived.insert(format!("{value}_raw"));
+                        derived.insert(format!("{value}_start"));
+                        derived.insert(format!("{value}_end"));
+                        derived.insert(format!("{value}_percent"));
                     }
                     Transform::Sort { .. } => {}
                 }
@@ -531,6 +535,90 @@ impl Recipes {
             category,
             value,
         )
+    }
+    pub fn grouped_bar(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        series: FieldRef,
+        value: FieldRef,
+    ) -> ChartSpec {
+        let mut spec = Self::bar(title, category, value);
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: series,
+            scale: None,
+        });
+        spec
+    }
+    pub fn stacked_bar(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        series: FieldRef,
+        value: FieldRef,
+        normalized: bool,
+    ) -> ChartSpec {
+        let dataset = value.dataset.clone();
+        let mut spec = Self::bar(
+            title,
+            category.clone(),
+            FieldRef::new(dataset.clone(), format!("{}_end", value.column)),
+        );
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Y2,
+            field: FieldRef::new(dataset.clone(), format!("{}_start", value.column)),
+            scale: Some("y".into()),
+        });
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: series.clone(),
+            scale: None,
+        });
+        spec.layers[0].transforms.push(Transform::Stack {
+            category: category.column.to_string(),
+            series: series.column.to_string(),
+            value: value.column.to_string(),
+            mode: if normalized {
+                crate::StackMode::Normalized
+            } else {
+                crate::StackMode::Raw
+            },
+        });
+        spec
+    }
+    pub fn stacked_area(
+        title: impl Into<Arc<str>>,
+        x: FieldRef,
+        series: FieldRef,
+        value: FieldRef,
+        normalized: bool,
+    ) -> ChartSpec {
+        let dataset = value.dataset.clone();
+        let mut spec = Self::area(
+            title,
+            x.clone(),
+            FieldRef::new(dataset.clone(), format!("{}_end", value.column)),
+        );
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Y2,
+            field: FieldRef::new(dataset.clone(), format!("{}_start", value.column)),
+            scale: Some("y".into()),
+        });
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: series.clone(),
+            scale: None,
+        });
+        spec.layers[0].transforms.push(Transform::Stack {
+            category: x.column.to_string(),
+            series: series.column.to_string(),
+            value: value.column.to_string(),
+            mode: if normalized {
+                crate::StackMode::Normalized
+            } else {
+                crate::StackMode::Raw
+            },
+        });
+        spec
     }
     pub fn bubble(
         title: impl Into<Arc<str>>,

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use twinkle_ui::{
     ActionKind, Point, Rect, SemanticRole, UiId,
@@ -307,13 +307,24 @@ impl ChartModel {
                     dataset: y.field.dataset.to_string(),
                     column: y.field.column.to_string(),
                 })?;
+        let y2_column = channel(&layer.encodings, Channel::Y2)
+            .map(|encoding| {
+                dataset
+                    .column(&encoding.field.column)
+                    .ok_or_else(|| ChartError::MissingColumn {
+                        dataset: encoding.field.dataset.to_string(),
+                        column: encoding.field.column.to_string(),
+                    })
+            })
+            .transpose()?;
+        let x_coordinates = column_coordinates(x_column);
         let values: Vec<(usize, f64, f64)> = x_column
             .values
             .iter()
             .zip(y_column.values.iter())
             .enumerate()
-            .filter_map(|(index, (x, y))| {
-                coordinate(x, index)
+            .filter_map(|(index, (_x, y))| {
+                x_coordinates[index]
                     .zip(coordinate(y, index))
                     .map(|(x, y)| (index, x, y))
             })
@@ -322,7 +333,15 @@ impl ChartModel {
             return Ok(());
         }
         let x_domain = extent(values.iter().map(|(_, x, _)| *x));
-        let mut y_domain = extent(values.iter().map(|(_, _, y)| *y));
+        let mut y_domain = extent(values.iter().map(|(_, _, y)| *y).chain(
+            y2_column.into_iter().flat_map(|column| {
+                column
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, value)| coordinate(value, index))
+            }),
+        ));
         let baseline = match layer.mark {
             Mark::Area { baseline, .. } => Some(baseline as f64),
             Mark::Bar { .. } | Mark::Rect => Some(0.0),
@@ -332,11 +351,25 @@ impl ChartModel {
             y_domain[0] = y_domain[0].min(baseline);
             y_domain[1] = y_domain[1].max(baseline);
         }
+        let categorical_x_count = x_column
+            .values
+            .iter()
+            .filter_map(DataValue::category)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let x_inset = if categorical_x_count == 0 {
+            0.0
+        } else {
+            plot.size.width / categorical_x_count as f32 / 2.0
+        };
         let map = |x: f64, y: f64| Point {
             x: map_value(
                 x,
                 x_domain,
-                [plot.origin.x, plot.origin.x + plot.size.width],
+                [
+                    plot.origin.x + x_inset,
+                    plot.origin.x + plot.size.width - x_inset,
+                ],
             ),
             y: map_value(
                 y,
@@ -350,13 +383,8 @@ impl ChartModel {
                 let mut triangles = Vec::new();
                 let mut segment = Vec::new();
                 let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
-                for (index, (x, y)) in x_column
-                    .values
-                    .iter()
-                    .zip(y_column.values.iter())
-                    .enumerate()
-                {
-                    match (coordinate(x, index), coordinate(y, index)) {
+                for (index, y) in y_column.values.iter().enumerate() {
+                    match (x_coordinates[index], coordinate(y, index)) {
                         (Some(x), Some(y)) => segment.push(map(x, y)),
                         _ => {
                             triangles.extend(stroke_polyline(
@@ -375,35 +403,51 @@ impl ChartModel {
                 }
             }
             Mark::Area { baseline, .. } => {
-                let baseline = map_value(
-                    *baseline,
-                    y_domain,
-                    [plot.origin.y + plot.size.height, plot.origin.y],
-                );
                 let mut triangles = Vec::new();
-                let mut segment = Vec::new();
-                let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
-                for (index, (x, y)) in x_column
-                    .values
-                    .iter()
-                    .zip(y_column.values.iter())
-                    .enumerate()
-                {
-                    match (coordinate(x, index), coordinate(y, index)) {
-                        (Some(x), Some(y)) => segment.push(map(x, y)),
-                        _ => {
-                            triangles.extend(area_triangles(
-                                &reduce_extrema(&segment, max_points),
-                                baseline,
-                            ));
-                            segment.clear();
+                if let Some(base_column) = y2_column {
+                    for pair in values.windows(2) {
+                        if pair[1].0 != pair[0].0 + 1 {
+                            continue;
+                        }
+                        let Some(base0) = coordinate(&base_column.values[pair[0].0], pair[0].0)
+                        else {
+                            continue;
+                        };
+                        let Some(base1) = coordinate(&base_column.values[pair[1].0], pair[1].0)
+                        else {
+                            continue;
+                        };
+                        let top0 = map(pair[0].1, pair[0].2);
+                        let top1 = map(pair[1].1, pair[1].2);
+                        let bottom0 = map(pair[0].1, base0);
+                        let bottom1 = map(pair[1].1, base1);
+                        triangles.extend([top0, bottom0, top1, top1, bottom0, bottom1]);
+                    }
+                } else {
+                    let baseline = map_value(
+                        *baseline,
+                        y_domain,
+                        [plot.origin.y + plot.size.height, plot.origin.y],
+                    );
+                    let mut segment = Vec::new();
+                    let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
+                    for (index, y) in y_column.values.iter().enumerate() {
+                        match (x_coordinates[index], coordinate(y, index)) {
+                            (Some(x), Some(y)) => segment.push(map(x, y)),
+                            _ => {
+                                triangles.extend(area_triangles(
+                                    &reduce_extrema(&segment, max_points),
+                                    baseline,
+                                ));
+                                segment.clear();
+                            }
                         }
                     }
+                    triangles.extend(area_triangles(
+                        &reduce_extrema(&segment, max_points),
+                        baseline,
+                    ));
                 }
-                triangles.extend(area_triangles(
-                    &reduce_extrema(&segment, max_points),
-                    baseline,
-                ));
                 if !triangles.is_empty() {
                     output
                         .paint
@@ -432,21 +476,56 @@ impl ChartModel {
                         limit: 60_000,
                     });
                 }
-                let width = (plot.size.width / values.len() as f32 * 0.72).max(1.0);
-                let zero = map_value(
-                    0.0,
-                    y_domain,
-                    [plot.origin.y + plot.size.height, plot.origin.y],
-                );
+                let category_count = x_coordinates
+                    .iter()
+                    .flatten()
+                    .map(|value| value.to_bits())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    .max(1);
+                let series_column = channel(&layer.encodings, Channel::Series)
+                    .and_then(|encoding| dataset.column(&encoding.field.column));
+                let series_coordinates = series_column.map(column_coordinates);
+                let series_count = series_coordinates.as_ref().map_or(1, |coordinates| {
+                    coordinates
+                        .iter()
+                        .flatten()
+                        .map(|value| value.to_bits())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        .max(1)
+                });
+                let grouped = y2_column.is_none() && series_count > 1;
+                let category_width = (plot.size.width / category_count as f32 * 0.72).max(1.0);
+                let width = if grouped {
+                    category_width / series_count as f32
+                } else {
+                    category_width
+                };
                 for (index, x, y) in &values {
-                    let point = map(*x, *y);
+                    let mut point = map(*x, *y);
+                    if grouped {
+                        let series = series_coordinates
+                            .as_ref()
+                            .and_then(|coordinates| coordinates[*index])
+                            .unwrap_or(0.0) as f32;
+                        point.x += (series - (series_count as f32 - 1.0) / 2.0) * width;
+                    }
+                    let baseline_value = y2_column
+                        .and_then(|column| coordinate(&column.values[*index], *index))
+                        .unwrap_or(0.0);
+                    let baseline = map_value(
+                        baseline_value,
+                        y_domain,
+                        [plot.origin.y + plot.size.height, plot.origin.y],
+                    );
                     let left = (point.x - width / 2.0).max(plot.origin.x);
                     let right = (point.x + width / 2.0).min(plot.origin.x + plot.size.width);
                     let bounds = Rect::new(
                         left,
-                        point.y.min(zero),
+                        point.y.min(baseline),
                         (right - left).max(0.0),
-                        (point.y - zero).abs().max(1.0),
+                        (point.y - baseline).abs().max(1.0),
                     );
                     output.paint.push(PaintCommand::Fill {
                         rect: bounds,
@@ -685,6 +764,21 @@ fn coordinate(value: &DataValue, category_index: usize) -> Option<f64> {
         DataValue::Category(_) => Some(category_index as f64),
         _ => None,
     }
+}
+fn column_coordinates(column: &crate::Column) -> Vec<Option<f64>> {
+    let mut categories: BTreeMap<Arc<str>, usize> = BTreeMap::new();
+    column
+        .values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| match value {
+            DataValue::Category(category) => {
+                let next = categories.len();
+                Some(*categories.entry(category.clone()).or_insert(next) as f64)
+            }
+            _ => coordinate(value, index),
+        })
+        .collect()
 }
 fn extent(values: impl Iterator<Item = f64>) -> [f64; 2] {
     let mut min = f64::INFINITY;
@@ -1016,5 +1110,96 @@ mod tests {
         assert_eq!(reduced.last(), points.last());
         assert!(reduced.iter().any(|point| point.y == 10_000.0));
         assert!(reduced.len() <= 402);
+    }
+
+    #[test]
+    fn grouped_and_normalized_stacked_bars_lower_to_distinct_native_rectangles() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            vec![RowKey::from("a1"), RowKey::from("a2"), RowKey::from("b1")],
+            vec![
+                Column::new(
+                    "category",
+                    vec![
+                        DataValue::Category(Arc::from("a")),
+                        DataValue::Category(Arc::from("a")),
+                        DataValue::Category(Arc::from("b")),
+                    ],
+                ),
+                Column::new(
+                    "series",
+                    vec![
+                        DataValue::Category(Arc::from("one")),
+                        DataValue::Category(Arc::from("two")),
+                        DataValue::Category(Arc::from("one")),
+                    ],
+                ),
+                Column::new(
+                    "value",
+                    vec![
+                        DataValue::Number(2.0),
+                        DataValue::Number(3.0),
+                        DataValue::Number(4.0),
+                    ],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(10, vec![dataset], &limits).unwrap());
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 10,
+                ..Default::default()
+            },
+        );
+        let render = |spec| {
+            let mut view = ChartView::new(
+                ChartModel::new(Arc::new(spec), data.clone(), limits.clone()).unwrap(),
+            )
+            .unwrap();
+            view.update(input).unwrap().output.paint.clone()
+        };
+        let category = FieldRef::new("d", "category");
+        let series = FieldRef::new("d", "series");
+        let value = FieldRef::new("d", "value");
+        let grouped = render(crate::Recipes::grouped_bar(
+            "Grouped",
+            category.clone(),
+            series.clone(),
+            value.clone(),
+        ));
+        let grouped_rects: Vec<Rect> = grouped
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Fill { rect, .. } if rect.size.width < 300.0 => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(grouped_rects.len(), 3);
+        assert_ne!(grouped_rects[0].origin.x, grouped_rects[1].origin.x);
+        let stacked = render(crate::Recipes::stacked_bar(
+            "Stacked", category, series, value, true,
+        ));
+        let stacked_rects: Vec<Rect> = stacked
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Fill { rect, .. } if rect.size.width < 300.0 => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stacked_rects.len(), 3);
+        assert!(
+            (stacked_rects[0].origin.y
+                - (stacked_rects[1].origin.y + stacked_rects[1].size.height))
+                .abs()
+                < 0.01
+                || (stacked_rects[1].origin.y
+                    - (stacked_rects[0].origin.y + stacked_rects[0].size.height))
+                    .abs()
+                    < 0.01
+        );
     }
 }
