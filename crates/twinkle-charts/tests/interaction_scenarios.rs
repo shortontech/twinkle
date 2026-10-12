@@ -7,8 +7,9 @@ use twinkle_charts::{
 };
 use twinkle_testkit::{Scenario, Selector};
 use twinkle_ui::{
-    ActionKind, Application, Column as UiColumn, Component, ComponentBuilderExt, DragGesture,
-    DragPhase, Point, Rect, SemanticRole, Spacer, VerticalScroll, ViewContext, WheelGesture,
+    ActionKind, Application, Button, Column as UiColumn, Component, ComponentBuilderExt,
+    DragGesture, DragPhase, Point, Rect, SemanticRole, Spacer, VerticalScroll, ViewContext,
+    WheelGesture,
     retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions},
 };
 
@@ -22,6 +23,8 @@ enum Message {
     Wheel(WheelGesture),
     Scroll(f32),
     Table(ChartTableEvent),
+    Reorder,
+    RemoveActive,
 }
 
 fn pointer(point: Point) -> Message {
@@ -36,6 +39,8 @@ fn wheel(gesture: WheelGesture) -> Message {
 
 struct ChartScenarioApp {
     chart: ChartView,
+    spec: Arc<twinkle_charts::ChartSpec>,
+    limits: ChartLimits,
     state: ChartState,
     revision: u64,
     events: Vec<ChartEvent>,
@@ -46,47 +51,20 @@ struct ChartScenarioApp {
 impl ChartScenarioApp {
     fn new() -> Self {
         let limits = ChartLimits::default();
-        let data = Arc::new(
-            ChartData::new(
-                1,
-                vec![
-                    Dataset::new(
-                        DatasetId::from("scenario"),
-                        [RowKey::from("a"), RowKey::from("b"), RowKey::from("c")],
-                        vec![
-                            Column::new(
-                                "x",
-                                vec![
-                                    DataValue::Number(0.0),
-                                    DataValue::Number(1.0),
-                                    DataValue::Number(2.0),
-                                ],
-                            ),
-                            Column::new(
-                                "y",
-                                vec![
-                                    DataValue::Number(1.0),
-                                    DataValue::Number(3.0),
-                                    DataValue::Number(2.0),
-                                ],
-                            ),
-                        ],
-                    )
-                    .unwrap(),
-                ],
-                &limits,
-            )
-            .unwrap(),
-        );
+        let data = scenario_data(1, &["a", "b", "c"], &limits);
         let spec = Arc::new(Recipes::line(
             "Scenario chart",
             FieldRef::new("scenario", "x"),
             FieldRef::new("scenario", "y"),
         ));
-        let mut chart = ChartView::new(ChartModel::new(spec, data, limits).unwrap()).unwrap();
+        let mut chart =
+            ChartView::new(ChartModel::new(Arc::clone(&spec), data, limits.clone()).unwrap())
+                .unwrap();
         chart.update(input(1)).unwrap();
         Self {
             chart,
+            spec,
+            limits,
             state: ChartState::default(),
             revision: 1,
             events: Vec::new(),
@@ -116,6 +94,56 @@ impl ChartScenarioApp {
             .update_state(self.state.clone(), input(self.revision))
             .unwrap();
     }
+
+    fn replace_rows(&mut self, rows: &[&str]) {
+        self.revision += 1;
+        self.chart
+            .replace_and_update(
+                Arc::clone(&self.spec),
+                scenario_data(self.revision, rows, &self.limits),
+                input(self.revision),
+            )
+            .unwrap();
+    }
+}
+
+fn scenario_data(revision: u64, rows: &[&str], limits: &ChartLimits) -> Arc<ChartData> {
+    let values = |row: &str| match row {
+        "a" => (0.0, 1.0),
+        "b" => (1.0, 3.0),
+        "c" => (2.0, 2.0),
+        _ => unreachable!(),
+    };
+    Arc::new(
+        ChartData::new(
+            revision,
+            vec![
+                Dataset::new(
+                    DatasetId::from("scenario"),
+                    rows.iter()
+                        .map(|row| RowKey::from(*row))
+                        .collect::<Vec<_>>(),
+                    vec![
+                        Column::new(
+                            "x",
+                            rows.iter()
+                                .map(|row| DataValue::Number(values(row).0))
+                                .collect::<Vec<_>>(),
+                        ),
+                        Column::new(
+                            "y",
+                            rows.iter()
+                                .map(|row| DataValue::Number(values(row).1))
+                                .collect::<Vec<_>>(),
+                        ),
+                    ],
+                )
+                .unwrap(),
+            ],
+            limits,
+        )
+        .unwrap(),
+    )
 }
 
 impl Application for ChartScenarioApp {
@@ -144,21 +172,28 @@ impl Application for ChartScenarioApp {
             }
             Message::Scroll(_) => {}
             Message::Table(_) => {}
+            Message::Reorder => self.replace_rows(&["c", "a", "b"]),
+            Message::RemoveActive => self.replace_rows(&["c", "a"]),
         }
     }
 
     fn view(&self, _: ViewContext) -> impl twinkle_ui::View<Message> {
-        self.chart
-            .element_with_input(
-                "scenario-chart",
-                Message::Chart,
-                ChartInputBindings {
-                    pointer_move: Some(pointer),
-                    drag: Some((Message::Pointer(Point { x: 0.0, y: 0.0 }), drag)),
-                    wheel: Some(wheel),
-                },
+        UiColumn::new()
+            .child(
+                self.chart
+                    .element_with_input(
+                        "scenario-chart",
+                        Message::Chart,
+                        ChartInputBindings {
+                            pointer_move: Some(pointer),
+                            drag: Some((Message::Pointer(Point { x: 0.0, y: 0.0 }), drag)),
+                            wheel: Some(wheel),
+                        },
+                    )
+                    .unwrap(),
             )
-            .unwrap()
+            .child(Button::new(Message::Reorder, "Reorder data"))
+            .child(Button::new(Message::RemoveActive, "Remove active row"))
             .into_element()
     }
 }
@@ -327,6 +362,62 @@ fn testkit_routes_pointer_accessibility_controller_wheel_and_drag_capture() {
             .application()
             .drag_phases
             .contains(&DragPhase::Cancelled)
+    );
+}
+
+#[test]
+fn testkit_preserves_active_identity_through_reorder_and_removal() {
+    let chart = Selector::role_name(SemanticRole::GraphicalCustomControl, "Scenario chart");
+    let mut scenario = Scenario::new(ChartScenarioApp::new(), 400, 320);
+
+    scenario
+        .accessibility_action(&chart, ActionKind::Increment)
+        .unwrap();
+    assert_eq!(
+        scenario
+            .host()
+            .application()
+            .chart
+            .active_inspection()
+            .unwrap()
+            .row,
+        RowKey::from("b")
+    );
+
+    scenario
+        .pointer_activate(&Selector::role_name(SemanticRole::Button, "Reorder data"))
+        .unwrap();
+    assert_eq!(
+        scenario
+            .host()
+            .application()
+            .chart
+            .active_inspection()
+            .unwrap()
+            .row,
+        RowKey::from("b")
+    );
+    scenario.keyboard_activate(&chart).unwrap();
+    assert!(matches!(
+        scenario.host().application().events.last(),
+        Some(ChartEvent::Select { row, revision: 2, .. }) if row == &RowKey::from("b")
+    ));
+
+    scenario
+        .pointer_activate(&Selector::role_name(
+            SemanticRole::Button,
+            "Remove active row",
+        ))
+        .unwrap();
+    assert_eq!(
+        scenario
+            .host()
+            .application()
+            .chart
+            .active_inspection()
+            .unwrap()
+            .row,
+        RowKey::from("a")
     );
 }
 
