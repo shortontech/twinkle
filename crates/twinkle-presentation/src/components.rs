@@ -69,6 +69,7 @@ pub enum PluginMessage {
     Text(usize, String),
     Value(usize, f32),
     Scroll,
+    Chart(usize, Value),
 }
 
 /// Convert plugin control events at construction time, including controls
@@ -416,6 +417,8 @@ impl VirtualCollectionDeclaration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PanelNode {
+    #[cfg(feature = "charts")]
+    Chart(crate::chart::ChartDeclaration),
     Badge {
         item: Option<String>,
         label: String,
@@ -1516,6 +1519,12 @@ impl PanelNode {
         });
         own + descendants
             + match self {
+                #[cfg(feature = "charts")]
+                Self::Chart(chart) => {
+                    capacity(&chart.id)
+                        + chart.class_name.as_ref().map_or(0, capacity)
+                        + chart.retained_bytes as u64
+                }
                 Self::Button {
                     id,
                     class_name,
@@ -1749,11 +1758,21 @@ impl PanelNode {
                     | "image-button"
                     | "progress"
                     | "badge"
+                    | "chart"
             )
         {
             return Err(format!("className is not supported on {kind} yet"));
         }
         match kind {
+            #[cfg(feature = "charts")]
+            "chart" => {
+                if !children.is_empty() {
+                    return Err("chart cannot have children".into());
+                }
+                Ok(Self::Chart(crate::chart::ChartDeclaration::parse(
+                    value, class_name,
+                )?))
+            }
             "slot" => {
                 if !children.is_empty() {
                     return Err("slot cannot have children".into());
@@ -4001,6 +4020,31 @@ impl PanelNode {
         slots: &mut dyn FnMut(&str) -> Option<AnyView<Message>>,
     ) -> AnyView<Message> {
         match self {
+            #[cfg(feature = "charts")]
+            Self::Chart(chart) => {
+                let style = inherited.resolve(
+                    stylesheet,
+                    "chart",
+                    Some(&chart.id),
+                    chart.class_name.as_deref(),
+                );
+                let scope = scope.map(str::to_owned);
+                let element = chart
+                    .element(|action, payload| {
+                        Message::from_plugin_scoped(
+                            PluginMessage::Chart(action, payload),
+                            scope.as_deref(),
+                        )
+                    })
+                    .expect("admitted chart snapshot has a native projection");
+                with_margin(
+                    AnyView::new(apply_container_style(
+                        Container::new().id(chart.id.clone()).child(element),
+                        &style,
+                    )),
+                    &style,
+                )
+            }
             Self::Badge {
                 label,
                 count,
@@ -5854,6 +5898,8 @@ fn parse_patched_node(
             | PanelNode::ScrollView { id, .. }
             | PanelNode::Menu { id, .. }
             | PanelNode::MenuItem { id, .. } => Some(id.as_str()),
+            #[cfg(feature = "charts")]
+            PanelNode::Chart(chart) => Some(chart.id.as_str()),
             PanelNode::Surface { id, .. } | PanelNode::Image { id, .. } => id.as_deref(),
             _ => None,
         };
@@ -5943,6 +5989,11 @@ fn set_container_class_name(node: &mut PanelNode, value: &Value) -> Result<(), S
             *class_name = class;
             Ok(())
         }
+        #[cfg(feature = "charts")]
+        PanelNode::Chart(chart) => {
+            chart.class_name = class;
+            Ok(())
+        }
         _ => Err("className target is not a container".into()),
     }
 }
@@ -5955,6 +6006,10 @@ fn set_typed_handler(
 ) -> Result<(), String> {
     let optional = Some(action);
     match (&mut *node, event) {
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "tableAction") => chart.table_action = action,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "toggleAction") => chart.toggle_action = optional,
         (PanelNode::Div { action: field, .. }, "action")
         | (PanelNode::Image { action: field, .. }, "action")
         | (PanelNode::Switch { action: field, .. }, "action")

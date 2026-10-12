@@ -154,6 +154,7 @@ impl Application for JsxPreview {
             PluginMessage::Button { click, .. } => Some((click, Value::Null)),
             PluginMessage::Text(action, value) => Some((action, Value::String(value))),
             PluginMessage::Value(action, value) => Some((action, json!(value))),
+            PluginMessage::Chart(action, value) => Some((action, value)),
             PluginMessage::Scroll => None,
             PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
         };

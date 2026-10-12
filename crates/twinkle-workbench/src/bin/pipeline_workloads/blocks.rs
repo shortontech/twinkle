@@ -545,7 +545,8 @@ impl Application for Blocks {
             PluginMessage::Click(a)
             | PluginMessage::Context(a)
             | PluginMessage::Text(a, _)
-            | PluginMessage::Value(a, _) => Some(a),
+            | PluginMessage::Value(a, _)
+            | PluginMessage::Chart(a, _) => Some(a),
             PluginMessage::Button { click, .. } => Some(click),
             PluginMessage::Scroll | PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
         };

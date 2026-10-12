@@ -211,6 +211,53 @@ mod tests {
         assert!(matches!(&children[0], PanelNode::Button { label, .. } if label == "1"));
     }
 
+    #[cfg(feature = "charts")]
+    #[test]
+    fn chart_callbacks_use_the_runtime_generation_and_native_admission_path() {
+        let manifest =
+            SurfaceBounds::from_json(include_str!("../tests/fixtures/window-surfaces.json"))
+                .unwrap();
+        let source = r#"
+            function App() {
+                return h(Chart, {
+                    id:'revenue', width:400, height:240,
+                    data:{revision:5,datasets:[{id:'d',keys:['a','b'],columns:[
+                        {name:'x',type:'number',values:[1,2]},
+                        {name:'series',type:'category',values:['One','Two']},
+                        {name:'y',type:'number',values:[10,20]}
+                    ]}]},
+                    spec:{family:'line',title:'Revenue',dataset:'d',x:'x',y:'y',series:'series'},
+                    onTableMode: visible => twinkle.request({type:'table',visible}),
+                    onToggleSeries: event => twinkle.request({type:'toggle',...event})
+                });
+            }
+        "#;
+        let mut page = JsxPage::new(source, manifest, None).unwrap();
+        let data = json!({"generation":1});
+        let PanelNode::Chart(chart) = page.render(&data).unwrap() else {
+            panic!("expected admitted chart")
+        };
+        let table_action = chart.table_action;
+        let toggle_action = chart.toggle_action.unwrap();
+        assert_eq!(chart.snapshot.input.unwrap().revisions.content, 5);
+        let effect = page
+            .dispatch(table_action, &json!(true), &data, Ok::<_, String>)
+            .unwrap();
+        assert_eq!(effect, json!({"type":"table","visible":true}));
+        let effect = page
+            .dispatch(
+                toggle_action,
+                &json!({"series":"One","visible":false}),
+                &data,
+                Ok::<_, String>,
+            )
+            .unwrap();
+        assert_eq!(
+            effect,
+            json!({"type":"toggle","series":"One","visible":false})
+        );
+    }
+
     #[test]
     fn scoped_pages_share_one_runtime_without_mixing_handlers_or_state() {
         let manifest =

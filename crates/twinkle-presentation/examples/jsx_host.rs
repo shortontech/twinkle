@@ -119,6 +119,7 @@ impl Application for JsxApp {
             | PluginMessage::Value(action, _) => Some(action),
             PluginMessage::Button { click, .. } => Some(click),
             PluginMessage::Scroll | PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
+            PluginMessage::Chart(action, _) => Some(action),
         };
         if let Some(action) = action {
             match self.dispatch(action) {

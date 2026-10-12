@@ -4006,6 +4006,7 @@ dependencies = [
  "cssparser",
  "image",
  "serde_json",
+ "twinkle-charts",
  "twinkle-jsx-runtime",
  "twinkle-protocol",
  "twinkle-theme",

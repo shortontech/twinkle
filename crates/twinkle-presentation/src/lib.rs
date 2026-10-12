@@ -10,6 +10,8 @@
 //! and [JSX host guide](https://github.com/shortontech/twinkle/blob/main/crates/twinkle-presentation/docs/jsx-host.md)
 //! for third-party integration workflows.
 
+#[cfg(feature = "charts")]
+mod chart;
 pub mod components;
 pub mod css;
 #[cfg(feature = "jsx")]

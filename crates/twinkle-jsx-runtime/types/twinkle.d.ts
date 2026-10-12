@@ -189,6 +189,53 @@ interface TwinkleProgressProps extends TwinkleProps {
     width: number;
     height: number;
 }
+type TwinkleChartValue = number | string | boolean | null;
+interface TwinkleChartColumn {
+    readonly name: string;
+    readonly type: "number" | "timestamp" | "category" | "boolean";
+    readonly unit?: string;
+    readonly values: ReadonlyArray<TwinkleChartValue>;
+}
+interface TwinkleChartDataset {
+    readonly id: string;
+    readonly keys: ReadonlyArray<string>;
+    readonly columns: ReadonlyArray<TwinkleChartColumn>;
+}
+interface TwinkleChartData {
+    /** Safe nonnegative integer identifying this immutable snapshot. */
+    readonly revision: number;
+    readonly datasets: ReadonlyArray<TwinkleChartDataset>;
+}
+type TwinkleChartFamily = "line" | "area" | "stacked-area" | "scatter" | "bubble" |
+    "bar" | "horizontal-bar" | "grouped-bar" | "grouped-horizontal-bar" |
+    "stacked-bar" | "stacked-horizontal-bar" | "pie" | "donut" | "histogram" |
+    "heatmap" | "sparkline";
+interface TwinkleChartSpec {
+    readonly family: TwinkleChartFamily;
+    readonly title: string;
+    readonly summary?: string;
+    readonly dataset: string;
+    readonly x?: string; readonly y?: string; readonly series?: string;
+    readonly category?: string; readonly value?: string; readonly size?: string;
+    readonly color?: string; readonly normalized?: boolean;
+    readonly innerRadius?: number;
+    readonly start?: number; readonly end?: number; readonly bins?: number; readonly density?: boolean;
+}
+interface TwinkleChartState {
+    readonly selectedRows?: ReadonlyArray<string>;
+    readonly visibleSeries?: ReadonlyArray<string>;
+    readonly viewport?: { readonly x?: readonly [number, number]; readonly y?: readonly [number, number] };
+}
+interface TwinkleChartProps extends TwinkleProps {
+    id: string;
+    width: number;
+    height: number;
+    data: TwinkleChartData;
+    spec: TwinkleChartSpec;
+    state?: TwinkleChartState;
+    onTableMode: (visible: boolean) => void;
+    onToggleSeries?: (event: Readonly<{series:string;visible:boolean}>) => void;
+}
 declare function Fragment(props:TwinkleProps):JSX.Element;
 declare function h(kind: unknown, props?: object | null, ...children: TwinkleChild[]): JSX.Element;
 /** @deprecated Compatibility helper; use Window or FixedWindow for new surfaces. */
@@ -219,6 +266,8 @@ declare function ColorSwatch(props: TwinkleColorSwatchProps): JSX.Element;
 declare function Select(props: TwinkleSelectProps): JSX.Element;
 declare function Option(props: TwinkleOptionProps): JSX.Element;
 declare function Button(props: TwinkleButtonProps): JSX.Element;
+/** Feature-gated native chart. Hosts without the charts capability reject admission. */
+declare function Chart(props: TwinkleChartProps): JSX.Element;
 declare function Spacer(props: TwinkleProps): JSX.Element;
 /** Host-provided content placed inside this component's layout box. */
 declare function Slot(props: TwinkleProps & { id: string }): JSX.Element;

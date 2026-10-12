@@ -5,7 +5,7 @@ const __twinklePublicComponents = new Map();
 let __twinklePublicRuntimeGlobals = Object.freeze([
     'Window','Fragment','FixedWindow','Panel','Box','Layer','Div','Badge','Row','Column',
     'ScrollView','VirtualColumn','Text','Image','ImageButton','Progress','Slider','Switch','Checkbox',
-    'ColorSwatch','Select','Option','TextField','Button','Spacer','Slot','Dialog','Menu',
+    'ColorSwatch','Select','Option','TextField','Button','Chart','Spacer','Slot','Dialog','Menu',
     'MenuItem','ErrorBoundary','TwinkleStores',
     'twinkle',
 
@@ -158,6 +158,7 @@ const Select = 'select';
 const Option = 'option';
 const TextField = 'text-field';
 const Button = 'button';
+const Chart = 'chart';
 const Spacer = 'spacer';
 const Slot = 'slot';
 const Dialog = 'dialog';
@@ -1523,6 +1524,7 @@ const __twinkleNativeProps = new Set([
     'accessibilityLabel','role','aria-label','aria-checked','aria-selected','state','disabled','icon',
     'description','showLabel','iconSize','iconPlacement','value','placeholder','secure','autoFocus',
     'wrap','maxLines','percent','collection'
+    ,'data','spec','state'
 ]);
 
 function h(kind, props, ...children) {
@@ -1567,12 +1569,16 @@ function h(kind, props, ...children) {
         ? __twinkleHandlerBinding(props.onEscape) : null;
     const submitAction = typeof props?.onSubmit === 'function'
         ? __twinkleHandlerBinding(props.onSubmit) : null;
+    const tableAction = typeof props?.onTableMode === 'function'
+        ? __twinkleHandlerBinding(props.onTableMode) : null;
+    const toggleAction = typeof props?.onToggleSeries === 'function'
+        ? __twinkleHandlerBinding(props.onToggleSeries) : null;
     const node = {kind};
     if (props?.key !== undefined) node.key = props.key;
     for (const [name, value] of Object.entries(props || {}))
         if (value !== undefined && __twinkleNativeProps.has(name)) node[name] = value;
     for (const [name, value] of Object.entries({action,contextAction,dragAction,dropAction,focusAction,blurAction,
-        selectAction,moveAction,fileAction,closeAction,escapeAction,submitAction}))
+        selectAction,moveAction,fileAction,closeAction,escapeAction,submitAction,tableAction,toggleAction}))
         if (value !== null) node[name] = value;
     node.children = children.flat(Infinity).filter(child => child !== null && child !== false);
     return __twinkleVirtualNativeNode(node);
