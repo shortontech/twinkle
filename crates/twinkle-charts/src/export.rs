@@ -101,6 +101,19 @@ pub fn export_raster(
     snapshot: &RetainedSurfaceSnapshot,
     options: RasterOptions,
 ) -> Result<Vec<u8>, ChartError> {
+    export_raster_cancellable(snapshot, options, || false)
+}
+
+/// Render one accepted revision while observing caller-owned cancellation at
+/// allocation and renderer boundaries. Cancellation never mutates the snapshot.
+pub fn export_raster_cancellable(
+    snapshot: &RetainedSurfaceSnapshot,
+    options: RasterOptions,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<u8>, ChartError> {
+    if cancelled() {
+        return Err(ChartError::Cancelled);
+    }
     if snapshot.input.is_none() {
         return Err(ChartError::invalid(
             ChartStage::Export,
@@ -158,10 +171,16 @@ pub fn export_raster(
             color,
         });
     }
-    commands.extend(snapshot.output.paint.iter().cloned());
+    commands.extend(snapshot.paint_commands_at_origin());
+    if cancelled() {
+        return Err(ChartError::Cancelled);
+    }
     let mut renderer =
         SoftwareRenderer::new_pixel_buffer(width as u32, height as u32, options.scale);
     renderer.render(&commands);
+    if cancelled() {
+        return Err(ChartError::Cancelled);
+    }
     let mut rgba = Vec::with_capacity(bytes);
     for pixel in renderer.pixels() {
         rgba.extend([pixel.r, pixel.g, pixel.b, pixel.a]);
@@ -247,6 +266,51 @@ mod tests {
             )
             .unwrap()
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn raster_normalizes_accepted_origin_and_observes_cancellation() {
+        use twinkle_ui::{
+            Rect, Size,
+            backend::PaintCommand,
+            retained_surface::{
+                RetainedSurfaceInput, RetainedSurfaceOutput, RetainedSurfaceRevisions,
+                RetainedSurfaceSnapshot,
+            },
+        };
+        let snapshot = RetainedSurfaceSnapshot {
+            input: Some(RetainedSurfaceInput::new(
+                Rect::new(50.0, 70.0, 4.0, 3.0),
+                1.0,
+                RetainedSurfaceRevisions::default(),
+            )),
+            output: RetainedSurfaceOutput {
+                measured: Size {
+                    width: 4.0,
+                    height: 3.0,
+                },
+                paint: vec![PaintCommand::Fill {
+                    rect: Rect::new(50.0, 70.0, 4.0, 3.0),
+                    color: 0xffff0000,
+                }],
+                ..Default::default()
+            },
+        };
+        let options = RasterOptions {
+            logical_width: 4,
+            logical_height: 3,
+            scale: 1.0,
+            ..Default::default()
+        };
+        let rgba = export_raster(&snapshot, options).unwrap();
+        assert_eq!(
+            rgba.chunks_exact(4).filter(|pixel| pixel[0] == 255).count(),
+            12
+        );
+        assert_eq!(
+            export_raster_cancellable(&snapshot, options, || true),
+            Err(ChartError::Cancelled)
         );
     }
 }

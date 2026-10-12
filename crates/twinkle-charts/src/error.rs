@@ -52,6 +52,7 @@ pub enum ChartError {
         limit: usize,
     },
     Unsupported(String),
+    Cancelled,
     StaleRevision {
         expected: u64,
         actual: u64,
@@ -85,6 +86,7 @@ impl fmt::Display for ChartError {
                 limit,
             } => write!(f, "{resource} limit exceeded ({actual} > {limit})"),
             Self::Unsupported(value) => write!(f, "unsupported chart capability: {value}"),
+            Self::Cancelled => write!(f, "chart operation was cancelled"),
             Self::StaleRevision { expected, actual } => {
                 write!(f, "stale revision {actual}; expected {expected}")
             }

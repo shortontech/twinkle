@@ -185,20 +185,24 @@ pub struct RetainedSurfaceSnapshot {
 }
 
 impl RetainedSurfaceSnapshot {
-    pub fn component<Message>(&self) -> CustomPaint<Message> {
+    /// Clone accepted paint into surface-local coordinates. Exporters and the
+    /// ordinary component projection must share this normalization.
+    pub fn paint_commands_at_origin(&self) -> Vec<PaintCommand> {
         let origin = self
             .input
             .map_or(Point::default(), |input| input.bounds.origin);
-        CustomPaint::commands(
-            self.output
-                .paint
-                .iter()
-                .cloned()
-                .map(|command| translate_command(command, -origin.x, -origin.y))
-                .collect(),
-        )
-        .width(self.output.measured.width)
-        .height(self.output.measured.height)
+        self.output
+            .paint
+            .iter()
+            .cloned()
+            .map(|command| translate_command(command, -origin.x, -origin.y))
+            .collect()
+    }
+
+    pub fn component<Message>(&self) -> CustomPaint<Message> {
+        CustomPaint::commands(self.paint_commands_at_origin())
+            .width(self.output.measured.width)
+            .height(self.output.measured.height)
     }
 
     /// Bridge the admitted specialized surface into Twinkle's ordinary native
