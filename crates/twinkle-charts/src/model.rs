@@ -407,6 +407,18 @@ impl ChartModel {
                 limit: self.limits.max_steady_bytes,
             });
         }
+        // The baseline synchronous pipeline retains all accepted owners until
+        // admission, so its observable lower bound for peak ownership is the
+        // complete candidate steady set. Reject even this lower bound before
+        // publishing; finer stage scratch accounting can only increase it.
+        let peak_bytes = steady_bytes;
+        if peak_bytes > self.limits.max_peak_bytes {
+            return Err(ChartError::Limit {
+                resource: "chart peak bytes",
+                actual: peak_bytes,
+                limit: self.limits.max_peak_bytes,
+            });
+        }
         let raster_marks = output
             .paint
             .iter()
@@ -482,7 +494,10 @@ impl ChartModel {
         let diagnostics = ChartDiagnostics {
             preparation_time: started.elapsed(),
             input_rows: self.data.row_count(),
-            transformed_rows: self.data.row_count(),
+            transformed_rows: inspection_sources
+                .iter()
+                .map(|source| source.dataset.len())
+                .sum(),
             displayed_rows,
             geometry_vertices,
             index_bytes,
@@ -493,7 +508,7 @@ impl ChartModel {
             interaction_records: output.interactions.len(),
             semantic_records: output.semantics.len(),
             steady_bytes,
-            peak_bytes: steady_bytes,
+            peak_bytes,
             cache_misses: 1,
             notices,
             ..self.diagnostics.clone()
@@ -2115,6 +2130,49 @@ impl ChartView {
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
         let visible = self.host.model().state.visible_series.clone();
         let mut snapshot = self.snapshot().clone();
+        if let (Some(hit), Some(detail), Some(input)) =
+            (self.active_hit(), self.active_inspection(), snapshot.input)
+        {
+            let text = inspection_label(&detail);
+            let width = input.bounds.size.width.min(300.0).max(0.0);
+            let height = input.bounds.size.height.min(52.0).max(0.0);
+            let x = (hit.bounds.origin.x + hit.bounds.size.width + 8.0)
+                .min(input.bounds.origin.x + input.bounds.size.width - width)
+                .max(input.bounds.origin.x);
+            let y = (hit.bounds.origin.y - height - 8.0)
+                .min(input.bounds.origin.y + input.bounds.size.height - height)
+                .max(input.bounds.origin.y);
+            let bounds = Rect::new(x, y, width, height);
+            snapshot.output.paint.push(PaintCommand::Fill {
+                rect: bounds,
+                color: self.host.model().theme.background,
+            });
+            snapshot.output.paint.push(PaintCommand::Stroke {
+                rect: bounds,
+                color: self.host.model().theme.selection,
+                width: 1.0,
+            });
+            snapshot.output.paint.push(PaintCommand::Text {
+                bounds: inset(bounds, 6.0, 6.0, 6.0, 6.0),
+                text: text.clone(),
+                scale: 1.0,
+                color: self.host.model().theme.foreground,
+                align: twinkle_ui::TextAlign::Start,
+                bold: false,
+                wrap: true,
+            });
+            snapshot
+                .output
+                .semantics
+                .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                    id: UiId::from("chart/inspection"),
+                    bounds,
+                    role: SemanticRole::Tooltip,
+                    label: Some(text),
+                    state: Some(format!("row {}; exact accepted values", detail.row.0)),
+                    protected: false,
+                });
+        }
         let root_semantic = snapshot
             .output
             .semantics
@@ -2195,6 +2253,26 @@ impl ChartView {
             );
         }
     }
+}
+
+fn inspection_label(inspection: &ChartInspection) -> String {
+    let mut parts = Vec::with_capacity(inspection.cells.len().min(6) + 1);
+    if let Some(series) = &inspection.series {
+        parts.push(format!("series: {series}"));
+    }
+    parts.extend(inspection.cells.iter().take(6).map(|cell| {
+        cell.unit.as_deref().map_or_else(
+            || format!("{}: {}", cell.column, cell.formatted),
+            |unit| format!("{}: {} {unit}", cell.column, cell.formatted),
+        )
+    }));
+    if inspection.cells.len() > 6 {
+        parts.push(format!(
+            "+{} more fields in data table",
+            inspection.cells.len() - 6
+        ));
+    }
+    parts.join(" · ").chars().take(512).collect()
 }
 
 fn chart_error_snapshot(
@@ -3047,6 +3125,21 @@ mod tests {
                 .messages,
             vec![ChartEvent::Navigate(crate::NavigationCommand::Select)]
         );
+
+        view.navigate(crate::NavigationCommand::Next);
+        let inspected = twinkle_ui::UiFrame::layout(
+            view.element("native-chart", |event| event).unwrap(),
+            input.bounds,
+        );
+        let tooltip = inspected
+            .semantic_nodes()
+            .into_iter()
+            .find(|node| node.role == Some(SemanticRole::Tooltip))
+            .expect("active datum has a bounded visible inspector");
+        assert!(
+            tooltip.name.as_deref().unwrap().contains("y: 4"),
+            "{tooltip:?}"
+        );
     }
 
     #[test]
@@ -3516,6 +3609,39 @@ mod tests {
         assert_eq!(view.hits(), hits);
         assert_eq!(view.inspection(&hits[0]), Some(accepted_inspection));
         assert_eq!(view.snapshot().input.unwrap().revisions.content, 7);
+    }
+
+    #[test]
+    fn peak_budget_rejects_candidate_before_any_state_is_published() {
+        let mut constrained = ChartLimits::default();
+        constrained.max_peak_bytes = 1;
+        let base = model();
+        let mut view = ChartView::new(
+            ChartModel::new(base.spec.clone(), base.data.clone(), constrained).unwrap(),
+        )
+        .unwrap();
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 300.0, 180.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 7,
+                ..Default::default()
+            },
+        );
+        let error = view.update(input).unwrap_err();
+        assert!(matches!(
+            error,
+            ChartError::Invalid {
+                stage: crate::ChartStage::Geometry,
+                ..
+            }
+        ));
+        assert!(view.hits().is_empty());
+        assert!(view.active_inspection().is_none());
+        assert!(
+            view.snapshot().input.is_some(),
+            "bounded fallback is visible"
+        );
     }
 
     #[test]

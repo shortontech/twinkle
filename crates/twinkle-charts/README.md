@@ -82,6 +82,11 @@ to `ChartView::navigate` in the ordinary application update path. `PanZoomPolicy
 provides pure anchored zoom, constrained pan, and reset operations for the same
 event flow.
 
+Once a datum is active, the native projection adds a plot-bounded visible and
+semantic tooltip containing up to six exact fields; further fields remain
+available through `ChartInspection` and the data table. The tooltip is passive,
+does not take focus, and is never the sole exact-value surface.
+
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,
 inspectable/displayed values, missing data, selection, and reduction. Activation
