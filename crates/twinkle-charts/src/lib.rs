@@ -22,7 +22,7 @@ pub use export::{
     CsvOptions, ExportCapability, RasterOptions, export_csv, export_raster,
     export_raster_cancellable,
 };
-pub use interaction::{ChartNavigation, NavigationCommand, PanZoomPolicy};
+pub use interaction::{ChartNavigation, NavigationCommand, PanZoomPolicy, ViewportCommand};
 pub use model::{ChartHit, ChartInputBindings, ChartInspection, ChartModel, ChartView};
 pub use scale::{BandScale, ContinuousScale, LinearScale, LogScale, ScaleValue};
 pub use spec::*;

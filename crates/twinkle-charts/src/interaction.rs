@@ -14,6 +14,14 @@ pub enum NavigationCommand {
     CycleOverlap,
 }
 
+/// Standard controlled viewport requests emitted by native chart controls.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewportCommand {
+    ZoomIn,
+    ZoomOut,
+    Reset,
+}
+
 /// Transient, bounded active-datum navigation state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChartNavigation {

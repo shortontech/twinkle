@@ -532,6 +532,7 @@ pub enum ChartEvent {
         revision: u64,
     },
     ViewportChanged(Viewport),
+    Viewport(crate::ViewportCommand),
     ToggleSeries {
         series: Arc<str>,
         visible: bool,

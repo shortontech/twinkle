@@ -2099,6 +2099,29 @@ impl ChartView {
     pub fn navigate(&mut self, command: crate::NavigationCommand) -> Option<ChartEvent> {
         self.navigation.command(self.host.model().hits(), command)
     }
+    /// Resolve a standard viewport-control request into caller-controlled state.
+    pub fn viewport_event(
+        &self,
+        command: crate::ViewportCommand,
+        policy: crate::PanZoomPolicy,
+    ) -> Option<ChartEvent> {
+        let viewport = self
+            .host
+            .model()
+            .state
+            .viewport
+            .unwrap_or_else(|| policy.reset());
+        let center = [
+            viewport.x.map_or(0.0, |range| (range[0] + range[1]) * 0.5),
+            viewport.y.map_or(0.0, |range| (range[0] + range[1]) * 0.5),
+        ];
+        let viewport = match command {
+            crate::ViewportCommand::ZoomIn => policy.zoom(viewport, 1.25, center)?,
+            crate::ViewportCommand::ZoomOut => policy.zoom(viewport, 0.8, center)?,
+            crate::ViewportCommand::Reset => policy.reset(),
+        };
+        Some(ChartEvent::ViewportChanged(viewport))
+    }
     pub fn replace_and_update(
         &mut self,
         spec: Arc<ChartSpec>,
@@ -2188,6 +2211,7 @@ impl ChartView {
         bindings: ChartInputBindings<Message>,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
         let visible = self.host.model().state.visible_series.clone();
+        let pan_zoom_controls = bindings.wheel.is_some() || bindings.drag.is_some();
         let mut snapshot = self.snapshot().clone();
         if let (Some(hit), Some(detail), Some(input)) =
             (self.active_hit(), self.active_inspection(), snapshot.input)
@@ -2232,6 +2256,9 @@ impl ChartView {
                     protected: false,
                 });
         }
+        if pan_zoom_controls {
+            add_viewport_controls(&mut snapshot, &self.host.model().theme);
+        }
         let root_semantic = snapshot
             .output
             .semantics
@@ -2248,7 +2275,20 @@ impl ChartView {
             .retain(|semantic| semantic.id.as_str() != "chart");
         let mut element = snapshot
             .try_element(id, |interaction| {
-                if let Some((_, label)) = interaction.id.as_str().split_once("chart/legend/") {
+                if interaction.id.as_str() == "chart/zoom-in" {
+                    ChartProjectionAction::Event(ChartEvent::Viewport(
+                        crate::ViewportCommand::ZoomIn,
+                    ))
+                } else if interaction.id.as_str() == "chart/zoom-out" {
+                    ChartProjectionAction::Event(ChartEvent::Viewport(
+                        crate::ViewportCommand::ZoomOut,
+                    ))
+                } else if interaction.id.as_str() == "chart/zoom-reset" {
+                    ChartProjectionAction::Event(ChartEvent::Viewport(
+                        crate::ViewportCommand::Reset,
+                    ))
+                } else if let Some((_, label)) = interaction.id.as_str().split_once("chart/legend/")
+                {
                     let label: Arc<str> = Arc::from(label);
                     let currently_visible = visible
                         .as_ref()
@@ -2333,6 +2373,66 @@ impl ChartView {
                 &self.host.model().theme,
             );
         }
+    }
+}
+
+fn add_viewport_controls(snapshot: &mut RetainedSurfaceSnapshot, theme: &ChartTheme) {
+    let Some(input) = snapshot.input else { return };
+    let height = input.bounds.size.height.min(24.0).max(0.0);
+    let available = (input.bounds.size.width - 88.0).max(0.0);
+    let widths = [28.0_f32, 28.0, 48.0];
+    let total = widths.iter().sum::<f32>().min(available);
+    let mut x = input.bounds.origin.x + available - total;
+    for (id, label, accessible, desired_width) in [
+        ("chart/zoom-in", "+", "Zoom in", widths[0]),
+        ("chart/zoom-out", "−", "Zoom out", widths[1]),
+        ("chart/zoom-reset", "Reset", "Reset zoom", widths[2]),
+    ] {
+        let remaining = input.bounds.origin.x + available - x;
+        let width = desired_width.min(remaining).max(0.0);
+        let bounds = Rect::new(x, input.bounds.origin.y, width, height);
+        x += width;
+        if width <= 0.0 || height <= 0.0 {
+            continue;
+        }
+        snapshot.output.paint.push(PaintCommand::RoundedFill {
+            rect: bounds,
+            color: if theme.high_contrast {
+                theme.focus
+            } else {
+                theme.grid
+            },
+            radius: 4.0,
+        });
+        snapshot.output.paint.push(PaintCommand::Text {
+            bounds,
+            text: label.into(),
+            scale: 0.9,
+            color: theme.foreground,
+            align: twinkle_ui::TextAlign::Center,
+            bold: false,
+            wrap: false,
+        });
+        snapshot
+            .output
+            .interactions
+            .push(RetainedSurfaceInteraction {
+                id: UiId::from(id),
+                bounds,
+                action: ActionKind::Activate,
+                focusable: true,
+            });
+        snapshot
+            .output
+            .semantics
+            .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+                id: UiId::from(id),
+                bounds,
+                role: SemanticRole::Button,
+                label: Some(accessible.into()),
+                state: Some("Controlled viewport request".into()),
+                protected: false,
+            });
     }
 }
 
@@ -3336,6 +3436,36 @@ mod tests {
             message,
             Message::Drag(DragGesture { phase: twinkle_ui::DragPhase::Moved, position, .. }) if *position == outside
         )));
+        let zoom_in = frame
+            .semantic_nodes()
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Zoom in"))
+            .expect("opt-in chart exposes standard zoom controls");
+        assert_eq!(
+            frame
+                .perform_semantic_action(
+                    &zoom_in.id,
+                    twinkle_ui::SemanticAction::Invoke(ActionKind::Activate),
+                )
+                .unwrap()
+                .messages,
+            vec![Message::Chart(ChartEvent::Viewport(
+                crate::ViewportCommand::ZoomIn
+            ))]
+        );
+        let policy = crate::PanZoomPolicy {
+            x_extent: Some([0.0, 10.0]),
+            y_extent: Some([0.0, 20.0]),
+            minimum_x_span: 1.0,
+            minimum_y_span: 2.0,
+        };
+        assert_eq!(
+            view.viewport_event(crate::ViewportCommand::ZoomIn, policy),
+            Some(ChartEvent::ViewportChanged(crate::Viewport {
+                x: Some([1.0, 9.0]),
+                y: Some([2.0, 18.0]),
+            }))
+        );
     }
 
     #[test]

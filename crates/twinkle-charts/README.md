@@ -99,6 +99,10 @@ wheel mapper through `ChartInputBindings`. Drag phases continue outside chart
 bounds and cancel through Twinkle's native capture lifecycle. A wheel binding is
 opt-in and consumes the gesture for application-owned zoom; without one, wheel
 input continues to the enclosing scroll container.
+Opting into drag or wheel input also exposes visible, focusable Zoom in, Zoom out,
+and Reset controls. They emit `ChartEvent::Viewport`; pass the request and your
+declared `PanZoomPolicy` to `ChartView::viewport_event` to obtain the concrete
+controlled `ViewportChanged` event.
 
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,

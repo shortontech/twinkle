@@ -103,6 +103,10 @@ impl ChartDeclaration {
                 self.table_action,
                 json!({"kind":"viewport","x":viewport.x,"y":viewport.y}),
             ),
+            ChartEvent::Viewport(command) => (
+                self.table_action,
+                json!({"kind":"viewportCommand","command":format!("{command:?}")}),
+            ),
         }
     }
 
