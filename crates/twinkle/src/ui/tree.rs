@@ -1,5 +1,6 @@
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 
 mod emission;
 mod layout;
@@ -1321,6 +1322,7 @@ impl<Message: Clone> UiFrame<Message> {
         );
         let content_id = overlay.as_ui_id().scoped("content");
         apply_transient_state(&mut content, &content_id, state);
+        let mut measurement = MeasurementSession::default();
         let index = layout_element(
             &content,
             &content_id,
@@ -1328,6 +1330,7 @@ impl<Message: Clone> UiFrame<Message> {
             None,
             Some(rect),
             None,
+            &mut measurement,
             self,
             None,
         );
@@ -2327,6 +2330,7 @@ impl<Message: Clone> UiFrame<Message> {
         let measurement_overlay = transient_overlay
             .has_value_overrides()
             .then_some(&transient_overlay);
+        let mut measurement = MeasurementSession::default();
         layout_element(
             &root,
             &root_id,
@@ -2334,6 +2338,7 @@ impl<Message: Clone> UiFrame<Message> {
             None,
             None,
             measurement_overlay,
+            &mut measurement,
             &mut tree,
             previous,
         );
@@ -2959,7 +2964,18 @@ impl<Message: Clone> UiFrame<Message> {
             || UiId::from("root"),
             |id| UiId::from("root").scoped(id.as_str()),
         );
-        layout_element(&root, &root_id, bounds, None, None, None, &mut tree, None);
+        let mut measurement = MeasurementSession::default();
+        layout_element(
+            &root,
+            &root_id,
+            bounds,
+            None,
+            None,
+            None,
+            &mut measurement,
+            &mut tree,
+            None,
+        );
         tree.selection_regions = collect_selection_regions(&root, &tree.resolved, None);
         tree.reset_emission();
         emit_element(&root, 0, None, None, &mut tree, None, EmissionPhases::ALL);
@@ -8020,16 +8036,250 @@ pub(super) fn measure_element<Message>(
     element: &Element<Message>,
     constraints: Constraints,
 ) -> Size {
-    measure_element_effective(element, None, constraints)
+    let mut session = MeasurementSession::default();
+    measure_element_effective(
+        element,
+        None,
+        constraints,
+        MeasurementPurpose::Direct,
+        &mut session,
+    )
 }
 
+#[cfg(test)]
 fn measure_element_with_overlay<Message>(
     element: &Element<Message>,
     id: &UiId,
     overlay: &TransientStateJournal,
     constraints: Constraints,
 ) -> Size {
-    measure_element_effective(element, Some((id, overlay)), constraints)
+    let mut session = MeasurementSession::default();
+    measure_element_effective(
+        element,
+        Some((id, overlay)),
+        constraints,
+        MeasurementPurpose::Direct,
+        &mut session,
+    )
+}
+
+const MEASUREMENT_CACHE_MAX_ENTRIES: usize = 16_384;
+const MEASUREMENT_CACHE_MAX_KEYS_PER_NODE: u8 = 6;
+const MEASUREMENT_CACHE_NODE_RESERVE: usize = 256;
+
+macro_rules! measurement_stat {
+    ($session:expr, $field:ident) => {
+        #[cfg(any(test, feature = "pipeline-attribution"))]
+        {
+            $session.$field = $session.$field.saturating_add(1);
+        }
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MeasurementMode {
+    Layout,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MeasurementPurpose {
+    Direct,
+    Intrinsic,
+    Assigned,
+    Scroll,
+}
+
+impl MeasurementPurpose {
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    const fn index(self) -> usize {
+        match self {
+            Self::Direct => 0,
+            Self::Intrinsic => 1,
+            Self::Assigned => 2,
+            Self::Scroll => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MeasurementKey {
+    mode: MeasurementMode,
+    constraints: [u32; 4],
+}
+
+impl MeasurementKey {
+    fn new(constraints: Constraints) -> Option<Self> {
+        let values = [
+            constraints.min.width,
+            constraints.min.height,
+            constraints.max.width,
+            constraints.max.height,
+        ];
+        (!values.iter().any(|value| value.is_nan())).then(|| Self {
+            mode: MeasurementMode::Layout,
+            // Signed zero remains distinct. Valid positive infinity is retained
+            // exactly; NaN requests bypass the cache above.
+            constraints: values.map(f32::to_bits),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct MeasurementSlot {
+    key: Option<MeasurementKey>,
+    size: Size,
+}
+
+struct NodeMeasurements {
+    slots: [MeasurementSlot; MEASUREMENT_CACHE_MAX_KEYS_PER_NODE as usize],
+    len: u8,
+}
+
+impl Default for NodeMeasurements {
+    fn default() -> Self {
+        Self {
+            slots: [MeasurementSlot::default(); MEASUREMENT_CACHE_MAX_KEYS_PER_NODE as usize],
+            len: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+struct MeasurementNodeHasher(u64);
+
+impl Hasher for MeasurementNodeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut value = 0xcbf29ce484222325_u64;
+        for byte in bytes {
+            value = (value ^ u64::from(*byte)).wrapping_mul(0x100000001b3);
+        }
+        self.0 = value;
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        let mut value = value as u64;
+        value ^= value >> 33;
+        value = value.wrapping_mul(0xff51afd7ed558ccd);
+        value ^= value >> 33;
+        value = value.wrapping_mul(0xc4ceb9fe1a85ec53);
+        self.0 = value ^ (value >> 33);
+    }
+}
+
+type MeasurementNodeIndex = HashMap<usize, usize, BuildHasherDefault<MeasurementNodeHasher>>;
+
+struct MeasurementSession {
+    #[cfg(test)]
+    enabled: bool,
+    node_index: MeasurementNodeIndex,
+    nodes: Vec<NodeMeasurements>,
+    entries: usize,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    requests: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    evaluations: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    hits: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    misses: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    overlay_bypasses: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    nonfinite_bypasses: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    definite_bypasses: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    capacity_bypasses: u64,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    purpose_requests: [u64; 4],
+}
+
+impl Default for MeasurementSession {
+    fn default() -> Self {
+        Self {
+            #[cfg(test)]
+            enabled: true,
+            node_index: MeasurementNodeIndex::default(),
+            nodes: Vec::new(),
+            entries: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            requests: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            evaluations: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            hits: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            misses: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            overlay_bypasses: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            nonfinite_bypasses: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            definite_bypasses: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            capacity_bypasses: 0,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            purpose_requests: [0; 4],
+        }
+    }
+}
+
+#[cfg(test)]
+impl MeasurementSession {
+    fn uncached() -> Self {
+        let mut session = Self::default();
+        session.enabled = false;
+        session
+    }
+}
+
+impl MeasurementSession {
+    #[inline]
+    fn caching_enabled(&self) -> bool {
+        #[cfg(test)]
+        return self.enabled;
+        #[cfg(not(test))]
+        true
+    }
+
+    #[inline]
+    fn record_request(&mut self, purpose: MeasurementPurpose) {
+        #[cfg(any(test, feature = "pipeline-attribution"))]
+        {
+            self.requests = self.requests.saturating_add(1);
+            self.purpose_requests[purpose.index()] =
+                self.purpose_requests[purpose.index()].saturating_add(1);
+        }
+        #[cfg(not(any(test, feature = "pipeline-attribution")))]
+        let _ = purpose;
+    }
+}
+
+impl Drop for MeasurementSession {
+    fn drop(&mut self) {
+        crate::pipeline_trace::event!({
+            "event": "measurement_session",
+            "requests": self.requests,
+            "evaluations": self.evaluations,
+            "hits": self.hits,
+            "misses": self.misses,
+            "overlayBypasses": self.overlay_bypasses,
+            "nonfiniteBypasses": self.nonfinite_bypasses,
+            "definiteBypasses": self.definite_bypasses,
+            "capacityBypasses": self.capacity_bypasses,
+            "entries": self.entries,
+            "peakEntries": self.entries,
+            "estimatedEntryBytes": self.node_index.capacity() * (std::mem::size_of::<usize>() * 2) + self.nodes.capacity() * std::mem::size_of::<NodeMeasurements>(),
+            "nodeIndexEntries": self.nodes.len(),
+            "limits": {"entries": MEASUREMENT_CACHE_MAX_ENTRIES, "keysPerNode": MEASUREMENT_CACHE_MAX_KEYS_PER_NODE},
+            "purposeRequests": {"direct": self.purpose_requests[0], "intrinsic": self.purpose_requests[1], "assigned": self.purpose_requests[2], "scroll": self.purpose_requests[3]},
+            "boundary": "One immutable measurement entry/session. Node addresses and results are discarded at teardown; overlay and NaN requests bypass. Signed zero is exact and positive infinity is cacheable. Estimated bytes exclude HashMap control bytes and allocator rounding."
+        });
+    }
 }
 
 fn measure_child_effective<Message>(
@@ -8037,15 +8287,23 @@ fn measure_child_effective<Message>(
     parent: Option<(&UiId, &TransientStateJournal)>,
     index: usize,
     constraints: Constraints,
+    purpose: MeasurementPurpose,
+    session: &mut MeasurementSession,
 ) -> Size {
     match parent {
         Some((parent_id, overlay)) => {
             let child_id = layout::resolved_child_id(parent_id, child, index);
             crate::pipeline_trace::count_work!(9, 1);
             crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
-            measure_element_effective(child, Some((&child_id, overlay)), constraints)
+            measure_element_effective(
+                child,
+                Some((&child_id, overlay)),
+                constraints,
+                purpose,
+                session,
+            )
         }
-        None => measure_element_effective(child, None, constraints),
+        None => measure_element_effective(child, None, constraints, purpose, session),
     }
 }
 
@@ -8071,9 +8329,93 @@ fn measure_element_effective<Message>(
     element: &Element<Message>,
     context: Option<(&UiId, &TransientStateJournal)>,
     constraints: Constraints,
+    purpose: MeasurementPurpose,
+    session: &mut MeasurementSession,
 ) -> Size {
     crate::pipeline_trace::count_work!(1, 1);
     crate::pipeline_trace::count_work!(6 + usize::from(context.is_some()), 1);
+    session.record_request(purpose);
+    let canonical_definite = context.is_none()
+        && [
+            (element.style.width, constraints.max.width),
+            (element.style.height, constraints.max.height),
+        ]
+        .into_iter()
+        .all(|(length, available)| {
+            matches!(length, Length::Px(_))
+                || (available.is_finite() && matches!(length, Length::Fill | Length::Percent(_)))
+        });
+    let key = if !session.caching_enabled() {
+        None
+    } else if context.is_some() {
+        measurement_stat!(session, overlay_bypasses);
+        None
+    } else if canonical_definite {
+        measurement_stat!(session, definite_bypasses);
+        None
+    } else {
+        let key = MeasurementKey::new(constraints);
+        if key.is_none() {
+            measurement_stat!(session, nonfinite_bypasses);
+        }
+        key
+    };
+    if let Some(key) = key {
+        let node = element as *const Element<Message> as usize;
+        let node_index = session.node_index.get(&node).copied();
+        if let Some(size) = node_index.and_then(|index| {
+            let measurements = &session.nodes[index];
+            measurements.slots[..measurements.len as usize]
+                .iter()
+                .find_map(|slot| (slot.key == Some(key)).then_some(slot.size))
+        }) {
+            measurement_stat!(session, hits);
+            return size;
+        }
+        measurement_stat!(session, misses);
+        measurement_stat!(session, evaluations);
+        let size = evaluate_element_effective(element, context, constraints, session);
+        if session.entries < MEASUREMENT_CACHE_MAX_ENTRIES {
+            if session.node_index.len() == 8 {
+                session
+                    .node_index
+                    .reserve(MEASUREMENT_CACHE_NODE_RESERVE - session.node_index.len());
+                session
+                    .nodes
+                    .reserve(MEASUREMENT_CACHE_NODE_RESERVE - session.nodes.len());
+            }
+            let index = node_index.unwrap_or_else(|| {
+                let index = session.nodes.len();
+                session.nodes.push(NodeMeasurements::default());
+                session.node_index.insert(node, index);
+                index
+            });
+            let measurements = &mut session.nodes[index];
+            if measurements.len < MEASUREMENT_CACHE_MAX_KEYS_PER_NODE {
+                measurements.slots[measurements.len as usize] = MeasurementSlot {
+                    key: Some(key),
+                    size,
+                };
+                measurements.len += 1;
+                session.entries += 1;
+            } else {
+                measurement_stat!(session, capacity_bypasses);
+            }
+        } else {
+            measurement_stat!(session, capacity_bypasses);
+        }
+        return size;
+    }
+    measurement_stat!(session, evaluations);
+    evaluate_element_effective(element, context, constraints, session)
+}
+
+fn evaluate_element_effective<Message>(
+    element: &Element<Message>,
+    context: Option<(&UiId, &TransientStateJournal)>,
+    constraints: Constraints,
+    session: &mut MeasurementSession,
+) -> Size {
     crate::pipeline_trace::count_work!(8, u64::from(context.is_some()));
     let style = context.map_or_else(
         || EffectiveStyle::canonical(&element.style),
@@ -8294,7 +8636,14 @@ fn measure_element_effective<Message>(
             .iter()
             .enumerate()
             .map(|(index, child)| {
-                let size = measure_child_effective(child, context, index, child_constraints);
+                let size = measure_child_effective(
+                    child,
+                    context,
+                    index,
+                    child_constraints,
+                    MeasurementPurpose::Intrinsic,
+                    session,
+                );
                 let position = effective_child_style(child, context, index)
                     .absolute_position
                     .unwrap_or_default();
@@ -8316,7 +8665,14 @@ fn measure_element_effective<Message>(
                         Axis::Horizontal => Size::new(f32::INFINITY, child_max.height),
                         Axis::Vertical => Size::new(child_max.width, f32::INFINITY),
                     };
-                    measure_child_effective(child, context, index, Constraints::loose(max))
+                    measure_child_effective(
+                        child,
+                        context,
+                        index,
+                        Constraints::loose(max),
+                        MeasurementPurpose::Intrinsic,
+                        session,
+                    )
                 })
                 .collect::<Vec<_>>();
             let gap = style.gap.max(0.0) * element.children.len().saturating_sub(1) as f32;
@@ -8359,6 +8715,8 @@ fn measure_element_effective<Message>(
                                 context,
                                 index,
                                 Constraints::loose(Size::new(rect.size.width, f32::INFINITY)),
+                                MeasurementPurpose::Assigned,
+                                session,
                             )
                             .height
                         })
@@ -8384,7 +8742,14 @@ fn measure_element_effective<Message>(
                 .iter()
                 .enumerate()
                 .map(|(index, child)| {
-                    measure_child_effective(child, context, index, child_constraints)
+                    measure_child_effective(
+                        child,
+                        context,
+                        index,
+                        child_constraints,
+                        MeasurementPurpose::Intrinsic,
+                        session,
+                    )
                 })
                 .collect::<Vec<_>>();
             let widths = resolve_grid_columns(
@@ -8405,6 +8770,8 @@ fn measure_element_effective<Message>(
                         context,
                         index,
                         Constraints::loose(Size::new(widths[index % columns], child_max.height)),
+                        MeasurementPurpose::Assigned,
+                        session,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -8431,6 +8798,8 @@ fn measure_element_effective<Message>(
                     context,
                     0,
                     Constraints::loose(Size::new(child_max.width, f32::INFINITY)),
+                    MeasurementPurpose::Scroll,
+                    session,
                 )
             })
             .unwrap_or_default(),

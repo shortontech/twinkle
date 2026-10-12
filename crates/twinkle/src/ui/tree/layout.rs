@@ -5,13 +5,20 @@ fn measure_scroll_content<Message: Clone>(
     id: &UiId,
     width: f32,
     tree: &mut UiFrame<Message>,
+    measurement: &mut MeasurementSession,
 ) -> Size {
     if let Some(size) = tree.retained_nodes.scroll_measurement_for(id, width) {
         tree.scroll_content_measurements_reused += 1;
         return size;
     }
     tree.scroll_content_measurements += 1;
-    let size = measure_element(child, Constraints::loose(Size::new(width, f32::INFINITY)));
+    let size = measure_element_effective(
+        child,
+        None,
+        Constraints::loose(Size::new(width, f32::INFINITY)),
+        MeasurementPurpose::Scroll,
+        measurement,
+    );
     tree.retained_nodes
         .cache_scroll_measurement(id, width, size);
     size
@@ -24,6 +31,7 @@ pub(super) fn layout_element<Message: Clone>(
     inherited_foreground: Option<Color>,
     inherited_clip: Option<Rect>,
     overlay: Option<&TransientStateJournal>,
+    measurement: &mut MeasurementSession,
     tree: &mut UiFrame<Message>,
     previous: Option<&UiFrame<Message>>,
 ) -> usize {
@@ -71,16 +79,12 @@ pub(super) fn layout_element<Message: Clone>(
                 .measured_for(id, bounds.size)
                 .unwrap_or_else(|| {
                     tree.nodes_measured = tree.nodes_measured.saturating_add(1);
-                    overlay.map_or_else(
-                        || measure_element(element, Constraints::loose(bounds.size)),
-                        |overlay| {
-                            measure_element_with_overlay(
-                                element,
-                                id,
-                                overlay,
-                                Constraints::loose(bounds.size),
-                            )
-                        },
+                    measure_element_effective(
+                        element,
+                        overlay.map(|overlay| (id, overlay)),
+                        Constraints::loose(bounds.size),
+                        MeasurementPurpose::Direct,
+                        measurement,
                     )
                 })
         },
@@ -372,6 +376,7 @@ pub(super) fn layout_element<Message: Clone>(
                 foreground,
                 descendant_clip,
                 overlay,
+                measurement,
                 tree,
                 previous,
             ));
@@ -399,6 +404,8 @@ pub(super) fn layout_element<Message: Clone>(
                     child_context,
                     index,
                     Constraints::loose(content.size),
+                    MeasurementPurpose::Assigned,
+                    measurement,
                 );
                 let bounds = Rect::new(
                     content.origin.x + position.x,
@@ -414,6 +421,7 @@ pub(super) fn layout_element<Message: Clone>(
                     foreground,
                     descendant_clip,
                     overlay,
+                    measurement,
                     tree,
                     previous,
                 ));
@@ -436,6 +444,8 @@ pub(super) fn layout_element<Message: Clone>(
                             overlay.map(|overlay| (id, overlay)),
                             index,
                             Constraints::loose(Size::new(f32::INFINITY, scroll_rect.size.height)),
+                            MeasurementPurpose::Intrinsic,
+                            measurement,
                         )
                         .width
                     })
@@ -496,6 +506,8 @@ pub(super) fn layout_element<Message: Clone>(
                             overlay.map(|overlay| (id, overlay)),
                             index,
                             Constraints::loose(Size::new(content.size.width, f32::INFINITY)),
+                            MeasurementPurpose::Scroll,
+                            measurement,
                         )
                         .height
                     })
@@ -597,6 +609,7 @@ pub(super) fn layout_element<Message: Clone>(
                 style.justify_content,
                 &element.children,
                 overlay.map(|overlay| (id, overlay)),
+                measurement,
             );
             let child_clip = if scrollable_x || scrollable_y {
                 Some(descendant_clip.map_or(content, |parent| {
@@ -609,7 +622,15 @@ pub(super) fn layout_element<Message: Clone>(
             for (index, (child, bounds)) in element.children.iter().zip(child_bounds).enumerate() {
                 let child_id = retained_child_id(tree, id, child, index);
                 child_indices.push(layout_element(
-                    child, &child_id, bounds, foreground, child_clip, overlay, tree, previous,
+                    child,
+                    &child_id,
+                    bounds,
+                    foreground,
+                    child_clip,
+                    overlay,
+                    measurement,
+                    tree,
+                    previous,
                 ));
             }
         }
@@ -628,7 +649,13 @@ pub(super) fn layout_element<Message: Clone>(
                     .first()
                     .zip(scroll_child_id.as_ref())
                     .map(|(child, child_id)| {
-                        measure_scroll_content(child, child_id, viewport.size.width, tree)
+                        measure_scroll_content(
+                            child,
+                            child_id,
+                            viewport.size.width,
+                            tree,
+                            measurement,
+                        )
                     });
             let reserves_scrollbar =
                 initial_size.is_some_and(|content| content.height > viewport.size.height + 0.01);
@@ -665,6 +692,7 @@ pub(super) fn layout_element<Message: Clone>(
                         scroll_child_id.as_ref().expect("scroll child identity"),
                         content_viewport.size.width,
                         tree,
+                        measurement,
                     )
                 };
                 let content_height = content_size.height.max(viewport.size.height);
@@ -713,6 +741,7 @@ pub(super) fn layout_element<Message: Clone>(
                     foreground,
                     Some(content_clip),
                     overlay,
+                    measurement,
                     tree,
                     previous,
                 ));
@@ -742,6 +771,8 @@ pub(super) fn layout_element<Message: Clone>(
                         overlay.map(|overlay| (id, overlay)),
                         index,
                         Constraints::loose(content.size),
+                        MeasurementPurpose::Intrinsic,
+                        measurement,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -766,6 +797,8 @@ pub(super) fn layout_element<Message: Clone>(
                             widths[index % column_count],
                             content.size.height,
                         )),
+                        MeasurementPurpose::Assigned,
+                        measurement,
                     )
                 })
                 .collect::<Vec<_>>();
@@ -886,6 +919,7 @@ pub(super) fn layout_element<Message: Clone>(
                     foreground,
                     descendant_clip,
                     overlay,
+                    measurement,
                     tree,
                     previous,
                 ));
@@ -2966,6 +3000,7 @@ fn flex_bounds<Message>(
     justify: Justify,
     children: &[Element<Message>],
     context: Option<(&UiId, &TransientStateJournal)>,
+    measurement: &mut MeasurementSession,
 ) -> Vec<Rect> {
     if children.is_empty() {
         return Vec::new();
@@ -2982,6 +3017,8 @@ fn flex_bounds<Message>(
                     Axis::Horizontal => Size::new(f32::INFINITY, content.size.height),
                     Axis::Vertical => Size::new(content.size.width, f32::INFINITY),
                 }),
+                MeasurementPurpose::Intrinsic,
+                measurement,
             )
         })
         .collect::<Vec<_>>();
@@ -3026,12 +3063,16 @@ fn flex_bounds<Message>(
                 context,
                 index,
                 Constraints::loose(Size::new(rect.size.width, f32::INFINITY)),
+                MeasurementPurpose::Assigned,
+                measurement,
             ),
             Axis::Vertical => measure_child_effective(
                 child,
                 context,
                 index,
                 Constraints::loose(Size::new(content.size.width, rect.size.height)),
+                MeasurementPurpose::Assigned,
+                measurement,
             ),
         })
         .collect::<Vec<_>>();

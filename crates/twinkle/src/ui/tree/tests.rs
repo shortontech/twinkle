@@ -25,6 +25,147 @@ fn empty_transient_overlay_uses_canonical_recursive_measurement() {
 }
 
 #[test]
+fn frame_scoped_measurement_cache_matches_uncached_oracle() {
+    let root = Row::<()>::new()
+        .gap(7.0)
+        .child(Column::new().child(Text::new("wrapped measurement text").wrap(true)))
+        .child(
+            Grid::fixed(2)
+                .gap(3.0)
+                .child(Text::new("one"))
+                .child(Text::new("two")),
+        )
+        .into_element();
+    for maximum in [Size::new(120.0, 80.0), Size::new(320.0, f32::INFINITY)] {
+        let constraints = Constraints::loose(maximum);
+        let mut cached = MeasurementSession::default();
+        let actual = measure_element_effective(
+            &root,
+            None,
+            constraints,
+            MeasurementPurpose::Direct,
+            &mut cached,
+        );
+        let repeated = measure_element_effective(
+            &root,
+            None,
+            constraints,
+            MeasurementPurpose::Direct,
+            &mut cached,
+        );
+        let mut uncached = MeasurementSession::uncached();
+        let oracle = measure_element_effective(
+            &root,
+            None,
+            constraints,
+            MeasurementPurpose::Direct,
+            &mut uncached,
+        );
+        assert_eq!(actual, oracle);
+        assert_eq!(repeated, oracle);
+        assert!(cached.hits > 0);
+        assert!(cached.evaluations <= uncached.evaluations);
+    }
+}
+
+#[test]
+fn measurement_cache_keys_exact_constraints_and_bounds_per_node() {
+    let text = Text::<()>::new("cache key").wrap(true).into_element();
+    let mut session = MeasurementSession::default();
+    let constraints = Constraints::loose(Size::new(100.0, f32::INFINITY));
+    let first = measure_element_effective(
+        &text,
+        None,
+        constraints,
+        MeasurementPurpose::Direct,
+        &mut session,
+    );
+    let second = measure_element_effective(
+        &text,
+        None,
+        constraints,
+        MeasurementPurpose::Assigned,
+        &mut session,
+    );
+    assert_eq!(first, second);
+    assert_eq!(session.hits, 1);
+    assert_eq!(session.entries, 1);
+
+    for width in 101..107 {
+        let _ = measure_element_effective(
+            &text,
+            None,
+            Constraints::loose(Size::new(width as f32, f32::INFINITY)),
+            MeasurementPurpose::Assigned,
+            &mut session,
+        );
+    }
+    assert_eq!(
+        session.entries,
+        MEASUREMENT_CACHE_MAX_KEYS_PER_NODE as usize
+    );
+    assert_eq!(session.capacity_bypasses, 1);
+
+    let negative_zero = Constraints::new(Size::new(-0.0, 0.0), Size::new(100.0, f32::INFINITY));
+    let _ = measure_element_effective(
+        &text,
+        None,
+        negative_zero,
+        MeasurementPurpose::Direct,
+        &mut session,
+    );
+    assert_eq!(session.capacity_bypasses, 2);
+
+    let nan = Constraints::loose(Size::new(f32::NAN, 100.0));
+    let _ = measure_element_effective(&text, None, nan, MeasurementPurpose::Direct, &mut session);
+    assert_eq!(session.nonfinite_bypasses, 1);
+}
+
+#[test]
+fn overlay_measurement_remains_uncached() {
+    let text = Text::<()>::new("overlay").into_element();
+    let id = UiId::from("root/text");
+    let overlay = TransientStateJournal::default();
+    let mut session = MeasurementSession::default();
+    for _ in 0..2 {
+        let _ = measure_element_effective(
+            &text,
+            Some((&id, &overlay)),
+            Constraints::unbounded(),
+            MeasurementPurpose::Direct,
+            &mut session,
+        );
+    }
+    assert_eq!(session.overlay_bypasses, 2);
+    assert_eq!(session.hits, 0);
+    assert_eq!(session.entries, 0);
+}
+
+#[test]
+fn definite_boxes_bypass_measurement_cache() {
+    let text = Text::<()>::new("fixed")
+        .width(40.0)
+        .height(20.0)
+        .into_element();
+    let mut session = MeasurementSession::default();
+    for _ in 0..2 {
+        assert_eq!(
+            measure_element_effective(
+                &text,
+                None,
+                Constraints::loose(Size::new(100.0, 100.0)),
+                MeasurementPurpose::Direct,
+                &mut session,
+            ),
+            Size::new(40.0, 20.0)
+        );
+    }
+    assert_eq!(session.definite_bypasses, 2);
+    assert_eq!(session.hits, 0);
+    assert_eq!(session.entries, 0);
+}
+
+#[test]
 fn virtual_row_accessibility_focus_is_revision_scoped_and_cancellable() {
     let build = |revision, range: std::ops::Range<usize>| {
         let heights = VirtualHeightIndex::new(&[24.0; 100], 0.0);
