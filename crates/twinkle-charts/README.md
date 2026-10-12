@@ -241,7 +241,12 @@ Primitive JSX `width`/`height` patches fork the accepted retained chart authorit
 reprepare only the bounds-dependent closure, and publish atomically. Data/spec,
 indexes, controlled inspection, and callbacks survive the resize; an invalid size
 rolls the entire native patch back. Fully constraint-driven sizing from a parent
-Flex/Grid allocation remains distinct from this explicit-dimension path.
+Flex/Grid allocation uses Twinkle's layout-time child projection: the retained
+chart is prepared from the final content rectangle and its paint, hit testing,
+focus/controller actions, and semantics remain in the enclosing `UiFrame`.
+Intrinsic measurement uses the declared preferred size without executing chart
+preparation, unchanged allocations reuse the retained result, and zero-sized
+allocations keep a semantic chart surface without emitting invalid paint.
 
 JSX is not limited to the recipe names. A `family: "custom"` specification maps
 bounded JSON-safe descriptors directly into the Rust `ChartSpec` grammar:
