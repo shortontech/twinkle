@@ -67,14 +67,14 @@ mod enabled {
         serde_json::json!({"liveRequestedBytes":LIVE.load(Relaxed),"peakRequestedBytes":PEAK.load(Relaxed),"allocationOrReallocationCalls":CALLS.load(Relaxed),"deallocationCalls":FREES.load(Relaxed),"cumulativeRequestedBytes":REQUESTED.load(Relaxed),"scope":"Process-wide Rust System allocator requests; concurrent threads overlap. Excludes foreign V8/C++/driver allocations, allocator metadata, reserved arenas and fragmentation. Overlaps expanded frame ownership and RSS/PSS; do not sum."})
     }
 }
-pub(super) fn snapshot() -> serde_json::Value {
+pub(crate) fn snapshot() -> serde_json::Value {
     #[cfg(feature = "pipeline-allocator")]
     return enabled::snapshot();
     #[cfg(not(feature = "pipeline-allocator"))]
     serde_json::Value::Null
 }
 
-pub(super) fn counts() -> Option<[u64; 3]> {
+pub(crate) fn counts() -> Option<[u64; 3]> {
     #[cfg(feature = "pipeline-allocator")]
     return Some(enabled::counts());
     #[cfg(not(feature = "pipeline-allocator"))]

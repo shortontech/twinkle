@@ -26,6 +26,11 @@ name = "twinkle-chart-dashboard"
 path = "src/bin/twinkle_chart_dashboard.rs"
 required-features = ["charts"]
 
+[[bin]]
+name = "twinkle-chart-admission"
+path = "src/bin/twinkle_chart_admission.rs"
+required-features = ["charts", "pipeline-allocator"]
+
 [features]
 pipeline-allocator = ["jsx"]
 pipeline-attribution = ["twinkle/pipeline-attribution", "twinkle-jsx-runtime?/pipeline-attribution"]
