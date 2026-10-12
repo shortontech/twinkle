@@ -6010,6 +6010,18 @@ fn set_typed_handler(
         (PanelNode::Chart(chart), "tableAction") => chart.table_action = action,
         #[cfg(feature = "charts")]
         (PanelNode::Chart(chart), "toggleAction") => chart.toggle_action = optional,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartNavigateAction") => chart.navigate_action = optional,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartSelectAction") => chart.select_action = optional,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartInspectAction") => chart.inspect_action = optional,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartViewportAction") => chart.viewport_action = optional,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartViewportCommandAction") => {
+            chart.viewport_command_action = optional
+        }
         (PanelNode::Div { action: field, .. }, "action")
         | (PanelNode::Image { action: field, .. }, "action")
         | (PanelNode::Switch { action: field, .. }, "action")

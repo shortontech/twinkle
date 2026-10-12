@@ -228,7 +228,12 @@ mod tests {
                     ]}]},
                     spec:{family:'line',title:'Revenue',dataset:'d',x:'x',y:'y',series:'series'},
                     onTableMode: visible => twinkle.request({type:'table',visible}),
-                    onToggleSeries: event => twinkle.request({type:'toggle',...event})
+                    onToggleSeries: event => twinkle.request({type:'toggle',...event}),
+                    onNavigate: event => twinkle.request({type:'navigate',...event}),
+                    onSelectDatum: event => twinkle.request({type:'select',...event}),
+                    onInspectDatum: event => twinkle.request({type:'inspect',...event}),
+                    onViewportChange: event => twinkle.request({type:'viewport',...event}),
+                    onViewportCommand: event => twinkle.request({type:'viewport-command',...event})
                 });
             }
         "#;
@@ -239,6 +244,11 @@ mod tests {
         };
         let table_action = chart.table_action;
         let toggle_action = chart.toggle_action.unwrap();
+        let navigate_action = chart.navigate_action.unwrap();
+        let select_action = chart.select_action.unwrap();
+        let inspect_action = chart.inspect_action.unwrap();
+        let viewport_action = chart.viewport_action.unwrap();
+        let viewport_command_action = chart.viewport_command_action.unwrap();
         assert_eq!(chart.snapshot.input.unwrap().revisions.content, 5);
         let effect = page
             .dispatch(table_action, &json!(true), &data, Ok::<_, String>)
@@ -256,6 +266,39 @@ mod tests {
             effect,
             json!({"type":"toggle","series":"One","visible":false})
         );
+        for (action, payload, expected) in [
+            (
+                navigate_action,
+                json!({"kind":"navigate","command":"Next"}),
+                json!({"type":"navigate","kind":"navigate","command":"Next"}),
+            ),
+            (
+                select_action,
+                json!({"kind":"select","dataset":"d","row":"a","revision":5}),
+                json!({"type":"select","kind":"select","dataset":"d","row":"a","revision":5}),
+            ),
+            (
+                inspect_action,
+                json!({"kind":"inspect","dataset":"d","row":"a","revision":5}),
+                json!({"type":"inspect","kind":"inspect","dataset":"d","row":"a","revision":5}),
+            ),
+            (
+                viewport_action,
+                json!({"kind":"viewport","x":[1,2]}),
+                json!({"type":"viewport","kind":"viewport","x":[1,2]}),
+            ),
+            (
+                viewport_command_action,
+                json!({"kind":"viewportCommand","command":"Reset"}),
+                json!({"type":"viewport-command","kind":"viewportCommand","command":"Reset"}),
+            ),
+        ] {
+            assert_eq!(
+                page.dispatch(action, &payload, &data, Ok::<_, String>)
+                    .unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]

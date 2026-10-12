@@ -20,7 +20,18 @@ function ChartGallery() {
       : previous.filter(value => value !== series));
   };
   const table = (visible: boolean) => twinkle.request({type: "chart-table", visible});
-  const common = {data: chartData, width: 480, height: 260, state: {visibleSeries}, onTableMode: table};
+  const common = {
+    data: chartData,
+    width: 480,
+    height: 260,
+    state: {visibleSeries},
+    onTableMode: table,
+    onNavigate: (event: Readonly<{kind:"navigate";command:string}>) => twinkle.request(event),
+    onSelectDatum: (event: Readonly<{kind:"select";dataset:string;row:string;series?:string;revision:number}>) => twinkle.request(event),
+    onInspectDatum: (event: Readonly<{kind:"inspect";dataset:string;row:string;revision:number}>) => twinkle.request(event),
+    onViewportChange: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => twinkle.request(event),
+    onViewportCommand: (event: Readonly<{kind:"viewportCommand";command:string}>) => twinkle.request(event),
+  };
   return <Column>
     <Chart {...common} id="trend" spec={{family:"line",title:"Revenue trend",dataset:"sales",x:"month",y:"revenue",series:"region"}} onToggleSeries={toggle} />
     <Chart {...common} id="area" spec={{family:"stacked-area",title:"Revenue area",dataset:"sales",x:"month",series:"region",value:"revenue"}} onToggleSeries={toggle} />

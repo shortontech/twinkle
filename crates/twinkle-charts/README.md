@@ -160,3 +160,11 @@ legend state, captured pan, wheel and button zoom, exact table mode, responsive
 containment, and bounded in-memory CSV/raster export. The base workbench does not
 acquire the chart dependency.
 
+With `twinkle-presentation/charts`, JSX `Chart` declarations use this same native
+engine. `onTableMode`, `onToggleSeries`, `onNavigate`, `onSelectDatum`,
+`onInspectDatum`, `onViewportChange`, and `onViewportCommand` are independent
+generation-scoped callbacks. Optional event-specific callbacks fall back to
+`onTableMode` for source compatibility; new applications should handle them on
+their typed channels. The compiling gallery is
+`crates/twinkle-jsx-runtime/examples/charts.tsx`.
+

@@ -1573,12 +1573,23 @@ function h(kind, props, ...children) {
         ? __twinkleHandlerBinding(props.onTableMode) : null;
     const toggleAction = typeof props?.onToggleSeries === 'function'
         ? __twinkleHandlerBinding(props.onToggleSeries) : null;
+    const chartNavigateAction = typeof props?.onNavigate === 'function'
+        ? __twinkleHandlerBinding(props.onNavigate) : null;
+    const chartSelectAction = typeof props?.onSelectDatum === 'function'
+        ? __twinkleHandlerBinding(props.onSelectDatum) : null;
+    const chartInspectAction = typeof props?.onInspectDatum === 'function'
+        ? __twinkleHandlerBinding(props.onInspectDatum) : null;
+    const chartViewportAction = typeof props?.onViewportChange === 'function'
+        ? __twinkleHandlerBinding(props.onViewportChange) : null;
+    const chartViewportCommandAction = typeof props?.onViewportCommand === 'function'
+        ? __twinkleHandlerBinding(props.onViewportCommand) : null;
     const node = {kind};
     if (props?.key !== undefined) node.key = props.key;
     for (const [name, value] of Object.entries(props || {}))
         if (value !== undefined && __twinkleNativeProps.has(name)) node[name] = value;
     for (const [name, value] of Object.entries({action,contextAction,dragAction,dropAction,focusAction,blurAction,
-        selectAction,moveAction,fileAction,closeAction,escapeAction,submitAction,tableAction,toggleAction}))
+        selectAction,moveAction,fileAction,closeAction,escapeAction,submitAction,tableAction,toggleAction,
+        chartNavigateAction,chartSelectAction,chartInspectAction,chartViewportAction,chartViewportCommandAction}))
         if (value !== null) node[name] = value;
     node.children = children.flat(Infinity).filter(child => child !== null && child !== false);
     return __twinkleVirtualNativeNode(node);

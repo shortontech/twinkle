@@ -235,6 +235,11 @@ interface TwinkleChartProps extends TwinkleProps {
     state?: TwinkleChartState;
     onTableMode: (visible: boolean) => void;
     onToggleSeries?: (event: Readonly<{series:string;visible:boolean}>) => void;
+    onNavigate?: (event: Readonly<{kind:"navigate";command:string}>) => void;
+    onSelectDatum?: (event: Readonly<{kind:"select";dataset:string;row:string;series?:string;revision:number}>) => void;
+    onInspectDatum?: (event: Readonly<{kind:"inspect";dataset:string;row:string;revision:number}>) => void;
+    onViewportChange?: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => void;
+    onViewportCommand?: (event: Readonly<{kind:"viewportCommand";command:string}>) => void;
 }
 declare function Fragment(props:TwinkleProps):JSX.Element;
 declare function h(kind: unknown, props?: object | null, ...children: TwinkleChild[]): JSX.Element;

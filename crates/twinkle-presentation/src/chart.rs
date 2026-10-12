@@ -24,6 +24,11 @@ pub struct ChartDeclaration {
     pub(crate) snapshot: RetainedSurfaceSnapshot,
     pub(crate) table_action: usize,
     pub(crate) toggle_action: Option<usize>,
+    pub(crate) navigate_action: Option<usize>,
+    pub(crate) select_action: Option<usize>,
+    pub(crate) inspect_action: Option<usize>,
+    pub(crate) viewport_action: Option<usize>,
+    pub(crate) viewport_command_action: Option<usize>,
     pub(crate) retained_bytes: usize,
 }
 
@@ -67,6 +72,11 @@ impl ChartDeclaration {
             table_action: action(value, "tableAction")?
                 .ok_or("chart needs an onTableMode callback")?,
             toggle_action,
+            navigate_action: action(value, "chartNavigateAction")?,
+            select_action: action(value, "chartSelectAction")?,
+            inspect_action: action(value, "chartInspectAction")?,
+            viewport_action: action(value, "chartViewportAction")?,
+            viewport_command_action: action(value, "chartViewportCommandAction")?,
             retained_bytes,
         })
     }
@@ -74,7 +84,7 @@ impl ChartDeclaration {
     pub fn event(&self, event: ChartEvent) -> (usize, Value) {
         match event {
             ChartEvent::Navigate(command) => (
-                self.table_action,
+                self.navigate_action.unwrap_or(self.table_action),
                 json!({"kind":"navigate","command":format!("{command:?}")}),
             ),
             ChartEvent::ToggleSeries { series, visible } => (
@@ -88,7 +98,7 @@ impl ChartDeclaration {
                 series,
                 revision,
             } => (
-                self.table_action,
+                self.select_action.unwrap_or(self.table_action),
                 json!({"kind":"select","dataset":dataset.as_ref(),"row":row.0.as_ref(),"series":series.as_deref(),"revision":revision}),
             ),
             ChartEvent::Inspect {
@@ -96,15 +106,15 @@ impl ChartDeclaration {
                 row,
                 revision,
             } => (
-                self.table_action,
+                self.inspect_action.unwrap_or(self.table_action),
                 json!({"kind":"inspect","dataset":dataset.as_ref(),"row":row.0.as_ref(),"revision":revision}),
             ),
             ChartEvent::ViewportChanged(viewport) => (
-                self.table_action,
+                self.viewport_action.unwrap_or(self.table_action),
                 json!({"kind":"viewport","x":viewport.x,"y":viewport.y}),
             ),
             ChartEvent::Viewport(command) => (
-                self.table_action,
+                self.viewport_command_action.unwrap_or(self.table_action),
                 json!({"kind":"viewportCommand","command":format!("{command:?}")}),
             ),
         }
@@ -526,7 +536,9 @@ mod tests {
     fn declaration() -> Value {
         json!({
             "kind":"chart","id":"sales","width":420,"height":240,
-            "tableAction":7,"toggleAction":8,"children":[],
+            "tableAction":7,"toggleAction":8,"chartNavigateAction":9,
+            "chartSelectAction":10,"chartInspectAction":11,
+            "chartViewportAction":12,"chartViewportCommandAction":13,"children":[],
             "data":{"revision":3,"datasets":[{
                 "id":"sales","keys":["north-jan","south-jan","north-feb","south-feb"],
                 "columns":[
@@ -560,6 +572,48 @@ mod tests {
         });
         assert_eq!(action, 8);
         assert_eq!(payload, json!({"series":"North","visible":false}));
+        assert_eq!(
+            chart.event(ChartEvent::Navigate(
+                twinkle_charts::NavigationCommand::Next
+            )),
+            (9, json!({"kind":"navigate","command":"Next"}))
+        );
+        assert_eq!(
+            chart
+                .event(ChartEvent::Select {
+                    dataset: Arc::from("sales"),
+                    row: RowKey::from("north-jan"),
+                    series: Some(Arc::from("North")),
+                    revision: 3,
+                })
+                .0,
+            10
+        );
+        assert_eq!(
+            chart
+                .event(ChartEvent::Inspect {
+                    dataset: Arc::from("sales"),
+                    row: RowKey::from("north-jan"),
+                    revision: 3,
+                })
+                .0,
+            11
+        );
+        assert_eq!(
+            chart
+                .event(ChartEvent::ViewportChanged(Viewport {
+                    x: Some([0.0, 1.0]),
+                    y: None,
+                }))
+                .0,
+            12
+        );
+        assert_eq!(
+            chart
+                .event(ChartEvent::Viewport(twinkle_charts::ViewportCommand::Reset))
+                .0,
+            13
+        );
     }
 
     #[test]
