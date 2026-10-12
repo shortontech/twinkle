@@ -323,6 +323,16 @@ impl ChartModel {
                     })
             })
             .transpose()?;
+        let x2_column = channel(&layer.encodings, Channel::X2)
+            .map(|encoding| {
+                dataset
+                    .column(&encoding.field.column)
+                    .ok_or_else(|| ChartError::MissingColumn {
+                        dataset: encoding.field.dataset.to_string(),
+                        column: encoding.field.column.to_string(),
+                    })
+            })
+            .transpose()?;
         let x_coordinates = column_coordinates(x_column);
         let y_coordinates = column_coordinates(y_column);
         let series_column = channel(&layer.encodings, Channel::Series)
@@ -365,7 +375,19 @@ impl ChartModel {
             crate::VisibilityDomainPolicy::VisibleSeries if values.is_empty() => &all_values,
             crate::VisibilityDomainPolicy::VisibleSeries => &values,
         };
-        let mut x_domain = extent(domain_values.iter().map(|(_, x, _)| *x));
+        let mut x_domain = extent(domain_values.iter().map(|(_, x, _)| *x).chain(
+            x2_column.into_iter().flat_map(|column| {
+                column
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        self.spec.visibility_domain == crate::VisibilityDomainPolicy::Original
+                            || row_visible(*index)
+                    })
+                    .filter_map(|(index, value)| coordinate(value, index))
+            }),
+        ));
         let mut y_domain = extent(domain_values.iter().map(|(_, _, y)| *y).chain(
             y2_column.into_iter().flat_map(|column| {
                 column
@@ -379,14 +401,25 @@ impl ChartModel {
                     .filter_map(|(index, value)| coordinate(value, index))
             }),
         ));
-        let baseline = match layer.mark {
+        let y_baseline = match layer.mark {
             Mark::Area { baseline, .. } => Some(baseline as f64),
-            Mark::Bar { .. } => Some(0.0),
+            Mark::Bar {
+                orientation: crate::Orientation::Vertical,
+            } => Some(0.0),
             _ => None,
         };
-        if let Some(baseline) = baseline {
+        if let Some(baseline) = y_baseline {
             y_domain[0] = y_domain[0].min(baseline);
             y_domain[1] = y_domain[1].max(baseline);
+        }
+        if matches!(
+            layer.mark,
+            Mark::Bar {
+                orientation: crate::Orientation::Horizontal
+            }
+        ) {
+            x_domain[0] = x_domain[0].min(0.0);
+            x_domain[1] = x_domain[1].max(0.0);
         }
         let x_scale = x.scale.as_deref();
         let y_scale = y.scale.as_deref();
@@ -679,7 +712,7 @@ impl ChartModel {
                     self.push_hit(dataset, *index, bounds, hits);
                 }
             }
-            Mark::Bar { .. } => {
+            Mark::Bar { orientation } => {
                 if values.len() > 60_000 {
                     return Err(ChartError::Limit {
                         resource: "bar/heatmap paint marks",
@@ -687,7 +720,13 @@ impl ChartModel {
                         limit: 60_000,
                     });
                 }
-                let category_count = x_coordinates
+                let horizontal = *orientation == crate::Orientation::Horizontal;
+                let category_coordinates = if horizontal {
+                    &y_coordinates
+                } else {
+                    &x_coordinates
+                };
+                let category_count = category_coordinates
                     .iter()
                     .flatten()
                     .map(|value| value.to_bits())
@@ -705,11 +744,16 @@ impl ChartModel {
                         .max(1)
                 });
                 let grouped = y2_column.is_none() && series_count > 1;
-                let category_width = (plot.size.width / category_count as f32 * 0.72).max(1.0);
-                let width = if grouped {
-                    category_width / series_count as f32
+                let category_span = if horizontal {
+                    plot.size.height
                 } else {
-                    category_width
+                    plot.size.width
+                };
+                let category_thickness = (category_span / category_count as f32 * 0.72).max(1.0);
+                let thickness = if grouped {
+                    category_thickness / series_count as f32
+                } else {
+                    category_thickness
                 };
                 for (index, x, y) in &values {
                     let mut point = map(*x, *y);
@@ -718,24 +762,50 @@ impl ChartModel {
                             .as_ref()
                             .and_then(|coordinates| coordinates[*index])
                             .unwrap_or(0.0) as f32;
-                        point.x += (series - (series_count as f32 - 1.0) / 2.0) * width;
+                        let offset = (series - (series_count as f32 - 1.0) / 2.0) * thickness;
+                        if horizontal {
+                            point.y += offset;
+                        } else {
+                            point.x += offset;
+                        }
                     }
-                    let baseline_value = y2_column
-                        .and_then(|column| coordinate(&column.values[*index], *index))
-                        .unwrap_or(0.0);
-                    let baseline = map_value(
-                        baseline_value,
-                        y_domain,
-                        [plot.origin.y + plot.size.height, plot.origin.y],
-                    );
-                    let left = (point.x - width / 2.0).max(plot.origin.x);
-                    let right = (point.x + width / 2.0).min(plot.origin.x + plot.size.width);
-                    let bounds = Rect::new(
-                        left,
-                        point.y.min(baseline),
-                        (right - left).max(0.0),
-                        (point.y - baseline).abs().max(1.0),
-                    );
+                    let bounds = if horizontal {
+                        let baseline_value = x2_column
+                            .and_then(|column| coordinate(&column.values[*index], *index))
+                            .unwrap_or(0.0);
+                        let baseline = map_value(
+                            baseline_value,
+                            x_domain,
+                            [plot.origin.x, plot.origin.x + plot.size.width],
+                        );
+                        let top = (point.y - thickness / 2.0).max(plot.origin.y);
+                        let bottom =
+                            (point.y + thickness / 2.0).min(plot.origin.y + plot.size.height);
+                        Rect::new(
+                            point.x.min(baseline),
+                            top,
+                            (point.x - baseline).abs().max(1.0),
+                            (bottom - top).max(0.0),
+                        )
+                    } else {
+                        let baseline_value = y2_column
+                            .and_then(|column| coordinate(&column.values[*index], *index))
+                            .unwrap_or(0.0);
+                        let baseline = map_value(
+                            baseline_value,
+                            y_domain,
+                            [plot.origin.y + plot.size.height, plot.origin.y],
+                        );
+                        let left = (point.x - thickness / 2.0).max(plot.origin.x);
+                        let right =
+                            (point.x + thickness / 2.0).min(plot.origin.x + plot.size.width);
+                        Rect::new(
+                            left,
+                            point.y.min(baseline),
+                            (right - left).max(0.0),
+                            (point.y - baseline).abs().max(1.0),
+                        )
+                    };
                     output.paint.push(PaintCommand::Fill {
                         rect: bounds,
                         color,
@@ -1926,6 +1996,50 @@ mod tests {
                 < 0.01
                 || (stacked_rects[1].origin.y
                     - (stacked_rects[0].origin.y + stacked_rects[0].size.height))
+                    .abs()
+                    < 0.01
+        );
+
+        let horizontal = render(crate::Recipes::grouped_horizontal_bar(
+            "Horizontal grouped",
+            FieldRef::new("d", "category"),
+            FieldRef::new("d", "series"),
+            FieldRef::new("d", "value"),
+        ));
+        let horizontal_rects: Vec<Rect> = horizontal
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Fill { rect, .. } if *rect != input.bounds => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(horizontal_rects.len(), 3);
+        assert_ne!(horizontal_rects[0].origin.y, horizontal_rects[1].origin.y);
+        assert!(horizontal_rects[0].size.width > horizontal_rects[0].size.height);
+
+        let horizontal_stacked = render(crate::Recipes::stacked_horizontal_bar(
+            "Horizontal stacked",
+            FieldRef::new("d", "category"),
+            FieldRef::new("d", "series"),
+            FieldRef::new("d", "value"),
+            true,
+        ));
+        let horizontal_stacked_rects: Vec<Rect> = horizontal_stacked
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Fill { rect, .. } if *rect != input.bounds => Some(*rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(horizontal_stacked_rects.len(), 3);
+        assert!(
+            (horizontal_stacked_rects[0].origin.x
+                - (horizontal_stacked_rects[1].origin.x + horizontal_stacked_rects[1].size.width))
+                .abs()
+                < 0.01
+                || (horizontal_stacked_rects[1].origin.x
+                    - (horizontal_stacked_rects[0].origin.x
+                        + horizontal_stacked_rects[0].size.width))
                     .abs()
                     < 0.01
         );

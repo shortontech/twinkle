@@ -544,6 +544,21 @@ impl Recipes {
             value,
         )
     }
+    pub fn horizontal_bar(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        value: FieldRef,
+    ) -> ChartSpec {
+        Self::xy(
+            title,
+            ChartFamily::Bar,
+            Mark::Bar {
+                orientation: Orientation::Horizontal,
+            },
+            value,
+            category,
+        )
+    }
     pub fn grouped_bar(
         title: impl Into<Arc<str>>,
         category: FieldRef,
@@ -551,6 +566,20 @@ impl Recipes {
         value: FieldRef,
     ) -> ChartSpec {
         let mut spec = Self::bar(title, category, value);
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: series,
+            scale: None,
+        });
+        spec
+    }
+    pub fn grouped_horizontal_bar(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        series: FieldRef,
+        value: FieldRef,
+    ) -> ChartSpec {
+        let mut spec = Self::horizontal_bar(title, category, value);
         spec.layers[0].encodings.push(Encoding {
             channel: Channel::Series,
             field: series,
@@ -575,6 +604,41 @@ impl Recipes {
             channel: Channel::Y2,
             field: FieldRef::new(dataset.clone(), format!("{}_start", value.column)),
             scale: Some("y".into()),
+        });
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: series.clone(),
+            scale: None,
+        });
+        spec.layers[0].transforms.push(Transform::Stack {
+            category: category.column.to_string(),
+            series: series.column.to_string(),
+            value: value.column.to_string(),
+            mode: if normalized {
+                crate::StackMode::Normalized
+            } else {
+                crate::StackMode::Raw
+            },
+        });
+        spec
+    }
+    pub fn stacked_horizontal_bar(
+        title: impl Into<Arc<str>>,
+        category: FieldRef,
+        series: FieldRef,
+        value: FieldRef,
+        normalized: bool,
+    ) -> ChartSpec {
+        let dataset = value.dataset.clone();
+        let mut spec = Self::horizontal_bar(
+            title,
+            category.clone(),
+            FieldRef::new(dataset.clone(), format!("{}_end", value.column)),
+        );
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::X2,
+            field: FieldRef::new(dataset.clone(), format!("{}_start", value.column)),
+            scale: Some("x".into()),
         });
         spec.layers[0].encodings.push(Encoding {
             channel: Channel::Series,
