@@ -385,6 +385,17 @@ pub struct RetainedSurfaceCandidate<M: RetainedSurfaceModel> {
 }
 
 impl<M: RetainedSurfaceModel> RetainedSurfaceCandidate<M> {
+    /// Read the staged model before final publication.
+    pub fn model(&self) -> &M {
+        &self.prepared.model
+    }
+
+    /// Mutate only the isolated candidate model. Dropping the candidate rolls
+    /// the mutation back together with its candidate output.
+    pub fn model_mut(&mut self) -> &mut M {
+        &mut self.prepared.model
+    }
+
     pub fn update(
         &mut self,
         input: RetainedSurfaceInput,
@@ -517,6 +528,11 @@ impl<M: RetainedSurfaceModel> RetainedSurfaceHost<M> {
 
     pub fn snapshot(&self) -> &RetainedSurfaceSnapshot {
         &self.accepted
+    }
+
+    /// Read the accepted model state without bypassing transactional updates.
+    pub fn model(&self) -> &M {
+        &self.model
     }
 
     pub const fn diagnostics(&self) -> RetainedSurfaceDiagnostics {

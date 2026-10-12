@@ -11,8 +11,8 @@ use twinkle_ui::{
 };
 
 use crate::{
-    Channel, ChartData, ChartDiagnostics, ChartError, ChartLimits, ChartSpec, ChartTheme,
-    DataValue, Encoding, Mark,
+    Channel, ChartData, ChartDiagnostics, ChartError, ChartEvent, ChartLimits, ChartSpec,
+    ChartTheme, DataValue, Encoding, Mark,
 };
 
 /// Accepted spatial-index entry retaining stable source identity.
@@ -318,14 +318,15 @@ impl ChartModel {
             })
             .transpose()?;
         let x_coordinates = column_coordinates(x_column);
+        let y_coordinates = column_coordinates(y_column);
         let values: Vec<(usize, f64, f64)> = x_column
             .values
             .iter()
             .zip(y_column.values.iter())
             .enumerate()
-            .filter_map(|(index, (_x, y))| {
+            .filter_map(|(index, (_x, _y))| {
                 x_coordinates[index]
-                    .zip(coordinate(y, index))
+                    .zip(y_coordinates[index])
                     .map(|(x, y)| (index, x, y))
             })
             .collect();
@@ -344,7 +345,7 @@ impl ChartModel {
         ));
         let baseline = match layer.mark {
             Mark::Area { baseline, .. } => Some(baseline as f64),
-            Mark::Bar { .. } | Mark::Rect => Some(0.0),
+            Mark::Bar { .. } => Some(0.0),
             _ => None,
         };
         if let Some(baseline) = baseline {
@@ -390,6 +391,17 @@ impl ChartModel {
         } else {
             plot.size.width / categorical_x_count as f32 / 2.0
         };
+        let categorical_y_count = y_column
+            .values
+            .iter()
+            .filter_map(DataValue::category)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let y_inset = if categorical_y_count == 0 {
+            0.0
+        } else {
+            plot.size.height / categorical_y_count as f32 / 2.0
+        };
         let map = |x: f64, y: f64| Point {
             x: map_value(
                 x,
@@ -402,7 +414,10 @@ impl ChartModel {
             y: map_value(
                 y,
                 y_domain,
-                [plot.origin.y + plot.size.height, plot.origin.y],
+                [
+                    plot.origin.y + plot.size.height - y_inset,
+                    plot.origin.y + y_inset,
+                ],
             ),
         };
         if layer_index == 0 {
@@ -421,10 +436,7 @@ impl ChartModel {
                     let mut segment = Vec::new();
                     let mut markers = Vec::new();
                     for index in rows.iter().copied() {
-                        match (
-                            x_coordinates[index],
-                            coordinate(&y_column.values[index], index),
-                        ) {
+                        match (x_coordinates[index], y_coordinates[index]) {
                             (Some(x), Some(y)) => segment.push(map(x, y)),
                             _ => {
                                 let reduced = reduce_extrema(
@@ -471,9 +483,9 @@ impl ChartModel {
                             let (left, right) = (pair[0], pair[1]);
                             let (Some(x0), Some(y0), Some(x1), Some(y1), Some(base0), Some(base1)) = (
                                 x_coordinates[left],
-                                coordinate(&y_column.values[left], left),
+                                y_coordinates[left],
                                 x_coordinates[right],
-                                coordinate(&y_column.values[right], right),
+                                y_coordinates[right],
                                 coordinate(&base_column.values[left], left),
                                 coordinate(&base_column.values[right], right),
                             ) else {
@@ -494,10 +506,7 @@ impl ChartModel {
                         let max_points = (plot.size.width.ceil() as usize).saturating_mul(4).max(2);
                         let mut segment = Vec::new();
                         for index in rows.iter().copied() {
-                            match (
-                                x_coordinates[index],
-                                coordinate(&y_column.values[index], index),
-                            ) {
+                            match (x_coordinates[index], y_coordinates[index]) {
                                 (Some(x), Some(y)) => segment.push(map(x, y)),
                                 _ => {
                                     triangles.extend(area_triangles(
@@ -526,17 +535,115 @@ impl ChartModel {
                 let max_marks =
                     ((plot.size.width * plot.size.height / 16.0) as usize).clamp(1, 50_000);
                 let step = values.len().div_ceil(max_marks).max(1);
-                for (_, x, y) in values.iter().step_by(step) {
+                let size_column = channel(&layer.encodings, Channel::Size)
+                    .and_then(|encoding| dataset.column(&encoding.field.column));
+                let size_max = size_column
+                    .into_iter()
+                    .flat_map(|column| column.values.iter())
+                    .filter_map(DataValue::number)
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .fold(0.0_f64, f64::max);
+                for (index, x, y) in values.iter().step_by(step) {
                     let center = map(*x, *y);
-                    let bounds = Rect::new(center.x - 3.0, center.y - 3.0, 6.0, 6.0);
+                    let radius = size_column
+                        .and_then(|column| column.values[*index].number())
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                        .map_or(3.0, |value| {
+                            if size_max == 0.0 {
+                                0.0
+                            } else {
+                                (value / size_max).sqrt() as f32 * 10.0
+                            }
+                        });
+                    if radius == 0.0 {
+                        continue;
+                    }
+                    let bounds = Rect::new(
+                        center.x - radius,
+                        center.y - radius,
+                        radius * 2.0,
+                        radius * 2.0,
+                    );
                     output.paint.push(PaintCommand::RoundedFill {
                         rect: bounds,
                         color,
-                        radius: 3.0,
+                        radius,
                     });
                 }
             }
-            Mark::Bar { .. } | Mark::Rect => {
+            Mark::Rect => {
+                if values.len() > 60_000 {
+                    return Err(ChartError::Limit {
+                        resource: "heatmap cells",
+                        actual: values.len(),
+                        limit: 60_000,
+                    });
+                }
+                let x_count = x_coordinates
+                    .iter()
+                    .flatten()
+                    .map(|value| value.to_bits())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    .max(1);
+                let y_count = y_coordinates
+                    .iter()
+                    .flatten()
+                    .map(|value| value.to_bits())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    .max(1);
+                let cell_width = plot.size.width / x_count as f32;
+                let cell_height = plot.size.height / y_count as f32;
+                let fill_column = channel(&layer.encodings, Channel::Fill)
+                    .and_then(|encoding| dataset.column(&encoding.field.column));
+                let numeric_fill: Vec<f64> = fill_column
+                    .into_iter()
+                    .flat_map(|column| column.values.iter())
+                    .filter_map(DataValue::number)
+                    .filter(|value| value.is_finite())
+                    .collect();
+                let fill_domain =
+                    (!numeric_fill.is_empty()).then(|| extent(numeric_fill.iter().copied()));
+                for (index, x, y) in &values {
+                    let center = map(*x, *y);
+                    let left = (center.x - cell_width / 2.0).max(plot.origin.x);
+                    let right = (center.x + cell_width / 2.0).min(plot.origin.x + plot.size.width);
+                    let top = (center.y - cell_height / 2.0).max(plot.origin.y);
+                    let bottom =
+                        (center.y + cell_height / 2.0).min(plot.origin.y + plot.size.height);
+                    let value = fill_column.map(|column| &column.values[*index]);
+                    let cell_color = match (value, fill_domain) {
+                        (Some(DataValue::Number(value)), Some(domain)) if value.is_finite() => self
+                            .theme
+                            .sequential((value - domain[0]) / (domain[1] - domain[0])),
+                        (Some(DataValue::Category(_)), _) => {
+                            self.theme
+                                .series_cue(
+                                    column_coordinates(fill_column.unwrap())[*index].unwrap_or(0.0)
+                                        as usize,
+                                )
+                                .color
+                        }
+                        _ => self.theme.missing,
+                    };
+                    let bounds =
+                        Rect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
+                    output.paint.push(PaintCommand::Fill {
+                        rect: bounds,
+                        color: cell_color,
+                    });
+                    if value.is_none_or(DataValue::is_null) {
+                        output.paint.push(PaintCommand::Stroke {
+                            rect: bounds,
+                            color: self.theme.foreground,
+                            width: 1.0,
+                        });
+                    }
+                    self.push_hit(dataset, *index, bounds, hits);
+                }
+            }
+            Mark::Bar { .. } => {
                 if values.len() > 60_000 {
                     return Err(ChartError::Limit {
                         resource: "bar/heatmap paint marks",
@@ -1022,6 +1129,40 @@ impl ChartView {
     }
     pub fn snapshot(&self) -> &RetainedSurfaceSnapshot {
         self.host.snapshot()
+    }
+    pub fn diagnostics(&self) -> &ChartDiagnostics {
+        self.host.model().diagnostics()
+    }
+    pub fn hits(&self) -> &[ChartHit] {
+        self.host.model().hits()
+    }
+    pub fn nearest(&self, point: Point) -> Option<&ChartHit> {
+        self.host.model().nearest(point)
+    }
+    pub fn replace_and_update(
+        &mut self,
+        spec: Arc<ChartSpec>,
+        data: Arc<ChartData>,
+        input: RetainedSurfaceInput,
+    ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
+        let mut candidate = self.host.begin_candidate();
+        candidate.model_mut().replace(spec, data)?;
+        candidate
+            .update(input)
+            .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+        let old = self.host.finalize_candidate(candidate);
+        drop(old);
+        Ok(self.host.snapshot())
+    }
+    pub fn element<Message: Clone>(
+        &self,
+        id: impl Into<UiId>,
+        mut message: impl FnMut(ChartEvent) -> Message,
+    ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
+        self.host
+            .snapshot()
+            .try_element(id, |_| message(ChartEvent::TableMode(true)))
+            .map_err(|error| ChartError::invalid(crate::ChartStage::Semantics, error))
     }
     pub fn detach(&mut self) {
         self.host.detach();
@@ -1712,5 +1853,116 @@ mod tests {
             )
         );
         assert!(snapshot.output.paint.len() >= 12);
+    }
+
+    #[test]
+    fn heatmap_cells_distinguish_missing_fill_and_bubbles_map_area() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            vec![RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new(
+                    "x",
+                    vec![
+                        DataValue::Category(Arc::from("left")),
+                        DataValue::Category(Arc::from("right")),
+                    ],
+                ),
+                Column::new(
+                    "y",
+                    vec![
+                        DataValue::Category(Arc::from("top")),
+                        DataValue::Category(Arc::from("top")),
+                    ],
+                ),
+                Column::new("value", vec![DataValue::Number(0.0), DataValue::Null]),
+                Column::new("size", vec![DataValue::Number(1.0), DataValue::Number(4.0)]),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(13, vec![dataset], &limits).unwrap());
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 300.0, 180.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 13,
+                ..Default::default()
+            },
+        );
+        let render = |spec| {
+            let mut view = ChartView::new(
+                ChartModel::new(Arc::new(spec), data.clone(), limits.clone()).unwrap(),
+            )
+            .unwrap();
+            view.update(input).unwrap().output.paint.clone()
+        };
+        let heatmap = render(crate::Recipes::heatmap(
+            "Heat",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "y"),
+            FieldRef::new("d", "value"),
+        ));
+        assert!(heatmap.iter().any(|command| matches!(command, PaintCommand::Fill { color, .. } if *color == ChartTheme::default().missing)));
+        assert!(
+            heatmap
+                .iter()
+                .any(|command| matches!(command, PaintCommand::Stroke { .. }))
+        );
+        let bubbles = render(crate::Recipes::bubble(
+            "Bubbles",
+            FieldRef::new("d", "size"),
+            FieldRef::new("d", "size"),
+            FieldRef::new("d", "size"),
+        ));
+        let radii: Vec<f32> = bubbles
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::RoundedFill { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(radii, vec![5.0, 10.0]);
+    }
+
+    #[test]
+    fn rejected_replacement_preserves_accepted_paint_hits_and_revision() {
+        let model = model();
+        let accepted_data = model.data.clone();
+        let mut view = ChartView::new(model).unwrap();
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 300.0, 180.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 7,
+                ..Default::default()
+            },
+        );
+        view.update(input).unwrap();
+        let paint = view.snapshot().output.paint.clone();
+        let hits = view.hits().to_vec();
+        let invalid = Arc::new(crate::Recipes::line(
+            "Invalid",
+            FieldRef::new("d", "missing"),
+            FieldRef::new("d", "y"),
+        ));
+        assert!(
+            view.replace_and_update(
+                invalid,
+                accepted_data,
+                RetainedSurfaceInput::new(
+                    input.bounds,
+                    1.0,
+                    twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                        content: 8,
+                        ..Default::default()
+                    }
+                )
+            )
+            .is_err()
+        );
+        assert_eq!(view.snapshot().output.paint, paint);
+        assert_eq!(view.hits(), hits);
+        assert_eq!(view.snapshot().input.unwrap().revisions.content, 7);
     }
 }
