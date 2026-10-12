@@ -17,7 +17,11 @@ parser.add_argument('--wayland-socket', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--software', action='store_true')
 parser.add_argument('--ownership', action='store_true')
+parser.add_argument('--expected-physical-viewport', default='800,720')
 args = parser.parse_args()
+expected_physical_viewport = [int(value) for value in args.expected_physical_viewport.split(',')]
+if len(expected_physical_viewport) != 2 or any(value <= 0 for value in expected_physical_viewport):
+    parser.error('--expected-physical-viewport must be WIDTH,HEIGHT')
 root = Path(__file__).resolve().parents[1]
 binary, trace, socket, output = [p.resolve() for p in (args.binary, args.trace, args.wayland_socket, args.output)]
 if not socket.is_socket():
@@ -66,7 +70,7 @@ try:
     backend = (output/'backend.txt').read_text()
     if report['status'] != 'complete' or summary['status'] != 'complete' or summary['samples'] != samples:
         raise RuntimeError('Incomplete attribution')
-    if report['nativeWindow']['physicalViewport'] != [800, 720] or report['scale'] != 1:
+    if report['nativeWindow']['physicalViewport'] != expected_physical_viewport or report['scale'] != 1:
         raise RuntimeError('Actual window mismatch')
     if args.software and ('backend_software' not in backend or r'requested_renderer=Some(\"software\")' not in backend or 'backend_gpu' in backend):
         raise RuntimeError('Forced software backend not verified')

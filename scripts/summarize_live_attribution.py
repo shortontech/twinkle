@@ -41,13 +41,18 @@ def summarize(root):
     parse = [r for r in rows if r['event'] == 'json_parse']
     frame_work = [r for r in rows if r['event'] == 'native_frame_work']
     gpu = [r for r in rows if r['event'] == 'gpu_frame']
+    texture_cache = [r for r in rows if r['event'] == 'texture_cache']
     textures = [r for r in rows if r['event'] == 'text_lookup']
     capacities = {}
     for key in ['framebuffer_live_bytes', 'framebuffer_peak_bytes', 'texture_cache_resident_bytes',
                 'texture_cache_peak_bytes', 'vertex_buffer_capacity_bytes']:
-        values = [r[key] for r in gpu]
+        values = [r[key] for r in gpu if isinstance(r.get(key), (int, float))]
         capacities[key] = {'observations': len(values), 'last': values[-1] if values else None,
                            'highWater': max(values) if values else None}
+    for key in ['resident_bytes', 'texture_bytes', 'key_and_metadata_bytes', 'peak_bytes']:
+        values = [r[key] for r in texture_cache if isinstance(r.get(key), (int, float))]
+        capacities['texture_cache.' + key] = {'observations': len(values),
+            'last': values[-1] if values else None, 'highWater': max(values) if values else None}
     input_bytes_available = all('argumentKeyUtf8Bytes' in r and 'argumentStringUtf8Bytes' in r for r in bridge)
     return {'status': 'passed', 'scope': 'Opt-in attribution invocation, including initialization and warmup. CPU clocks, serialization, callback and log overhead present; not normal performance evidence.',
         'inputSha256': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in files+[root/'trace/replay.json']},
@@ -66,12 +71,22 @@ def summarize(root):
         'gpuWork': {'frames': len(gpu), 'commandsPrepared': sum(r['commands_prepared'] for r in gpu),
             'sceneVertexBytesGenerated': sum(r['scene_vertex_bytes'] for r in gpu),
             'totalVertexBytesUploaded': sum(r['total_vertex_upload_bytes'] for r in gpu),
-            'drawRecordsPrepared': sum(r['prepared_draw_records'] for r in gpu),
+            'drawRecordsPrepared': sum(r['prepared_draw_records'] for r in gpu)
+                if all('prepared_draw_records' in r for r in gpu) else None,
             'sceneDrawsEncoded': sum(r['scene_draws_encoded'] for r in gpu) if all('scene_draws_encoded' in r for r in gpu) else None,
             'sceneDamageCoveragePixels': sum(r['scene_damage_coverage_pixels'] for r in gpu) if all('scene_damage_coverage_pixels' in r for r in gpu) else None,
             'textLookupHits': sum(r['hit'] for r in textures), 'textLookupMisses': sum(not r['hit'] for r in textures),
             'textRasterPixels': sum(r['rasterized_pixels'] for r in rows if r['event'] == 'text_raster'),
             'textureUploadBytes': sum(r['uploaded_bytes'] for r in rows if r['event'] == 'texture_upload'),
+            'textureCacheHitsAtEnd': texture_cache[-1].get('hits') if texture_cache else None,
+            'textureCacheMissesAtEnd': texture_cache[-1].get('misses') if texture_cache else None,
+            'textureCacheInsertionsAtEnd': texture_cache[-1].get('insertions') if texture_cache else None,
+            'textureCacheEvictionsAtEnd': texture_cache[-1].get('evictions') if texture_cache else None,
+            'textureCacheEvictionScanEntriesAtEnd': texture_cache[-1].get('eviction_scan_entries') if texture_cache else None,
+            'textureCacheOversizedUncachedAtEnd': texture_cache[-1].get('oversized_uncached') if texture_cache else None,
+            'textureCacheWholeResetsAtEnd': texture_cache[-1].get('whole_resets') if texture_cache else None,
+            'textureCacheBytesHashedAtEnd': texture_cache[-1].get('bytes_hashed') if texture_cache else None,
+            'textureCacheBytesComparedAtEnd': texture_cache[-1].get('bytes_compared') if texture_cache else None,
             'redrawModes': dict(Counter(r['redraw'] for r in gpu)),
             'boundary': 'Preparation walks command list even on retained redraw reuse. Generated scene/auxiliary vertices are subsets of uploaded bytes, not additional ownership. Damage redraw mode is not physical pixels actually scanned out.'},
         'gpuCapacities': capacities, 'nativeEndpointOwnership': replay['nativeResources'], 'v8Endpoint': replay['jsxRuntime'],

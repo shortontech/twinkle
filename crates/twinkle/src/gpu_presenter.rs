@@ -1,10 +1,16 @@
 //! Hardware presentation for standalone Twinkle windows.
 
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, hash_map::RandomState},
+    hash::{BuildHasher, Hash, Hasher},
+    sync::Arc,
+};
 
 use crate::backend::PaintCommand;
 use crate::{DamageRegion, GradientAxis, Rect, SoftwareRenderer};
 use raw_window_handle::{DisplayHandle, WindowHandle};
+use twinkle_render_assets::ProcessFontSystem;
 
 const SHADER: &str = r#"
 struct VertexIn {
@@ -50,6 +56,7 @@ struct VertexOut {
 }
 "#;
 const MAX_TEXTURE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TRANSIENT_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RETAINED_FRAMEBUFFER_BYTES: usize = 128 * 1024 * 1024;
 
 fn retained_framebuffer_bytes(width: u32, height: u32) -> Option<usize> {
@@ -68,11 +75,575 @@ fn retained_framebuffer_configuration(
     (width, height, scale.to_bits(), format)
 }
 
-#[derive(Default)]
+fn text_texture_dimensions(bounds: Rect, scale: f32, maximum_dimension: u32) -> Option<(u32, u32)> {
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !bounds.size.width.is_finite()
+        || !bounds.size.height.is_finite()
+        || bounds.size.width <= 0.0
+        || bounds.size.height <= 0.0
+    {
+        return None;
+    }
+    let width = (bounds.size.width as f64 * scale as f64).ceil();
+    let height = (bounds.size.height as f64 * scale as f64).ceil();
+    if width < 1.0
+        || height < 1.0
+        || width > f64::from(maximum_dimension)
+        || height > f64::from(maximum_dimension)
+    {
+        return None;
+    }
+    let width = width as u32;
+    let height = height as u32;
+    let bytes = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    (bytes <= MAX_TRANSIENT_TEXTURE_BYTES).then_some((width, height))
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum TextureKey {
+    Text(TextTextureKey),
+    Image(ImageTextureKey),
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum TextTextureKey {
+    Plain {
+        text: String,
+        width_bits: u32,
+        height_bits: u32,
+        command_scale_bits: u32,
+        color: u32,
+        align: crate::TextAlign,
+        bold: bool,
+        wrap: bool,
+        presentation_scale_bits: u32,
+        font_generation: u64,
+    },
+    Styled {
+        text: String,
+        spans: Vec<crate::StyledTextSpan>,
+        width_bits: u32,
+        height_bits: u32,
+        command_scale_bits: u32,
+        font_size_bits: Option<u32>,
+        color: u32,
+        align: crate::TextAlign,
+        presentation_scale_bits: u32,
+        font_generation: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ImageTextureKey {
+    id: u16,
+    generation: u64,
+    high_density: bool,
+    width: u32,
+    height: u32,
+    allocation: usize,
+}
+
+enum BorrowedTextureKey<'a> {
+    Text(BorrowedTextTextureKey<'a>),
+    Image(ImageTextureKey),
+}
+
+enum BorrowedTextTextureKey<'a> {
+    Plain {
+        text: &'a str,
+        width_bits: u32,
+        height_bits: u32,
+        command_scale_bits: u32,
+        color: u32,
+        align: crate::TextAlign,
+        bold: bool,
+        wrap: bool,
+        presentation_scale_bits: u32,
+        font_generation: u64,
+    },
+    Styled {
+        text: &'a str,
+        spans: &'a [crate::StyledTextSpan],
+        width_bits: u32,
+        height_bits: u32,
+        command_scale_bits: u32,
+        font_size_bits: Option<u32>,
+        color: u32,
+        align: crate::TextAlign,
+        presentation_scale_bits: u32,
+        font_generation: u64,
+    },
+}
+
+impl BorrowedTextureKey<'_> {
+    fn hash_with(&self, state: &RandomState) -> u64 {
+        let mut hasher = state.build_hasher();
+        match self {
+            Self::Text(text) => {
+                0u8.hash(&mut hasher);
+                text.hash(&mut hasher);
+            }
+            Self::Image(image) => {
+                1u8.hash(&mut hasher);
+                image.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    fn equals(&self, owned: &TextureKey) -> bool {
+        match (self, owned) {
+            (Self::Text(left), TextureKey::Text(right)) => left.equals(right),
+            (Self::Image(left), TextureKey::Image(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    fn to_owned(&self) -> TextureKey {
+        match self {
+            Self::Text(text) => TextureKey::Text(text.to_owned()),
+            Self::Image(image) => TextureKey::Image(*image),
+        }
+    }
+
+    fn compared_bytes(&self) -> usize {
+        match self {
+            Self::Text(BorrowedTextTextureKey::Plain { text, .. }) => {
+                text.len() + std::mem::size_of::<TextTextureKey>()
+            }
+            Self::Text(BorrowedTextTextureKey::Styled { text, spans, .. }) => {
+                text.len() + std::mem::size_of_val(*spans) + std::mem::size_of::<TextTextureKey>()
+            }
+            Self::Image(_) => std::mem::size_of::<ImageTextureKey>(),
+        }
+    }
+
+    fn owned_dynamic_bytes(&self) -> usize {
+        match self {
+            Self::Text(BorrowedTextTextureKey::Plain { text, .. }) => text.len(),
+            Self::Text(BorrowedTextTextureKey::Styled { text, spans, .. }) => {
+                text.len() + std::mem::size_of_val(*spans)
+            }
+            Self::Image(_) => 0,
+        }
+    }
+}
+
+impl Hash for BorrowedTextTextureKey<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Plain {
+                text,
+                width_bits,
+                height_bits,
+                command_scale_bits,
+                color,
+                align,
+                bold,
+                wrap,
+                presentation_scale_bits,
+                font_generation,
+            } => {
+                0u8.hash(state);
+                text.hash(state);
+                width_bits.hash(state);
+                height_bits.hash(state);
+                command_scale_bits.hash(state);
+                color.hash(state);
+                align.hash(state);
+                bold.hash(state);
+                wrap.hash(state);
+                presentation_scale_bits.hash(state);
+                font_generation.hash(state);
+            }
+            Self::Styled {
+                text,
+                spans,
+                width_bits,
+                height_bits,
+                command_scale_bits,
+                font_size_bits,
+                color,
+                align,
+                presentation_scale_bits,
+                font_generation,
+            } => {
+                1u8.hash(state);
+                text.hash(state);
+                spans.hash(state);
+                width_bits.hash(state);
+                height_bits.hash(state);
+                command_scale_bits.hash(state);
+                font_size_bits.hash(state);
+                color.hash(state);
+                align.hash(state);
+                presentation_scale_bits.hash(state);
+                font_generation.hash(state);
+            }
+        }
+    }
+}
+
+impl BorrowedTextTextureKey<'_> {
+    fn equals(&self, owned: &TextTextureKey) -> bool {
+        match (self, owned) {
+            (
+                Self::Plain {
+                    text: a,
+                    width_bits: b,
+                    height_bits: c,
+                    command_scale_bits: d,
+                    color: e,
+                    align: f,
+                    bold: g,
+                    wrap: h,
+                    presentation_scale_bits: i,
+                    font_generation: j,
+                },
+                TextTextureKey::Plain {
+                    text: aa,
+                    width_bits: bb,
+                    height_bits: cc,
+                    command_scale_bits: dd,
+                    color: ee,
+                    align: ff,
+                    bold: gg,
+                    wrap: hh,
+                    presentation_scale_bits: ii,
+                    font_generation: jj,
+                },
+            ) => {
+                *a == aa
+                    && b == bb
+                    && c == cc
+                    && d == dd
+                    && e == ee
+                    && f == ff
+                    && g == gg
+                    && h == hh
+                    && i == ii
+                    && j == jj
+            }
+            (
+                Self::Styled {
+                    text: a,
+                    spans: b,
+                    width_bits: c,
+                    height_bits: d,
+                    command_scale_bits: e,
+                    font_size_bits: f,
+                    color: g,
+                    align: h,
+                    presentation_scale_bits: i,
+                    font_generation: j,
+                },
+                TextTextureKey::Styled {
+                    text: aa,
+                    spans: bb,
+                    width_bits: cc,
+                    height_bits: dd,
+                    command_scale_bits: ee,
+                    font_size_bits: ff,
+                    color: gg,
+                    align: hh,
+                    presentation_scale_bits: ii,
+                    font_generation: jj,
+                },
+            ) => {
+                *a == aa
+                    && *b == bb
+                    && c == cc
+                    && d == dd
+                    && e == ee
+                    && f == ff
+                    && g == gg
+                    && h == hh
+                    && i == ii
+                    && j == jj
+            }
+            _ => false,
+        }
+    }
+
+    fn to_owned(&self) -> TextTextureKey {
+        match self {
+            Self::Plain {
+                text,
+                width_bits,
+                height_bits,
+                command_scale_bits,
+                color,
+                align,
+                bold,
+                wrap,
+                presentation_scale_bits,
+                font_generation,
+            } => TextTextureKey::Plain {
+                text: (*text).to_owned(),
+                width_bits: *width_bits,
+                height_bits: *height_bits,
+                command_scale_bits: *command_scale_bits,
+                color: *color,
+                align: *align,
+                bold: *bold,
+                wrap: *wrap,
+                presentation_scale_bits: *presentation_scale_bits,
+                font_generation: *font_generation,
+            },
+            Self::Styled {
+                text,
+                spans,
+                width_bits,
+                height_bits,
+                command_scale_bits,
+                font_size_bits,
+                color,
+                align,
+                presentation_scale_bits,
+                font_generation,
+            } => TextTextureKey::Styled {
+                text: (*text).to_owned(),
+                spans: (*spans).to_vec(),
+                width_bits: *width_bits,
+                height_bits: *height_bits,
+                command_scale_bits: *command_scale_bits,
+                font_size_bits: *font_size_bits,
+                color: *color,
+                align: *align,
+                presentation_scale_bits: *presentation_scale_bits,
+                font_generation: *font_generation,
+            },
+        }
+    }
+}
+
+impl TextureKey {
+    fn dynamic_bytes(&self) -> usize {
+        match self {
+            Self::Text(TextTextureKey::Plain { text, .. }) => text.capacity(),
+            Self::Text(TextTextureKey::Styled { text, spans, .. }) => {
+                text.capacity() + spans.capacity() * std::mem::size_of::<crate::StyledTextSpan>()
+            }
+            Self::Image(_) => 0,
+        }
+    }
+}
+
+struct TextureCacheEntry {
+    key: TextureKey,
+    texture: Arc<wgpu::BindGroup>,
+    resident_bytes: usize,
+    texture_bytes: usize,
+    key_and_metadata_bytes: usize,
+    last_used: u64,
+}
+
 struct TextureCache {
-    entries: HashMap<String, Arc<wgpu::BindGroup>>,
+    hash_builder: RandomState,
+    entries: HashMap<u64, Vec<TextureCacheEntry>>,
     bytes: usize,
     peak_bytes: usize,
+    clock: u64,
+    evictions: u64,
+    eviction_scans: u64,
+    oversized: u64,
+    hits: u64,
+    misses: u64,
+    insertions: u64,
+    bytes_hashed: u64,
+    bytes_compared: u64,
+    byte_capacity: usize,
+}
+
+impl Default for TextureCache {
+    fn default() -> Self {
+        Self {
+            hash_builder: RandomState::new(),
+            entries: HashMap::new(),
+            bytes: 0,
+            peak_bytes: 0,
+            clock: 0,
+            evictions: 0,
+            eviction_scans: 0,
+            oversized: 0,
+            hits: 0,
+            misses: 0,
+            insertions: 0,
+            bytes_hashed: 0,
+            bytes_compared: 0,
+            byte_capacity: MAX_TEXTURE_CACHE_BYTES,
+        }
+    }
+}
+
+impl TextureCache {
+    fn get(&mut self, key: &BorrowedTextureKey<'_>) -> (Option<Arc<wgpu::BindGroup>>, usize) {
+        self.clock = self.clock.saturating_add(1);
+        self.bytes_hashed = self
+            .bytes_hashed
+            .saturating_add(key.compared_bytes() as u64);
+        let hash = key.hash_with(&self.hash_builder);
+        let Some(bucket) = self.entries.get_mut(&hash) else {
+            self.misses = self.misses.saturating_add(1);
+            return (None, 0);
+        };
+        let mut compared = 0;
+        for entry in bucket {
+            compared += key.compared_bytes();
+            if key.equals(&entry.key) {
+                entry.last_used = self.clock;
+                self.hits = self.hits.saturating_add(1);
+                self.bytes_compared = self.bytes_compared.saturating_add(compared as u64);
+                return (Some(entry.texture.clone()), compared);
+            }
+        }
+        self.misses = self.misses.saturating_add(1);
+        self.bytes_compared = self.bytes_compared.saturating_add(compared as u64);
+        (None, compared)
+    }
+
+    fn insert(
+        &mut self,
+        key: BorrowedTextureKey<'_>,
+        texture_bytes: usize,
+        texture: Arc<wgpu::BindGroup>,
+    ) -> (usize, usize) {
+        // Check the borrowed payload first so an oversized uncached texture
+        // does not pointlessly allocate an owned text key.
+        let key_and_metadata_bytes = key
+            .owned_dynamic_bytes()
+            .saturating_add(std::mem::size_of::<TextureCacheEntry>())
+            // Charge a full bucket vector header per entry. Collisions share
+            // it, so this deliberately overcounts rather than hiding control
+            // allocation outside the advertised resident bound.
+            .saturating_add(std::mem::size_of::<u64>())
+            .saturating_add(std::mem::size_of::<Vec<TextureCacheEntry>>())
+            .saturating_add(1);
+        let resident_bytes = texture_bytes.saturating_add(key_and_metadata_bytes);
+        if resident_bytes > self.byte_capacity {
+            self.oversized = self.oversized.saturating_add(1);
+            return (0, 0);
+        }
+        let owned = key.to_owned();
+        debug_assert_eq!(owned.dynamic_bytes(), key.owned_dynamic_bytes());
+        let mut evicted_entries = 0;
+        let mut evicted_bytes = 0;
+        while self.bytes.saturating_add(resident_bytes) > self.byte_capacity {
+            self.eviction_scans = self.eviction_scans.saturating_add(self.len() as u64);
+            let oldest = self
+                .entries
+                .iter()
+                .flat_map(|(hash, bucket)| {
+                    bucket
+                        .iter()
+                        .enumerate()
+                        .map(move |(index, entry)| (*hash, index, entry.last_used))
+                })
+                .min_by_key(|(_, _, last_used)| *last_used);
+            let Some((hash, index, _)) = oldest else {
+                break;
+            };
+            let bucket = self.entries.get_mut(&hash).expect("selected cache bucket");
+            let removed = bucket.swap_remove(index);
+            self.bytes = self.bytes.saturating_sub(removed.resident_bytes);
+            evicted_entries += 1;
+            evicted_bytes += removed.resident_bytes;
+            self.evictions = self.evictions.saturating_add(1);
+            if bucket.is_empty() {
+                self.entries.remove(&hash);
+            }
+        }
+        self.clock = self.clock.saturating_add(1);
+        let hash = key.hash_with(&self.hash_builder);
+        self.entries
+            .entry(hash)
+            .or_default()
+            .push(TextureCacheEntry {
+                key: owned,
+                texture,
+                resident_bytes,
+                texture_bytes,
+                key_and_metadata_bytes,
+                last_used: self.clock,
+            });
+        self.bytes += resident_bytes;
+        self.peak_bytes = self.peak_bytes.max(self.bytes);
+        self.insertions = self.insertions.saturating_add(1);
+        (evicted_entries, evicted_bytes)
+    }
+
+    fn len(&self) -> usize {
+        self.entries.values().map(Vec::len).sum()
+    }
+
+    fn texture_bytes(&self) -> usize {
+        self.entries
+            .values()
+            .flatten()
+            .map(|entry| entry.texture_bytes)
+            .sum()
+    }
+
+    fn key_and_metadata_bytes(&self) -> usize {
+        self.entries
+            .values()
+            .flatten()
+            .map(|entry| entry.key_and_metadata_bytes)
+            .sum()
+    }
+}
+
+fn borrowed_text_texture_key(
+    command: &PaintCommand,
+    presentation_scale: f32,
+    font_generation: u64,
+) -> BorrowedTextureKey<'_> {
+    match command {
+        PaintCommand::Text {
+            bounds,
+            text,
+            scale,
+            color,
+            align,
+            bold,
+            wrap,
+        } => BorrowedTextureKey::Text(BorrowedTextTextureKey::Plain {
+            text,
+            width_bits: bounds.size.width.to_bits(),
+            height_bits: bounds.size.height.to_bits(),
+            command_scale_bits: scale.to_bits(),
+            color: *color,
+            align: *align,
+            bold: *bold,
+            wrap: *wrap,
+            presentation_scale_bits: presentation_scale.to_bits(),
+            font_generation,
+        }),
+        PaintCommand::StyledText {
+            bounds,
+            text,
+            spans,
+            scale,
+            font_size,
+            color,
+            align,
+        } => BorrowedTextureKey::Text(BorrowedTextTextureKey::Styled {
+            text,
+            spans,
+            width_bits: bounds.size.width.to_bits(),
+            height_bits: bounds.size.height.to_bits(),
+            command_scale_bits: scale.to_bits(),
+            font_size_bits: font_size.map(f32::to_bits),
+            color: *color,
+            align: *align,
+            presentation_scale_bits: presentation_scale.to_bits(),
+            font_generation,
+        }),
+        _ => unreachable!("text cache keys only accept text paint commands"),
+    }
 }
 
 #[repr(C)]
@@ -197,10 +768,13 @@ impl GpuGraphics {
         Self::from_adapter(instance, None, adapter)
     }
 
-    fn texture(&self, key: String, width: u32, height: u32, pixels: &[u8]) -> Arc<wgpu::BindGroup> {
-        if let Some(texture) = self.textures.borrow().entries.get(&key) {
-            return texture.clone();
-        }
+    fn upload_cached_texture(
+        &self,
+        key: BorrowedTextureKey<'_>,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Arc<wgpu::BindGroup> {
         let texture = upload_texture(
             &self.device,
             &self.queue,
@@ -213,19 +787,14 @@ impl GpuGraphics {
         let texture_bytes = (width as usize)
             .saturating_mul(height as usize)
             .saturating_mul(4);
-        if texture_bytes > MAX_TEXTURE_CACHE_BYTES {
-            return texture;
-        }
         let mut cache = self.textures.borrow_mut();
-        if cache.bytes.saturating_add(texture_bytes) > MAX_TEXTURE_CACHE_BYTES {
-            crate::pipeline_trace::event!({"event": "texture_cache_reset", "cause": "capacity",
-                "removed_entries": cache.entries.len(), "removed_resident_bytes": cache.bytes});
-            cache.entries.clear();
-            cache.bytes = 0;
+        let (evicted_entries, _evicted_bytes) = cache.insert(key, texture_bytes, texture.clone());
+        if evicted_entries > 0 {
+            let _resident_entries = cache.len();
+            crate::pipeline_trace::event!({"event": "texture_cache_eviction", "cause": "capacity",
+                "removed_entries": evicted_entries, "removed_resident_bytes": _evicted_bytes,
+                "resident_entries": _resident_entries, "resident_bytes": cache.bytes});
         }
-        cache.bytes += texture_bytes;
-        cache.peak_bytes = cache.peak_bytes.max(cache.bytes);
-        cache.entries.insert(key, texture.clone());
         texture
     }
 
@@ -234,8 +803,23 @@ impl GpuGraphics {
         command: &PaintCommand,
         bounds: Rect,
         scale: f32,
-    ) -> Arc<wgpu::BindGroup> {
+    ) -> Option<Arc<wgpu::BindGroup>> {
+        let (width, height) =
+            text_texture_dimensions(bounds, scale, self.device.limits().max_texture_dimension_2d)?;
         let _key_started = crate::pipeline_trace::clock();
+        let font_generation = ProcessFontSystem::new().generation();
+        let key = borrowed_text_texture_key(command, scale, font_generation);
+        let _key_build_us = crate::pipeline_trace::micros(_key_started);
+        let (cached, _compared_bytes) = self.textures.borrow_mut().get(&key);
+        if let Some(texture) = cached {
+            crate::pipeline_trace::event!({"event": "text_lookup", "hit": true,
+                "key_build_us": _key_build_us, "lookup_key_allocations": 0, "lookup_key_owned_bytes": 0,
+                "bytes_hashed": key.compared_bytes(), "bytes_compared": _compared_bytes, "paint_command_clones": 0});
+            return Some(texture);
+        }
+        crate::pipeline_trace::event!({"event": "text_lookup", "hit": false,
+            "key_build_us": _key_build_us, "lookup_key_allocations": 0, "lookup_key_owned_bytes": 0,
+            "bytes_hashed": key.compared_bytes(), "bytes_compared": _compared_bytes, "paint_command_clones": 0});
         let mut local = command.clone();
         match &mut local {
             PaintCommand::Text { bounds, .. } | PaintCommand::StyledText { bounds, .. } => {
@@ -244,17 +828,6 @@ impl GpuGraphics {
             }
             _ => unreachable!(),
         }
-        let key = format!("text:{scale:?}:{local:?}");
-        let _key_build_us = crate::pipeline_trace::micros(_key_started);
-        if let Some(texture) = self.textures.borrow().entries.get(&key) {
-            crate::pipeline_trace::event!({"event": "text_lookup", "hit": true,
-                "key_build_us": _key_build_us, "key_string_bytes": key.len(), "paint_command_clones": 1});
-            return texture.clone();
-        }
-        crate::pipeline_trace::event!({"event": "text_lookup", "hit": false,
-            "key_build_us": _key_build_us, "key_string_bytes": key.len(), "paint_command_clones": 1});
-        let width = (bounds.size.width * scale).ceil().max(1.0) as u32;
-        let height = (bounds.size.height * scale).ceil().max(1.0) as u32;
         let _text_raster_started = crate::pipeline_trace::clock();
         let mut renderer = self.text_renderer.borrow_mut();
         renderer.resize(width, height, scale);
@@ -274,7 +847,7 @@ impl GpuGraphics {
             renderer.suspend();
         }
         drop(renderer);
-        self.texture(key, width, height, &bytes)
+        Some(self.upload_cached_texture(key, width, height, &bytes))
     }
 }
 
@@ -1200,6 +1773,51 @@ impl GpuPresenter {
                     after[2].saturating_sub(before[2]),
                 ]
             });
+        let (
+            _texture_cache_entries,
+            _texture_cache_resident_bytes,
+            _texture_cache_texture_bytes,
+            _texture_cache_key_and_metadata_bytes,
+            _texture_cache_peak_bytes,
+            _texture_cache_hits,
+            _texture_cache_misses,
+            _texture_cache_insertions,
+            _texture_cache_evictions,
+            _texture_cache_eviction_scans,
+            _texture_cache_oversized,
+            _texture_cache_bytes_hashed,
+            _texture_cache_bytes_compared,
+        ) = {
+            let cache = graphics.textures.borrow();
+            (
+                cache.len(),
+                cache.bytes,
+                cache.texture_bytes(),
+                cache.key_and_metadata_bytes(),
+                cache.peak_bytes,
+                cache.hits,
+                cache.misses,
+                cache.insertions,
+                cache.evictions,
+                cache.eviction_scans,
+                cache.oversized,
+                cache.bytes_hashed,
+                cache.bytes_compared,
+            )
+        };
+        crate::pipeline_trace::event!({
+            "event": "texture_cache", "entries": _texture_cache_entries,
+            "resident_bytes": _texture_cache_resident_bytes,
+            "texture_bytes": _texture_cache_texture_bytes,
+            "key_and_metadata_bytes": _texture_cache_key_and_metadata_bytes,
+            "peak_bytes": _texture_cache_peak_bytes, "budget_bytes": MAX_TEXTURE_CACHE_BYTES,
+            "hits": _texture_cache_hits, "misses": _texture_cache_misses,
+            "insertions": _texture_cache_insertions, "evictions": _texture_cache_evictions,
+            "eviction_scan_entries": _texture_cache_eviction_scans,
+            "oversized_uncached": _texture_cache_oversized, "whole_resets": 0,
+            "bytes_hashed": _texture_cache_bytes_hashed, "bytes_compared": _texture_cache_bytes_compared,
+            "externally_held_and_inflight_bytes": null
+        });
         crate::pipeline_trace::event!({
             "event": "gpu_frame", "physical_width": width, "physical_height": height, "scale": scale,
             "provenance_validation_visits": decision.validation_visits,
@@ -1225,8 +1843,8 @@ impl GpuPresenter {
             "present_call_us": crate::pipeline_trace::micros(_present_started),
             "framebuffer_live_bytes": self.retained_diagnostics.live_bytes,
             "framebuffer_peak_bytes": self.retained_diagnostics.peak_bytes,
-            "texture_cache_resident_bytes": graphics.textures.borrow().bytes,
-            "texture_cache_peak_bytes": graphics.textures.borrow().peak_bytes,
+            "texture_cache_resident_bytes": _texture_cache_resident_bytes,
+            "texture_cache_peak_bytes": _texture_cache_peak_bytes,
             "externally_held_and_inflight_texture_bytes": null,
             "compositor_presentation_timestamp": null,
             "gpu_execution_us": null,
@@ -1782,8 +2400,8 @@ impl Frame {
                     if bounds.size.width > 0.0
                         && bounds.size.height > 0.0
                         && intersect(*bounds, *self.clips.last().unwrap()).is_some()
+                        && let Some(texture) = graphics.text_texture(command, *bounds, self.scale)
                     {
-                        let texture = graphics.text_texture(command, *bounds, self.scale);
                         self.rect(*bounds, [1.0; 4], texture, DrawKind::Textured, 0.0, 0.0);
                     }
                 }
@@ -1807,14 +2425,16 @@ impl Frame {
                     if selected.width() == 0 || selected.height() == 0 {
                         continue;
                     }
-                    let key = format!(
-                        "image:{id}:{generation}:{}:{}:{}:{:p}",
-                        self.scale >= 1.5,
-                        selected.width(),
-                        selected.height(),
-                        Arc::as_ptr(selected),
-                    );
-                    let cached = graphics.textures.borrow().entries.get(&key).cloned();
+                    let image_key = ImageTextureKey {
+                        id: *id,
+                        generation: *generation,
+                        high_density: self.scale >= 1.5,
+                        width: selected.width(),
+                        height: selected.height(),
+                        allocation: Arc::as_ptr(selected) as usize,
+                    };
+                    let key = BorrowedTextureKey::Image(image_key);
+                    let cached = graphics.textures.borrow_mut().get(&key).0;
                     let texture = if let Some(cached) = cached {
                         cached
                     } else {
@@ -1825,7 +2445,12 @@ impl Frame {
                                 *channel = ((*channel as u16 * alpha + 127) / 255) as u8;
                             }
                         }
-                        graphics.texture(key, selected.width(), selected.height(), &bytes)
+                        graphics.upload_cached_texture(
+                            key,
+                            selected.width(),
+                            selected.height(),
+                            &bytes,
+                        )
                     };
                     self.rect(*bounds, [1.0; 4], texture, DrawKind::Textured, 0.0, 0.0);
                 }
@@ -1886,6 +2511,457 @@ fn mix(start: u32, end: u32, at: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn image_cache_key(id: u16) -> ImageTextureKey {
+        ImageTextureKey {
+            id,
+            generation: 1,
+            high_density: false,
+            width: 4,
+            height: 4,
+            allocation: id as usize,
+        }
+    }
+
+    fn plain_text_command() -> PaintCommand {
+        PaintCommand::Text {
+            bounds: Rect::new(11.0, 13.0, 180.0, 42.0),
+            text: "Cache me".to_owned(),
+            scale: 1.25,
+            color: 0xff336699,
+            align: crate::TextAlign::Center,
+            bold: false,
+            wrap: true,
+        }
+    }
+
+    fn assert_text_key_changed(base: &TextureKey, command: &PaintCommand) {
+        assert_ne!(borrowed_text_texture_key(command, 2.0, 7).to_owned(), *base);
+    }
+
+    #[test]
+    fn plain_text_key_covers_every_raster_dependency_but_translation() {
+        let command = plain_text_command();
+        let base = borrowed_text_texture_key(&command, 2.0, 7).to_owned();
+        let mut translated = command.clone();
+        if let PaintCommand::Text { bounds, .. } = &mut translated {
+            bounds.origin.x += 900.0;
+            bounds.origin.y -= 400.0;
+        }
+        assert_eq!(
+            borrowed_text_texture_key(&translated, 2.0, 7).to_owned(),
+            base
+        );
+
+        for mutation in 0..8 {
+            let mut changed = command.clone();
+            if let PaintCommand::Text {
+                bounds,
+                text,
+                scale,
+                color,
+                align,
+                bold,
+                wrap,
+            } = &mut changed
+            {
+                match mutation {
+                    0 => text.push('!'),
+                    1 => bounds.size.width += 1.0,
+                    2 => bounds.size.height += 1.0,
+                    3 => *scale += 0.25,
+                    4 => *color ^= 1,
+                    5 => *align = crate::TextAlign::End,
+                    6 => *bold = !*bold,
+                    7 => *wrap = !*wrap,
+                    _ => unreachable!(),
+                }
+            }
+            assert_text_key_changed(&base, &changed);
+        }
+        assert_ne!(borrowed_text_texture_key(&command, 1.5, 7).to_owned(), base);
+        assert_ne!(borrowed_text_texture_key(&command, 2.0, 8).to_owned(), base);
+    }
+
+    #[test]
+    fn text_texture_dimensions_reject_invalid_and_unbounded_inputs() {
+        let bounds = Rect::new(0.0, 0.0, 100.0, 20.0);
+        assert_eq!(text_texture_dimensions(bounds, 2.0, 8192), Some((200, 40)));
+        assert_eq!(text_texture_dimensions(bounds, f32::NAN, 8192), None);
+        assert_eq!(text_texture_dimensions(bounds, f32::INFINITY, 8192), None);
+        assert_eq!(text_texture_dimensions(bounds, 0.0, 8192), None);
+        assert_eq!(
+            text_texture_dimensions(Rect::new(0.0, 0.0, f32::NAN, 20.0), 1.0, 8192),
+            None
+        );
+        assert_eq!(
+            text_texture_dimensions(Rect::new(0.0, 0.0, 9000.0, 20.0), 1.0, 8192),
+            None
+        );
+        assert_eq!(
+            text_texture_dimensions(Rect::new(0.0, 0.0, 9000.0, 9000.0), 1.0, 16384),
+            None
+        );
+    }
+
+    #[test]
+    fn styled_text_key_covers_spans_font_size_and_float_bits() {
+        let span = crate::StyledTextSpan {
+            range: 0..5,
+            bold: true,
+            italic: false,
+            monospace: false,
+            font_family: Some(Arc::from("serif")),
+            strikethrough: false,
+            underline: crate::TextUnderlineStyle::Single,
+            color: Some(0xff112233),
+            background: None,
+        };
+        let command = PaintCommand::StyledText {
+            bounds: Rect::new(3.0, 4.0, 140.0, 60.0),
+            text: "styled".to_owned(),
+            spans: vec![span],
+            scale: 1.0,
+            font_size: Some(17.0),
+            color: 0xffabcdef,
+            align: crate::TextAlign::Start,
+        };
+        let base = borrowed_text_texture_key(&command, 1.0, 3).to_owned();
+        for mutation in 0..7 {
+            let mut changed = command.clone();
+            if let PaintCommand::StyledText {
+                bounds,
+                text,
+                spans,
+                scale,
+                font_size,
+                color,
+                align,
+            } = &mut changed
+            {
+                match mutation {
+                    0 => text.push('!'),
+                    1 => spans[0].italic = true,
+                    2 => bounds.size.width += 1.0,
+                    3 => bounds.size.height += 1.0,
+                    4 => *scale = f32::from_bits(scale.to_bits() + 1),
+                    5 => *font_size = Some(f32::from_bits(17.0f32.to_bits() + 1)),
+                    6 => {
+                        *color ^= 1;
+                        *align = crate::TextAlign::End;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            assert_ne!(borrowed_text_texture_key(&changed, 1.0, 3).to_owned(), base);
+        }
+        assert_ne!(
+            borrowed_text_texture_key(&command, f32::NAN, 3).to_owned(),
+            base
+        );
+        assert_ne!(borrowed_text_texture_key(&command, 1.0, 4).to_owned(), base);
+        assert_ne!(
+            borrowed_text_texture_key(&plain_text_command(), 1.0, 3).to_owned(),
+            base
+        );
+    }
+
+    #[test]
+    fn texture_cache_evicts_only_the_least_recently_used_entries() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let mut cache = TextureCache {
+            byte_capacity: usize::MAX,
+            ..TextureCache::default()
+        };
+        cache.insert(
+            BorrowedTextureKey::Image(image_cache_key(1)),
+            64,
+            graphics.white.clone(),
+        );
+        let one_entry_bytes = cache.bytes;
+        cache.insert(
+            BorrowedTextureKey::Image(image_cache_key(2)),
+            64,
+            graphics.white.clone(),
+        );
+        assert_eq!(cache.bytes, one_entry_bytes * 2);
+        cache.byte_capacity = one_entry_bytes * 2;
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(1)))
+                .0
+                .is_some()
+        );
+        let (evicted, _) = cache.insert(
+            BorrowedTextureKey::Image(image_cache_key(3)),
+            64,
+            graphics.white.clone(),
+        );
+        assert_eq!(evicted, 1);
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(1)))
+                .0
+                .is_some()
+        );
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(2)))
+                .0
+                .is_none()
+        );
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(3)))
+                .0
+                .is_some()
+        );
+        assert!(cache.bytes <= cache.byte_capacity);
+    }
+
+    #[test]
+    fn texture_cache_uses_exact_equality_inside_forced_hash_collision() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let mut cache = TextureCache::default();
+        let requested = image_cache_key(7);
+        let hash = BorrowedTextureKey::Image(requested).hash_with(&cache.hash_builder);
+        cache.entries.insert(
+            hash,
+            vec![
+                TextureCacheEntry {
+                    key: TextureKey::Image(image_cache_key(8)),
+                    texture: graphics.white.clone(),
+                    resident_bytes: 1,
+                    texture_bytes: 0,
+                    key_and_metadata_bytes: 1,
+                    last_used: 0,
+                },
+                TextureCacheEntry {
+                    key: TextureKey::Image(requested),
+                    texture: graphics.white.clone(),
+                    resident_bytes: 1,
+                    texture_bytes: 0,
+                    key_and_metadata_bytes: 1,
+                    last_used: 0,
+                },
+            ],
+        );
+        let (found, compared) = cache.get(&BorrowedTextureKey::Image(requested));
+        assert!(found.is_some());
+        assert_eq!(compared, std::mem::size_of::<ImageTextureKey>() * 2);
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(9)))
+                .0
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn oversized_texture_is_returned_without_disturbing_residents() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let mut cache = TextureCache {
+            byte_capacity: 256,
+            ..TextureCache::default()
+        };
+        cache.insert(
+            BorrowedTextureKey::Image(image_cache_key(1)),
+            32,
+            graphics.white.clone(),
+        );
+        let before = cache.bytes;
+        let (evicted, _) = cache.insert(
+            BorrowedTextureKey::Image(image_cache_key(2)),
+            cache.byte_capacity,
+            graphics.white.clone(),
+        );
+        assert_eq!(evicted, 0);
+        assert_eq!(cache.bytes, before);
+        assert_eq!(cache.oversized, 1);
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(1)))
+                .0
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn lru_trace_preserves_hot_subset_better_than_clear_all() {
+        fn replay(clear_all: bool) -> (usize, usize) {
+            let mut resident = Vec::<u16>::new();
+            let mut misses = 0;
+            let mut evictions = 0;
+            let trace = (0..40).flat_map(|cold| [1, 2, 1, 2, 100 + cold]);
+            for key in trace {
+                if let Some(index) = resident.iter().position(|entry| *entry == key) {
+                    let hit = resident.remove(index);
+                    resident.push(hit);
+                    continue;
+                }
+                misses += 1;
+                if resident.len() == 4 {
+                    if clear_all {
+                        evictions += resident.len();
+                        resident.clear();
+                    } else {
+                        resident.remove(0);
+                        evictions += 1;
+                    }
+                }
+                resident.push(key);
+            }
+            (misses, evictions)
+        }
+        let selective = replay(false);
+        let legacy = replay(true);
+        assert!(
+            selective.0 < legacy.0,
+            "selective={selective:?} clear-all={legacy:?}"
+        );
+        assert!(
+            selective.1 < legacy.1,
+            "selective={selective:?} clear-all={legacy:?}"
+        );
+    }
+
+    #[test]
+    fn translated_text_reuses_texture_and_changed_text_does_not() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let command = plain_text_command();
+        let bounds = match &command {
+            PaintCommand::Text { bounds, .. } => *bounds,
+            _ => unreachable!(),
+        };
+        let first = graphics.text_texture(&command, bounds, 1.0).unwrap();
+        let mut translated = command.clone();
+        let translated_bounds = match &mut translated {
+            PaintCommand::Text { bounds, .. } => {
+                bounds.origin.x += 37.0;
+                bounds.origin.y += 19.0;
+                *bounds
+            }
+            _ => unreachable!(),
+        };
+        let reused = graphics
+            .text_texture(&translated, translated_bounds, 1.0)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &reused));
+
+        let mut changed = translated;
+        if let PaintCommand::Text { text, .. } = &mut changed {
+            text.push('!');
+        }
+        let changed_texture = graphics
+            .text_texture(&changed, translated_bounds, 1.0)
+            .unwrap();
+        assert!(!Arc::ptr_eq(&first, &changed_texture));
+        let cache = graphics.textures.borrow();
+        assert_eq!(cache.hits, 1);
+        assert_eq!(cache.misses, 2);
+        assert_eq!(cache.insertions, 2);
+    }
+
+    #[test]
+    fn eviction_drops_only_cache_ownership_not_in_flight_handles() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let mut cache = TextureCache {
+            byte_capacity: usize::MAX,
+            ..TextureCache::default()
+        };
+        cache.insert(
+            BorrowedTextureKey::Image(image_cache_key(1)),
+            64,
+            graphics.white.clone(),
+        );
+        let held = cache
+            .get(&BorrowedTextureKey::Image(image_cache_key(1)))
+            .0
+            .expect("resident handle");
+        cache.byte_capacity = cache.bytes + "mixed".len();
+        cache.insert(
+            BorrowedTextureKey::Text(BorrowedTextTextureKey::Plain {
+                text: "mixed",
+                width_bits: 10.0f32.to_bits(),
+                height_bits: 10.0f32.to_bits(),
+                command_scale_bits: 1.0f32.to_bits(),
+                color: 0xffffffff,
+                align: crate::TextAlign::Start,
+                bold: false,
+                wrap: false,
+                presentation_scale_bits: 1.0f32.to_bits(),
+                font_generation: 1,
+            }),
+            64,
+            graphics.white.clone(),
+        );
+        assert!(
+            cache
+                .get(&BorrowedTextureKey::Image(image_cache_key(1)))
+                .0
+                .is_none()
+        );
+        assert!(Arc::strong_count(&held) >= 1);
+        drop(cache);
+        assert!(Arc::strong_count(&held) >= 1);
+    }
+
+    #[test]
+    #[ignore = "release-profile typed text-cache hit microbenchmark"]
+    fn typed_text_cache_hit_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let command = plain_text_command();
+        let scale = 2.0;
+        let generation = ProcessFontSystem::new().generation();
+        let mut cache = TextureCache::default();
+        cache.insert(
+            borrowed_text_texture_key(&command, scale, generation),
+            64,
+            graphics.white.clone(),
+        );
+
+        let mut local = command.clone();
+        if let PaintCommand::Text { bounds, .. } = &mut local {
+            bounds.origin.x = 0.0;
+            bounds.origin.y = 0.0;
+        }
+        let legacy_key = format!("text:{scale:?}:{local:?}");
+        let legacy = HashMap::from([(legacy_key, graphics.white.clone())]);
+        let iterations = 50_000u32;
+        let mut pairs = Vec::new();
+        for pair in 0..7 {
+            let legacy_started = Instant::now();
+            for _ in 0..iterations {
+                let mut local = black_box(&command).clone();
+                if let PaintCommand::Text { bounds, .. } = &mut local {
+                    bounds.origin.x = 0.0;
+                    bounds.origin.y = 0.0;
+                }
+                let key = format!("text:{scale:?}:{local:?}");
+                black_box(legacy.get(&key).expect("legacy resident hit"));
+            }
+            let legacy_ns = legacy_started.elapsed().as_nanos();
+            let typed_started = Instant::now();
+            for _ in 0..iterations {
+                let key = borrowed_text_texture_key(black_box(&command), scale, generation);
+                black_box(cache.get(&key).0.expect("typed resident hit"));
+            }
+            let typed_ns = typed_started.elapsed().as_nanos();
+            pairs.push((legacy_ns, typed_ns));
+            black_box(pair);
+        }
+        let legacy_ns = pairs.iter().map(|pair| pair.0).collect::<Vec<_>>();
+        let typed_ns = pairs.iter().map(|pair| pair.1).collect::<Vec<_>>();
+        println!(
+            "typed_text_cache_hit_benchmark pairs={} iterations_per_arm={} legacy_ns={legacy_ns:?} typed_ns={typed_ns:?} adapter={:?} scope=CPU-construction-plus-resident-lookup",
+            pairs.len(),
+            iterations,
+            graphics.adapter.get_info()
+        );
+    }
 
     type DrawStreamEntry = (Vertex, (u32, u32, u32, u32), DrawKind, usize);
 

@@ -12,7 +12,14 @@ import time
 parser = argparse.ArgumentParser(description=__doc__)
 for name in ['before-binary','after-binary','before-source','after-source','wayland-socket','output']:
     parser.add_argument('--'+name, type=Path, required=True)
+parser.add_argument('--label', default='cached-native-getters')
+parser.add_argument('--scope', default='Normal release builds; detailed endpoint ownership walks disabled in both variants.')
+parser.add_argument('--compositor-isolation', choices=['private', 'shared'], default='private')
+parser.add_argument('--expected-physical-viewport', default='800,720')
 args = parser.parse_args()
+expected_physical_viewport = [int(value) for value in args.expected_physical_viewport.split(',')]
+if len(expected_physical_viewport) != 2 or any(value <= 0 for value in expected_physical_viewport):
+    parser.error('--expected-physical-viewport must be WIDTH,HEIGHT')
 root = Path(__file__).resolve().parents[1]
 socket = args.wayland_socket.resolve()
 if not socket.is_socket():
@@ -24,8 +31,9 @@ binaries = {'before':args.before_binary.resolve(),'after':args.after_binary.reso
 sources = {'before':args.before_source.resolve(),'after':args.after_source.resolve()}
 protocol = {'status':'running','pairs':5,'runs':[], 'binarySha256':{k:sha(p) for k,p in binaries.items()},
             'traceSha256':sha(trace),'warmupSeconds':3,'processSamplesPerRun':11,'traceSteps':47,
-            'scope':'Normal releasejsx builds; only three full-inspection native getters reverted in before source. Detailed endpoint ownership walks disabled in both. Shared private compositor excluded; no concurrent builds/benchmarks.',
-            'privateSocket':str(socket)}
+            'scope':args.scope, 'compositorIsolation':args.compositor_isolation,
+            'compositorIncludedInProcessTotals':False, 'waylandSocket':str(socket),
+            'expectedPhysicalViewport':expected_physical_viewport}
 try:
     for pair in range(1,6):
         for variant in (['before','after'] if pair%2 else ['after','before']):
@@ -36,7 +44,7 @@ try:
             env.update(XDG_RUNTIME_DIR=str(socket.parent),WAYLAND_DISPLAY=socket.name,
                        TWINKLE_BACKEND_REPORT=str(run/'backend.txt'),TWINKLE_BENCH_SAMPLER_READY=str(run/'sampling-ready.json'))
             command = ['python3','scripts/live_pipeline_sample.py','--output',str(run),'--source',str(sources[variant]),
-                       '--label',f'cached-native-getters-{variant}','--warmup','3','--seconds','11','--',
+                       '--label',f'{args.label}-{variant}','--warmup','3','--seconds','11','--',
                        str(binaries[variant]),'--replay',str(trace),'--output',str(run/'trace')]
             print(f'Pair{pair}: {variant}',flush=True)
             result = subprocess.run(command,cwd=root,env=env,capture_output=True,text=True)
@@ -50,7 +58,7 @@ try:
                 raise RuntimeError('Incomplete or externally disturbed trial')
             if replay['nativeResources'] is not None or replay['jsxRuntime'] is not None:
                 raise RuntimeError('Expensive endpoint observers unexpectedly enabled')
-            if len(replay['steps'])!=47 or replay['nativeWindow']['physicalViewport']!=[800,720] or replay['scale']!=1:
+            if len(replay['steps'])!=47 or replay['nativeWindow']['physicalViewport']!=expected_physical_viewport or replay['scale']!=1:
                 raise RuntimeError('Trace/window mismatch')
             if 'backend_gpu' not in backend or 'backend_software' in backend:
                 raise RuntimeError('Backend mismatch')
