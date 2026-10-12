@@ -76,6 +76,38 @@ allocation-free and source-sublinear. The current native-frame allocation count
 includes construction of a fresh declarative tree and `UiFrame`; it is not an
 unchanged retained-host presentation.
 
+## GPU presenter admission
+
+The native dashboard has an opt-in deterministic admission sequence: initial
+paint, unchanged rebuild, hover inspection, then controlled zoom. Build with
+attribution and run it against a real GPU backend, then validate the trace:
+
+```sh
+cargo build --release -p twinkle-workbench \
+  --features charts,pipeline-attribution,pipeline-allocator \
+  --bin twinkle-chart-dashboard
+TWINKLE_RENDERER=gpu TWINKLE_PIPELINE_TRACE=/tmp/twinkle-chart-gpu.jsonl \
+  timeout 3s target/release/twinkle-chart-dashboard --gpu-admission
+python3 scripts/summarize_chart_gpu_admission.py \
+  /tmp/twinkle-chart-gpu.jsonl
+```
+
+Measured 2026-10-12 on the reference machine with an NVIDIA GeForce RTX 4080
+SUPER, Vulkan, driver 595.99.02, 1080×760 logical window at scale 1:
+
+| Transition | Prepared commands | Scene draws | Upload calls | Upload bytes | Presenter call |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Initial | 24 | 21 | 1 | 9,504 | 27.08 ms |
+| Unchanged | 0 | 0 | 0 | 0 | 449 µs |
+| Hover inspection | 24 | 21 | 1 | 9,504 | 1.08 ms |
+| Controlled zoom | 26 | 21 | 1 | 9,216 | 2.76 ms |
+
+The presenter owns two immutable fullscreen auxiliary quads (576 bytes total),
+uploaded once during presenter construction rather than once per frame. The
+table counts per-frame vertex uploads. Submission timing is the CPU call to
+finalize and enqueue commands; GPU completion and compositor presentation
+timestamps are unavailable and are not inferred.
+
 The unchanged dashboard result covers calls through all 16 `ChartView`s and
 confirms the identical-input path does not clone indexes or prepare models.
 The 1M inspection result uses the accepted ordered index rather than scanning
@@ -85,9 +117,8 @@ Cold costs are reported separately and are not represented as interactive work.
 
 ## Scope still requiring evidence
 
-This harness now measures allocator requests and process RSS/HWM, but does not
-yet capture renderer upload counts, GPU submission, or software/GPU raster
-agreement. Those require the renderer admission harness rather than inference
-from preparation timings. The results above therefore establish chart
-preparation/index/native-tree/allocation behavior only; they are not the
-complete specification-0025 performance gate.
+The renderer trace now captures one-chart upload and CPU submission accounting,
+but the required 16-chart GPU transition and software/GPU raster agreement are
+still outstanding. GPU execution completion and compositor display timestamps
+are unavailable on the current presenter boundary. The results above therefore
+remain incomplete evidence for the full specification-0025 performance gate.

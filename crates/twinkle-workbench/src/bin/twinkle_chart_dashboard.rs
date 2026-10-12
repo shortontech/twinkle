@@ -1,6 +1,6 @@
 //! Stateful native chart consumer using only public `twinkle-charts` APIs.
 
-use std::{collections::BTreeSet, error::Error, sync::Arc};
+use std::{collections::BTreeSet, error::Error, sync::Arc, time::Duration};
 
 use twinkle::retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions};
 use twinkle::{
@@ -47,6 +47,7 @@ struct Dashboard {
     revision: u64,
     drag_origin: Option<(Point, Viewport)>,
     status: String,
+    gpu_admission_step: Option<u8>,
 }
 
 impl Dashboard {
@@ -75,6 +76,7 @@ impl Dashboard {
             revision: 1,
             drag_origin: None,
             status: "Hover a datum or use keyboard/controller navigation".into(),
+            gpu_admission_step: None,
         };
         dashboard.prepare()?;
         Ok(dashboard)
@@ -111,6 +113,11 @@ impl Dashboard {
         if let Err(error) = self.prepare() {
             self.status = error.to_string();
         }
+    }
+
+    fn enable_gpu_admission(mut self) -> Self {
+        self.gpu_admission_step = Some(0);
+        self
     }
 }
 
@@ -212,6 +219,43 @@ impl Application for Dashboard {
                 Err(error) => self.status = error.to_string(),
             },
         }
+    }
+
+    fn poll(&mut self) -> bool {
+        let Some(step) = self.gpu_admission_step else {
+            return false;
+        };
+        match step {
+            // Rebuild an unchanged declaration first so the presenter trace
+            // records retained scene reuse independently of chart mutation.
+            0 => self.gpu_admission_step = Some(1),
+            1 => {
+                let _ = self
+                    .chart
+                    .inspect_nearest_detail(Point { x: 380.0, y: 205.0 });
+                self.status = "GPU admission hover".into();
+                self.gpu_admission_step = Some(2);
+            }
+            2 => {
+                if let Some(ChartEvent::ViewportChanged(viewport)) = self
+                    .chart
+                    .viewport_event(ViewportCommand::ZoomIn, Self::policy())
+                {
+                    self.apply_viewport(viewport);
+                }
+                self.status = "GPU admission zoom".into();
+                self.gpu_admission_step = Some(3);
+            }
+            _ => {
+                self.gpu_admission_step = None;
+                return false;
+            }
+        }
+        true
+    }
+
+    fn poll_interval(&self) -> Option<Duration> {
+        self.gpu_admission_step.map(|_| Duration::from_millis(250))
     }
 
     fn view(&self, context: ViewContext) -> impl twinkle::View<Message> {
@@ -342,7 +386,13 @@ fn data(limits: &ChartLimits) -> Result<ChartData, twinkle_charts::ChartError> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    twinkle::run(Dashboard::new()?)
+    let dashboard = Dashboard::new()?;
+    let dashboard = if std::env::args().any(|argument| argument == "--gpu-admission") {
+        dashboard.enable_gpu_admission()
+    } else {
+        dashboard
+    };
+    twinkle::run(dashboard)
 }
 
 #[cfg(test)]

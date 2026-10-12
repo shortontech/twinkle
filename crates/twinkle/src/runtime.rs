@@ -7823,6 +7823,23 @@ mod tests {
     }
 
     #[test]
+    fn identical_full_rebuild_proves_empty_paint_damage() {
+        struct App;
+        impl Application for App {
+            type Message = ();
+            fn update(&mut self, _: ()) {}
+            fn view(&self, _: ViewContext) -> impl crate::View<()> {
+                crate::Text::new("unchanged")
+            }
+        }
+
+        let mut host = UiHost::new(App, 320, 100);
+        assert!(host.retained_paint_damage().is_none());
+        host.rebuild();
+        assert_eq!(host.retained_paint_damage(), Some([].as_slice()));
+    }
+
+    #[test]
     fn hover_with_offscreen_editors_and_dropdowns_reuses_layout_and_matches_cold_frame() {
         struct App;
         impl Application for App {

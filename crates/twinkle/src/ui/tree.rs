@@ -2558,6 +2558,21 @@ impl<Message: Clone> UiFrame<Message> {
         tree.transient_kind_clone_allocations = transient_overlay.kind_clone_allocations();
         tree.transient_overlay_storage_bytes = transient_overlay.storage_bytes();
         tree.transient_overlay_table_allocations = transient_overlay.table_allocations();
+        // A full declarative rebuild may still reproduce the accepted display
+        // list exactly (for example, an application poll whose domain state did
+        // not alter presentation). Preserve that authoritative fact for native
+        // presenters instead of forcing a full scene upload merely because the
+        // rebuild did not use the narrower retained-paint refresh path.
+        if !tree
+            .commands
+            .iter()
+            .any(|command| matches!(command, PaintCommand::BackdropBlur { .. }))
+            && previous.is_some_and(|previous| {
+                previous.viewport == tree.viewport && previous.commands == tree.commands
+            })
+        {
+            tree.paint_damage = Some(Vec::new());
+        }
         tree.declaration_root = Some(root);
         tree.release_build_scratch();
         crate::pipeline_trace::event!({

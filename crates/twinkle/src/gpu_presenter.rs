@@ -11,6 +11,7 @@ use crate::backend::PaintCommand;
 use crate::{DamageRegion, GradientAxis, Point, Rect, SoftwareRenderer};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use twinkle_render_assets::ProcessFontSystem;
+use wgpu::util::DeviceExt;
 
 const SHADER: &str = r#"
 struct VertexIn {
@@ -973,6 +974,7 @@ struct GpuPresenter {
     retained_diagnostics: RetainedFramebufferDiagnostics,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_capacity: usize,
+    auxiliary_vertex_buffer: wgpu::Buffer,
     reuse_preparation_bypass: bool,
     incremental_preparation_enabled: bool,
     prepared_scene: Option<PreparedScene>,
@@ -1252,6 +1254,17 @@ impl GpuPresenter {
                     multiview_mask: None,
                     cache: None,
                 });
+        let mut auxiliary_vertices = Vec::with_capacity(12);
+        auxiliary_vertices.extend_from_slice(&fullscreen_vertices([0.0; 4]));
+        auxiliary_vertices.extend_from_slice(&fullscreen_vertices([1.0; 4]));
+        let auxiliary_vertex_buffer =
+            graphics
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Twinkle presenter auxiliary vertices"),
+                    contents: bytemuck::cast_slice(&auxiliary_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
         Ok(Self {
             surface,
             config,
@@ -1263,6 +1276,7 @@ impl GpuPresenter {
             retained_diagnostics: RetainedFramebufferDiagnostics::default(),
             vertex_buffer: None,
             vertex_capacity: 0,
+            auxiliary_vertex_buffer,
             reuse_preparation_bypass: std::env::var_os(
                 "TWINKLE_GPU_FORCE_LEGACY_REUSE_PREPARATION",
             )
@@ -1490,15 +1504,6 @@ impl GpuPresenter {
         } else {
             scene_vertex_count
         };
-        let clear_start = preserved_scene_vertex_count as u32;
-        let mut auxiliary_vertices = Vec::with_capacity(12);
-        if damage_scissor.is_some() {
-            auxiliary_vertices.extend_from_slice(&fullscreen_vertices([0.0; 4]));
-        }
-        let composite_start = clear_start + auxiliary_vertices.len() as u32;
-        if retained {
-            auxiliary_vertices.extend_from_slice(&fullscreen_vertices([1.0; 4]));
-        }
         let _acquisition_started = crate::pipeline_trace::clock();
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
@@ -1538,7 +1543,7 @@ impl GpuPresenter {
         };
         let _acquisition_us = crate::pipeline_trace::micros(_acquisition_started);
         let _upload_started = crate::pipeline_trace::clock();
-        let required = (preserved_scene_vertex_count + auxiliary_vertices.len())
+        let required = preserved_scene_vertex_count
             .saturating_mul(std::mem::size_of::<Vertex>())
             .max(std::mem::size_of::<Vertex>());
         let mut buffer_reallocated = false;
@@ -1584,16 +1589,7 @@ impl GpuPresenter {
                 _vertex_upload_calls += 1;
             }
         }
-        let auxiliary_bytes = bytemuck::cast_slice(&auxiliary_vertices);
-        if !auxiliary_bytes.is_empty() {
-            graphics.queue.write_buffer(
-                vertex_buffer,
-                preserved_scene_vertex_count as u64 * std::mem::size_of::<Vertex>() as u64,
-                auxiliary_bytes,
-            );
-            _vertex_upload_calls += 1;
-        }
-        let _total_vertex_upload_bytes = _scene_vertex_upload_bytes + auxiliary_bytes.len();
+        let _total_vertex_upload_bytes = _scene_vertex_upload_bytes;
         let _upload_us = crate::pipeline_trace::micros(_upload_started);
         let _draw_started = crate::pipeline_trace::clock();
         let _scene_encode_started = crate::pipeline_trace::clock();
@@ -1636,9 +1632,11 @@ impl GpuPresenter {
             pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             if let Some(scissor) = damage_scissor {
                 pass.set_pipeline(&self.clear_pipeline);
+                pass.set_vertex_buffer(0, self.auxiliary_vertex_buffer.slice(..));
                 pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                 pass.set_bind_group(0, graphics.white.as_ref(), &[]);
-                pass.draw(clear_start..clear_start + 6, 0..1);
+                pass.draw(0..6, 0..1);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             }
             if prepared_active {
                 for (segment, base) in self
@@ -1720,10 +1718,10 @@ impl GpuPresenter {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_vertex_buffer(0, self.auxiliary_vertex_buffer.slice(..));
             pass.set_scissor_rect(0, 0, width, height);
             pass.set_bind_group(0, retained.texture.as_ref(), &[]);
-            pass.draw(composite_start..composite_start + 6, 0..1);
+            pass.draw(6..12, 0..1);
             self.retained_diagnostics.composited_frames = self
                 .retained_diagnostics
                 .composited_frames
@@ -1829,7 +1827,8 @@ impl GpuPresenter {
             "prepared_scene_vertices": scene_vertex_count,
             "scene_vertex_bytes": _scene_vertices_generated * std::mem::size_of::<Vertex>(),
             "scene_vertex_upload_bytes": _scene_vertex_upload_bytes,
-            "auxiliary_vertex_bytes": auxiliary_bytes.len(),
+            "auxiliary_vertex_bytes": 0,
+            "static_auxiliary_vertex_bytes": 12 * std::mem::size_of::<Vertex>(),
             "total_vertex_upload_bytes": _total_vertex_upload_bytes,
             "vertex_upload_calls": _vertex_upload_calls,
             "redraw": format!("{redraw:?}"),
