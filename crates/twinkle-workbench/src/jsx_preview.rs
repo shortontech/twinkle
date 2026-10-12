@@ -64,20 +64,20 @@ impl JsxPreview {
     }
     fn dispatch_events(&mut self, events: Vec<Value>) -> Result<(), String> {
         self.runtime.begin_transaction()?;
-        let result: Result<(RetainedPanelTree, Vec<String>), String> = (|| {
-            let mut candidate = self.accepted.clone();
-            match self.runtime.dispatch_batch_patched(events, false)? {
-                ScheduledPatch::Unchanged => {}
+        let result: Result<(Option<RetainedPanelTree>, Vec<String>), String> = (|| {
+            let candidate = match self.runtime.dispatch_batch_patched(events, false)? {
+                ScheduledPatch::Unchanged => None,
                 ScheduledPatch::Patched {
                     patch,
                     transport_bytes,
                     ..
                 } => {
+                    let candidate = self.accepted.clone();
                     let generation = candidate
                         .generation()
                         .checked_add(1)
                         .ok_or("preview generation exhausted")?;
-                    candidate = candidate
+                    let candidate = candidate
                         .apply_patch_owned(
                             &patch,
                             &self.bounds,
@@ -88,8 +88,9 @@ impl JsxPreview {
                         )?
                         .0;
                     self.runtime.finish_patch_render(true)?;
+                    Some(candidate)
                 }
-            }
+            };
             let effects = self.runtime.take_effects()?;
             if effects.len() > 1 {
                 return Err("preview accepts at most one effect per event".into());
@@ -111,7 +112,9 @@ impl JsxPreview {
         })();
         self.runtime.finish_transaction(result.is_ok())?;
         let (candidate, confirmations) = result?;
-        self.accepted = candidate;
+        if let Some(candidate) = candidate {
+            self.accepted = candidate;
+        }
         self.confirmations.extend(confirmations);
         if self.confirmations.len() > 128 {
             self.confirmations.drain(..self.confirmations.len() - 128);

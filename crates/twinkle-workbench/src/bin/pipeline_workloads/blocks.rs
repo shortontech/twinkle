@@ -2,7 +2,10 @@
 use serde_json::{Value, json};
 use std::time::Duration;
 use twinkle as twinkle_ui;
-use twinkle_jsx_runtime::{JsxModuleGraph, JsxRuntime, ModuleSource, ScheduledPatch};
+use twinkle_jsx_runtime::{
+    JsxModuleGraph, JsxRuntime, ModuleSource, ProducerChange, PublicationRequirement,
+    ScheduledPatch,
+};
 use twinkle_presentation::{
     components::{PluginImages, PluginMessage, RetainedPanelTree, render_retained_panel},
     css::StyleSheet,
@@ -169,37 +172,45 @@ impl Game {
         Duration::from_millis((self.gravity_interval().as_millis() as u64 / 12).max(25))
     }
 
-    fn gravity_tick(&mut self) {
+    fn gravity_tick(&mut self) -> bool {
         if self.fits(self.x, self.y + 1, self.rotation) {
             self.y += 1;
         } else {
             self.lock_piece();
         }
+        true
     }
 
-    fn act(&mut self, action: &str) {
+    fn act(&mut self, action: &str) -> bool {
         if action == "restart" {
             *self = Self {
                 paused: false,
                 ..Self::default()
             };
-            return;
+            return true;
         }
         if action == "toggle" {
             if !self.over {
                 self.paused = !self.paused;
+                return true;
             }
-            return;
+            return false;
         }
         if self.paused || self.over {
-            return;
+            return false;
         }
         match action {
-            "left" if self.fits(self.x - 1, self.y, self.rotation) => self.x -= 1,
-            "right" if self.fits(self.x + 1, self.y, self.rotation) => self.x += 1,
+            "left" if self.fits(self.x - 1, self.y, self.rotation) => {
+                self.x -= 1;
+                true
+            }
+            "right" if self.fits(self.x + 1, self.y, self.rotation) => {
+                self.x += 1;
+                true
+            }
             "rotate" => {
                 if self.shape == 0 {
-                    return;
+                    return false;
                 }
                 let next = self.rotation.wrapping_add(1);
                 if let Some(kick) = [0, -1, 1, -2, 2]
@@ -208,6 +219,9 @@ impl Game {
                 {
                     self.x += kick;
                     self.rotation = next;
+                    true
+                } else {
+                    false
                 }
             }
             "down" => {
@@ -217,6 +231,7 @@ impl Game {
                 } else {
                     self.lock_piece();
                 }
+                true
             }
             "drop" => {
                 let mut distance = 0;
@@ -226,8 +241,9 @@ impl Game {
                 }
                 self.score += distance * 2;
                 self.lock_piece();
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -263,6 +279,13 @@ pub(super) struct Blocks {
     horizontal_elapsed: Duration,
     changed_view_ids: Option<Vec<UiId>>,
     benchmark_publication_attempts: u64,
+    benchmark_attempted_inputs: u64,
+    benchmark_polls: u64,
+    benchmark_observable_changes: u64,
+    benchmark_producer_skips: u64,
+    benchmark_snapshots: u64,
+    benchmark_candidate_clones: u64,
+    benchmark_published_generations: u64,
 }
 
 impl Blocks {
@@ -303,6 +326,13 @@ impl Blocks {
             horizontal_elapsed: Duration::ZERO,
             changed_view_ids: None,
             benchmark_publication_attempts: 0,
+            benchmark_attempted_inputs: 0,
+            benchmark_polls: 0,
+            benchmark_observable_changes: 0,
+            benchmark_producer_skips: 0,
+            benchmark_snapshots: 0,
+            benchmark_candidate_clones: 0,
+            benchmark_published_generations: 0,
         })
     }
 
@@ -313,7 +343,13 @@ impl Blocks {
                 "y": self.game.y, "rotation": self.game.rotation, "next": self.game.next,
                 "score": self.game.score, "lines": self.game.lines, "paused": self.game.paused, "over": self.game.over},
             "bookkeeping": {"axisX": self.axis_x, "gravityElapsedMs": self.gravity_elapsed.as_millis(),
-                "horizontalDirection": self.horizontal_direction, "horizontalElapsedMs": self.horizontal_elapsed.as_millis()}
+                "horizontalDirection": self.horizontal_direction, "horizontalElapsedMs": self.horizontal_elapsed.as_millis()},
+            "publication": {"attempts": self.benchmark_publication_attempts,
+                "attemptedInputs": self.benchmark_attempted_inputs, "polls": self.benchmark_polls,
+                "observableChanges": self.benchmark_observable_changes,
+                "producerSkips": self.benchmark_producer_skips, "snapshots": self.benchmark_snapshots,
+                "candidateClones": self.benchmark_candidate_clones,
+                "publishedGenerations": self.benchmark_published_generations}
         })
     }
 
@@ -329,14 +365,25 @@ impl Blocks {
     }
 
     fn render(&mut self) -> Result<(), String> {
+        self.render_change(ProducerChange::Changed)
+    }
+
+    fn render_change(&mut self, change: ProducerChange) -> Result<(), String> {
         self.benchmark_publication_attempts += 1;
+        if change == ProducerChange::Changed {
+            self.benchmark_observable_changes += 1;
+        }
+        if self.runtime.publication_requirement("main", change)? == PublicationRequirement::Skip {
+            self.benchmark_producer_skips += 1;
+            self.changed_view_ids = None;
+            return Ok(());
+        }
         super::stages::measure("transaction_checkpoint_begin", || {
             self.runtime.begin_transaction()
         })?;
-        let result: Result<RetainedPanelTree, String> = (|| {
-            let mut candidate =
-                super::stages::measure("retained_candidate_clone", || self.accepted.clone());
+        let result: Result<Option<RetainedPanelTree>, String> = (|| {
             self.changed_view_ids = None;
+            self.benchmark_snapshots += 1;
             let snapshot =
                 super::stages::measure("rust_snapshot", || self.game.snapshot(self.menu_open));
             match super::stages::measure("bridge_and_jsx_reconciliation", || {
@@ -345,12 +392,22 @@ impl Blocks {
                 ScheduledPatch::Unchanged => {
                     super::stages::measure("native_patch_admission_skipped", || ());
                     super::stages::measure("patch_commit_bookkeeping_skipped", || ());
+                    if !super::stages::measure("effects_drain", || self.runtime.take_effects())?
+                        .is_empty()
+                    {
+                        return Err("external game-state reconciliation emitted an effect".into());
+                    }
+                    Ok(None)
                 }
                 ScheduledPatch::Patched {
                     patch,
                     transport_bytes,
                     ..
                 } => {
+                    self.benchmark_candidate_clones += 1;
+                    let mut candidate = super::stages::measure("retained_candidate_clone", || {
+                        self.accepted.clone()
+                    });
                     self.changed_view_ids =
                         super::stages::measure("changed_id_construction", || {
                             candidate
@@ -372,18 +429,22 @@ impl Blocks {
                     super::stages::measure("patch_commit_bookkeeping", || {
                         self.runtime.finish_patch_render(true)
                     })?;
+                    if !super::stages::measure("effects_drain", || self.runtime.take_effects())?
+                        .is_empty()
+                    {
+                        return Err("external game-state reconciliation emitted an effect".into());
+                    }
+                    Ok(Some(candidate))
                 }
             }
-            if !super::stages::measure("effects_drain", || self.runtime.take_effects())?.is_empty()
-            {
-                return Err("external game-state reconciliation emitted an effect".into());
-            }
-            Ok(candidate)
         })();
         super::stages::measure("transaction_checkpoint_finish", || {
             self.runtime.finish_transaction(result.is_ok())
         })?;
-        self.accepted = result?;
+        if let Some(candidate) = result? {
+            self.accepted = candidate;
+            self.benchmark_published_generations += 1;
+        }
         Ok(())
     }
 
@@ -394,20 +455,22 @@ impl Blocks {
         super::stages::measure("dispatch_checkpoint_begin", || {
             self.runtime.begin_transaction()
         })?;
-        let result: Result<(RetainedPanelTree, Option<String>), String> = (|| {
-            let mut candidate = super::stages::measure("dispatch_retained_candidate_clone", || {
-                self.accepted.clone()
-            });
-            if let ScheduledPatch::Patched {
+        let result: Result<(Option<RetainedPanelTree>, Option<String>), String> = (|| {
+            let candidate = if let ScheduledPatch::Patched {
                 patch,
                 transport_bytes,
                 ..
-            } = super::stages::measure("dispatch_bridge_jsx_and_patch_parse", || {
-                self.runtime
-                    .dispatch_batch_patched(vec![json!([action, null])], false)
-            })? {
+            } =
+                super::stages::measure("dispatch_bridge_jsx_and_patch_parse", || {
+                    self.runtime
+                        .dispatch_batch_patched(vec![json!([action, null])], false)
+                })? {
+                self.benchmark_candidate_clones += 1;
+                let candidate = super::stages::measure("dispatch_retained_candidate_clone", || {
+                    self.accepted.clone()
+                });
                 let generation = candidate.generation() + 1;
-                candidate = super::stages::measure("dispatch_native_patch_admission", || {
+                let candidate = super::stages::measure("dispatch_native_patch_admission", || {
                     candidate.apply_patch_owned(
                         &patch,
                         &self.bounds,
@@ -421,10 +484,12 @@ impl Blocks {
                 super::stages::measure("dispatch_patch_commit", || {
                     self.runtime.finish_patch_render(true)
                 })?;
+                Some(candidate)
             } else {
                 super::stages::measure("dispatch_native_patch_admission_skipped", || ());
                 super::stages::measure("dispatch_patch_commit_skipped", || ());
-            }
+                None
+            };
             let effects =
                 super::stages::measure("dispatch_effects_drain", || self.runtime.take_effects())?;
             if effects.len() > 1 {
@@ -449,7 +514,10 @@ impl Blocks {
             self.runtime.finish_transaction(result.is_ok())
         })?;
         let (candidate, action) = result?;
-        self.accepted = candidate;
+        if let Some(candidate) = candidate {
+            self.accepted = candidate;
+            self.benchmark_published_generations += 1;
+        }
         if let Some(action) = action {
             if action == "menu" {
                 self.menu_open = !self.menu_open;
@@ -458,7 +526,7 @@ impl Blocks {
                 self.horizontal_elapsed = Duration::ZERO;
             } else if action == "restart" {
                 self.menu_open = false;
-                self.game.act(&action);
+                let _ = self.game.act(&action);
                 self.axis_x = 0;
                 self.gravity_elapsed = Duration::ZERO;
                 self.horizontal_direction = 0;
@@ -472,6 +540,7 @@ impl Blocks {
 impl Application for Blocks {
     type Message = PluginMessage;
     fn update(&mut self, message: PluginMessage) {
+        self.benchmark_attempted_inputs += 1;
         let action = match message {
             PluginMessage::Click(a)
             | PluginMessage::Context(a)
@@ -488,6 +557,7 @@ impl Application for Blocks {
     }
 
     fn controller_input(&mut self, event: ApplicationControllerEvent) -> ControllerInputOutcome {
+        self.benchmark_attempted_inputs += 1;
         use ApplicationControllerInput as Input;
         if matches!(&event.input, Input::RouteNeutralized | Input::Disconnected) {
             self.axis_x = 0;
@@ -523,7 +593,10 @@ impl Application for Blocks {
             let gameplay_active = !self.menu_open && !self.game.paused && !self.game.over;
             let changed = gameplay_active && edge == KeyEdge::Pressed && !repeat;
             if changed {
-                self.game.act("down");
+                let changed = self.game.act("down");
+                if !changed {
+                    return ControllerInputOutcome::handled(false);
+                }
                 if let Err(error) = self.render() {
                     eprintln!("Controller action failed: {error}");
                 }
@@ -586,15 +659,17 @@ impl Application for Blocks {
             _ => return ControllerInputOutcome::unhandled(),
         };
         if let Some(action) = action {
-            self.game.act(action);
-            if let Err(error) = self.render() {
+            let changed = self.game.act(action);
+            if changed && let Err(error) = self.render() {
                 eprintln!("Controller action failed: {error}");
             }
+            return ControllerInputOutcome::handled(changed);
         }
         ControllerInputOutcome::handled(changed)
     }
 
     fn shortcut_outcome(&mut self, shortcut: Shortcut) -> ShortcutOutcome {
+        self.benchmark_attempted_inputs += 1;
         if shortcut == Shortcut::Escape {
             if self.game.over {
                 return ShortcutOutcome::from_changed(false);
@@ -622,9 +697,11 @@ impl Application for Blocks {
             if (self.game.paused || self.game.over) && action != "restart" {
                 return ShortcutOutcome::from_changed(false);
             }
-            self.game.act(action);
-            let _ = self.render();
-            ShortcutOutcome::from_changed(true)
+            let changed = self.game.act(action);
+            if changed {
+                let _ = self.render();
+            }
+            ShortcutOutcome::from_changed(changed)
         } else {
             ShortcutOutcome::from_changed(false)
         }
@@ -654,6 +731,7 @@ impl Application for Blocks {
     }
 
     fn poll_controller(&mut self, input: &ControllerSnapshot) -> bool {
+        self.benchmark_polls += 1;
         if self.game.paused || self.game.over || self.menu_open {
             return false;
         }
@@ -662,15 +740,16 @@ impl Application for Blocks {
             .unwrap_or_else(|| self.game.gravity_interval());
         let soft_drop = input.button_down(&ControllerButton::DPadDown)
             || input.axis(&ControllerAxis::LeftY) > 0.65;
+        let mut changed = false;
         if soft_drop {
-            self.game.act("down");
+            changed |= self.game.act("down");
         } else {
             self.gravity_elapsed += interval;
             if self.gravity_elapsed >= self.game.gravity_interval() {
                 self.gravity_elapsed = self
                     .gravity_elapsed
                     .saturating_sub(self.game.gravity_interval());
-                self.game.gravity_tick();
+                changed |= self.game.gravity_tick();
             }
         }
 
@@ -688,12 +767,16 @@ impl Application for Blocks {
         } else {
             self.horizontal_elapsed += interval;
             if self.horizontal_elapsed >= Duration::from_millis(150) {
-                self.game.act(if horizontal < 0 { "left" } else { "right" });
+                changed |= self.game.act(if horizontal < 0 { "left" } else { "right" });
                 self.horizontal_elapsed = Duration::from_millis(100);
             }
         }
-        match self.render() {
-            Ok(()) => true,
+        match self.render_change(if changed {
+            ProducerChange::Changed
+        } else {
+            ProducerChange::Unchanged
+        }) {
+            Ok(()) => changed,
             Err(error) => {
                 eprintln!("Game tick render failed: {error}");
                 false

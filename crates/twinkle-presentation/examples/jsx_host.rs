@@ -49,9 +49,8 @@ impl JsxApp {
 
     fn dispatch(&mut self, action: usize) -> Result<Option<u64>, String> {
         self.runtime.begin_transaction()?;
-        let result: Result<(RetainedPanelTree, Option<u64>), String> = (|| {
-            let mut candidate = self.accepted.clone();
-            if let ScheduledPatch::Patched {
+        let result: Result<(Option<RetainedPanelTree>, Option<u64>), String> = (|| {
+            let candidate = if let ScheduledPatch::Patched {
                 patch,
                 transport_bytes,
                 ..
@@ -59,11 +58,12 @@ impl JsxApp {
                 .runtime
                 .dispatch_batch_patched(vec![json!([action, null])], false)?
             {
+                let candidate = self.accepted.clone();
                 let generation = candidate
                     .generation()
                     .checked_add(1)
                     .ok_or("render generation exhausted")?;
-                candidate = candidate
+                let candidate = candidate
                     .apply_patch_owned(
                         &patch,
                         &self.bounds,
@@ -74,7 +74,10 @@ impl JsxApp {
                     )?
                     .0;
                 self.runtime.finish_patch_render(true)?;
-            }
+                Some(candidate)
+            } else {
+                None
+            };
 
             let effects = self.runtime.take_effects()?;
             if effects.len() > 1 {
@@ -98,7 +101,9 @@ impl JsxApp {
         })();
         self.runtime.finish_transaction(result.is_ok())?;
         let (candidate, count) = result?;
-        self.accepted = candidate;
+        if let Some(candidate) = candidate {
+            self.accepted = candidate;
+        }
         Ok(count)
     }
 }

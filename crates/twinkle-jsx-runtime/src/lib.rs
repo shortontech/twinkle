@@ -70,6 +70,27 @@ pub struct JsxRuntime {
     maintenance_drain_pending: bool,
 }
 
+/// Host-owned authority for whether data consumed by a JSX surface changed.
+///
+/// `Unchanged` is trustworthy only when every mutation of consumed data,
+/// including nested mutable state, participates in the producer's revision or
+/// dirty tracking. Hosts without that guarantee must use `Unknown`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProducerChange {
+    Changed,
+    Unchanged,
+    Unknown,
+}
+
+/// Why a host must publish data, or why it may perform a zero-work skip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublicationRequirement {
+    ProducerChanged,
+    RuntimeWorkPending,
+    Conservative,
+    Skip,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotReloadIdentity<'a> {
@@ -1098,6 +1119,28 @@ impl JsxRuntime {
             "__twinkleSurfaceWorkPending",
             &[Value::String(surface.to_owned())],
         )
+    }
+
+    /// Decide whether an external-data publication is required before the host
+    /// constructs a snapshot or begins a presentation transaction.
+    ///
+    /// A skip is returned only for authoritative unchanged data with no dirty
+    /// hook state or queued effects on `surface`. `Unknown` deliberately keeps
+    /// the existing conservative path. Platform task servicing remains an
+    /// independent host responsibility and is never suppressed by this query.
+    pub fn publication_requirement(
+        &mut self,
+        surface: &str,
+        change: ProducerChange,
+    ) -> Result<PublicationRequirement, String> {
+        Ok(match change {
+            ProducerChange::Changed => PublicationRequirement::ProducerChanged,
+            ProducerChange::Unknown => PublicationRequirement::Conservative,
+            ProducerChange::Unchanged if self.surface_work_pending(surface)? => {
+                PublicationRequirement::RuntimeWorkPending
+            }
+            ProducerChange::Unchanged => PublicationRequirement::Skip,
+        })
     }
 
     fn report_host_profile(
@@ -2760,6 +2803,36 @@ mod tests {
             vec![Value::String("show-launcher".into())]
         );
         assert!(!runtime.surface_work_pending("default").unwrap());
+    }
+
+    #[test]
+    fn publication_requirement_skips_only_authoritative_idle_surfaces() {
+        let mut runtime =
+            super::JsxRuntime::new("function App(){return h(Text,null,'ready')}", None).unwrap();
+        runtime.render("__twinkleRender()", |_| Ok(())).unwrap();
+        assert_eq!(
+            runtime
+                .publication_requirement("default", super::ProducerChange::Unchanged)
+                .unwrap(),
+            super::PublicationRequirement::Skip
+        );
+        assert_eq!(
+            runtime
+                .publication_requirement("default", super::ProducerChange::Unknown)
+                .unwrap(),
+            super::PublicationRequirement::Conservative
+        );
+        runtime.eval("twinkle.request('queued')").unwrap();
+        assert_eq!(
+            runtime
+                .publication_requirement("default", super::ProducerChange::Unchanged)
+                .unwrap(),
+            super::PublicationRequirement::RuntimeWorkPending
+        );
+        assert_eq!(
+            runtime.take_effects().unwrap(),
+            vec![Value::String("queued".into())]
+        );
     }
 
     #[test]

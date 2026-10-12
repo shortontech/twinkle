@@ -78,6 +78,18 @@ input dispatches require `finish_event`. The owned path consumes the disposable 
 of defensively cloning it a second time. Reject the transaction on any failure so both the JSX
 runtime and native tree retain their previous accepted state.
 
+If the Rust producer has authoritative change tracking, call
+`JsxRuntime::publication_requirement(surface, change)` before constructing the snapshot or opening
+the transaction. `PublicationRequirement::Skip` means both producer data and runtime-scheduled
+surface work are idle, so the host should do neither. `RuntimeWorkPending` must take the normal
+path so dirty hooks and queued effects are processed; `Conservative` is the required result for
+producers without complete nested-mutation authority. Platform-task servicing is independent.
+
+Do not clone the accepted `RetainedPanelTree` until reconciliation or dispatch returns
+`ScheduledPatch::Patched`. `ScheduledPatch::Unchanged` still completes effect validation and the
+transaction, but preserves the accepted generation and needs no candidate clone. Clear any stale
+changed-view hint on both producer skips and runtime-unchanged outcomes.
+
 Before applying a property-only envelope, call
 `RetainedPanelTree::changed_element_ids(&patch)` and retain the returned paths. Expose them once
 from `Application::take_changed_view_ids` after the accepted tree is committed. `UiHost` uses that

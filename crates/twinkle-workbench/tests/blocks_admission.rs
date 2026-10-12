@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use twinkle::{Application, HostBatch, HostTelemetry, UiHost, UiId, View, ViewContext};
-use twinkle_jsx_runtime::{JsxModuleGraph, JsxRuntime, ModuleSource, ScheduledPatch};
+use twinkle_jsx_runtime::{
+    JsxModuleGraph, JsxRuntime, ModuleSource, ProducerChange, PublicationRequirement,
+    ScheduledPatch,
+};
 use twinkle_presentation::{
     components::{PluginImages, PluginMessage, RetainedPanelTree, render_retained_panel},
     css::StyleSheet,
@@ -133,6 +136,16 @@ struct StageSample {
     patch_admission: Duration,
 }
 
+#[derive(Default)]
+struct PublicationCounters {
+    attempts: u64,
+    producer_skips: u64,
+    snapshots: u64,
+    runtime_unchanged: u64,
+    candidate_clones: u64,
+    published_generations: u64,
+}
+
 struct JsxAdmission {
     runtime: JsxRuntime,
     accepted: RetainedPanelTree,
@@ -142,6 +155,7 @@ struct JsxAdmission {
     sample: StageSample,
     changed_view_ids: Option<Vec<UiId>>,
     title: &'static str,
+    counters: PublicationCounters,
 }
 
 impl JsxAdmission {
@@ -182,6 +196,7 @@ impl JsxAdmission {
             sample: StageSample::default(),
             changed_view_ids: None,
             title,
+            counters: PublicationCounters::default(),
         })
     }
 
@@ -189,8 +204,10 @@ impl JsxAdmission {
         &mut self,
         build_snapshot: impl FnOnce() -> serde_json::Value,
     ) -> Result<(), String> {
+        self.counters.attempts += 1;
         let started = Instant::now();
         let snapshot = build_snapshot();
+        self.counters.snapshots += 1;
         self.sample.snapshot = started.elapsed();
 
         self.runtime.begin_transaction()?;
@@ -198,21 +215,25 @@ impl JsxAdmission {
         let outcome = self.runtime.reconcile_data_patched(snapshot);
         self.sample.patch_reconciliation = started.elapsed();
         let mut changed_view_ids = None;
-        let result: Result<RetainedPanelTree, String> = (|| {
+        let result: Result<Option<RetainedPanelTree>, String> = (|| {
             let started = Instant::now();
-            let mut candidate = self.accepted.clone();
-            match outcome? {
-                ScheduledPatch::Unchanged => {}
+            let candidate = match outcome? {
+                ScheduledPatch::Unchanged => {
+                    self.counters.runtime_unchanged += 1;
+                    None
+                }
                 ScheduledPatch::Patched {
                     patch,
                     transport_bytes,
                     ..
                 } => {
+                    self.counters.candidate_clones += 1;
+                    let candidate = self.accepted.clone();
                     changed_view_ids = candidate
                         .changed_element_ids(&patch)
                         .map(|ids| ids.into_iter().map(UiId::from).collect());
                     let generation = candidate.generation() + 1;
-                    candidate = candidate
+                    let candidate = candidate
                         .apply_patch_owned(
                             &patch,
                             &self.bounds,
@@ -223,8 +244,9 @@ impl JsxAdmission {
                         )?
                         .0;
                     self.runtime.finish_patch_render(true)?;
+                    Some(candidate)
                 }
-            }
+            };
             self.sample.patch_admission = started.elapsed();
             if !self.runtime.take_effects()?.is_empty() {
                 return Err("snapshot reconciliation emitted an effect".into());
@@ -232,9 +254,30 @@ impl JsxAdmission {
             Ok(candidate)
         })();
         self.runtime.finish_transaction(result.is_ok())?;
-        self.accepted = result?;
+        if let Some(candidate) = result? {
+            self.accepted = candidate;
+            self.counters.published_generations += 1;
+        }
         self.changed_view_ids = changed_view_ids;
         Ok(())
+    }
+
+    fn advance_authoritative(
+        &mut self,
+        change: ProducerChange,
+        build_snapshot: impl FnOnce() -> serde_json::Value,
+    ) -> Result<bool, String> {
+        self.counters.attempts += 1;
+        if self.runtime.publication_requirement("main", change)? == PublicationRequirement::Skip {
+            self.counters.producer_skips += 1;
+            self.changed_view_ids = None;
+            return Ok(false);
+        }
+        // `advance` owns the conservative transaction path; avoid counting the
+        // host decision twice while retaining identical admission semantics.
+        self.counters.attempts -= 1;
+        self.advance(build_snapshot)?;
+        Ok(true)
     }
 }
 
@@ -298,6 +341,91 @@ fn rich_form_snapshot(revision: usize) -> serde_json::Value {
             "notes": "First line of profile notes.\nA second line exercises multiline content."
         }
     })
+}
+
+#[test]
+fn authoritative_noop_builds_nothing_and_runtime_unchanged_clones_nothing() {
+    let mut app =
+        JsxAdmission::new(SOURCE, CSS, blocks_snapshot(0), "Blocks admission").expect("fixture");
+    let generation = app.accepted.generation();
+    let source = app.accepted.source().clone();
+    let mut snapshot_calls = 0;
+    assert!(
+        !app.advance_authoritative(ProducerChange::Unchanged, || {
+            snapshot_calls += 1;
+            blocks_snapshot(0)
+        })
+        .unwrap()
+    );
+    assert_eq!(snapshot_calls, 0);
+    assert_eq!(app.accepted.generation(), generation);
+    assert_eq!(app.accepted.source(), &source);
+    assert_eq!(app.counters.producer_skips, 1);
+    assert_eq!(app.counters.snapshots, 0);
+    assert_eq!(app.counters.candidate_clones, 0);
+
+    assert!(
+        app.advance_authoritative(ProducerChange::Unknown, || blocks_snapshot(0))
+            .unwrap()
+    );
+    assert_eq!(app.counters.runtime_unchanged, 1);
+    assert_eq!(app.counters.candidate_clones, 0);
+    assert_eq!(app.accepted.generation(), generation);
+    assert_eq!(app.accepted.source(), &source);
+}
+
+#[test]
+#[ignore = "release-profile authoritative no-op publication workload"]
+fn authoritative_noop_emits_release_distribution() {
+    let mut skipped =
+        JsxAdmission::new(SOURCE, CSS, blocks_snapshot(0), "Blocks no-op").expect("skip fixture");
+    let started = Instant::now();
+    for _ in 0..MEASURED_ITERATIONS {
+        assert!(
+            !skipped
+                .advance_authoritative(ProducerChange::Unchanged, || blocks_snapshot(0))
+                .unwrap()
+        );
+    }
+    let skip_elapsed = started.elapsed();
+
+    let mut conservative = JsxAdmission::new(SOURCE, CSS, blocks_snapshot(0), "Blocks no-op")
+        .expect("conservative fixture");
+    let started = Instant::now();
+    for _ in 0..MEASURED_ITERATIONS {
+        conservative.advance(|| blocks_snapshot(0)).unwrap();
+    }
+    let conservative_elapsed = started.elapsed();
+    assert_eq!(skipped.counters.snapshots, 0);
+    assert_eq!(skipped.counters.candidate_clones, 0);
+    assert_eq!(
+        conservative.counters.runtime_unchanged,
+        MEASURED_ITERATIONS as u64
+    );
+    assert_eq!(conservative.counters.candidate_clones, 0);
+    println!(
+        "twinkle_noop_publication={}",
+        json!({
+            "schema": 1,
+            "iterations": MEASURED_ITERATIONS,
+            "authoritativeSkip": {
+                "totalUs": micros(skip_elapsed),
+                "attempts": skipped.counters.attempts,
+                "producerSkips": skipped.counters.producer_skips,
+                "snapshots": skipped.counters.snapshots,
+                "candidateClones": skipped.counters.candidate_clones,
+                "publishedGenerations": skipped.counters.published_generations,
+            },
+            "conservativeUnchanged": {
+                "totalUs": micros(conservative_elapsed),
+                "attempts": conservative.counters.attempts,
+                "snapshots": conservative.counters.snapshots,
+                "runtimeUnchanged": conservative.counters.runtime_unchanged,
+                "candidateClones": conservative.counters.candidate_clones,
+                "publishedGenerations": conservative.counters.published_generations,
+            }
+        })
+    );
 }
 
 #[derive(Default)]
