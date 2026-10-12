@@ -86,6 +86,10 @@ keyboard/controller/semantic previous, next, and select requests; feed its comma
 to `ChartView::navigate` in the ordinary application update path. `PanZoomPolicy`
 provides pure anchored zoom, constrained pan, and reset operations for the same
 event flow.
+`ChartNavigation::reconcile` preserves the active dataset/row/series identity when
+accepted hit records reorder. If that identity is removed, it selects the surviving
+hit at the old bounded index (the following neighbor, or the final preceding hit);
+an empty hit set clears inspection.
 Home and End emit `NavigationCommand::Home` and `End` for the focused chart rather
 than moving focus to unrelated native boundary controls. While the chart is in
 adjustment mode, up/down emit `PreviousSeries`/`NextSeries`; left/right retain

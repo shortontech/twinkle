@@ -26,6 +26,11 @@ pub enum ViewportCommand {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChartNavigation {
     active: Option<usize>,
+    active_identity: Option<(
+        std::sync::Arc<str>,
+        crate::RowKey,
+        Option<std::sync::Arc<str>>,
+    )>,
     overlap_cycle: usize,
 }
 
@@ -43,6 +48,7 @@ impl ChartNavigation {
     ) -> Option<&'a ChartHit> {
         self.active = (index < hits.len()).then_some(index);
         self.overlap_cycle = 0;
+        self.sync_identity(hits);
         self.active(hits)
     }
     pub fn set_nearest<'a>(
@@ -61,11 +67,13 @@ impl ChartNavigation {
             })
             .map(|(index, _)| index);
         self.overlap_cycle = 0;
+        self.sync_identity(hits);
         self.active(hits)
     }
     pub fn command(&mut self, hits: &[ChartHit], command: NavigationCommand) -> Option<ChartEvent> {
         if hits.is_empty() {
             self.active = None;
+            self.active_identity = None;
             return None;
         }
         match command {
@@ -83,6 +91,7 @@ impl ChartNavigation {
             NavigationCommand::CycleOverlap => self.cycle_overlap(hits),
             NavigationCommand::Cancel => {
                 self.active = None;
+                self.active_identity = None;
                 self.overlap_cycle = 0;
                 return None;
             }
@@ -96,6 +105,7 @@ impl ChartNavigation {
                 });
             }
         }
+        self.sync_identity(hits);
         let hit = self.active(hits)?;
         Some(ChartEvent::Inspect {
             dataset: hit.dataset.clone(),
@@ -105,9 +115,16 @@ impl ChartNavigation {
     }
     pub fn reconcile(&mut self, hits: &[ChartHit]) {
         let Some(active) = self.active else { return };
-        if active >= hits.len() {
-            self.active = hits.len().checked_sub(1);
-        }
+        self.active = self
+            .active_identity
+            .as_ref()
+            .and_then(|(dataset, row, series)| {
+                hits.iter().position(|hit| {
+                    &hit.dataset == dataset && &hit.row == row && &hit.series == series
+                })
+            })
+            .or_else(|| (!hits.is_empty()).then(|| active.min(hits.len() - 1)));
+        self.sync_identity(hits);
     }
     fn move_series(&mut self, hits: &[ChartHit], forward: bool) {
         let current = self.active.unwrap_or(0);
@@ -124,6 +141,7 @@ impl ChartNavigation {
                     .total_cmp(&center_distance(hits[*b].bounds, bounds))
             })
             .or(Some(current));
+        self.sync_identity(hits);
     }
     fn cycle_overlap(&mut self, hits: &[ChartHit]) {
         let Some(current) = self.active else {
@@ -140,7 +158,15 @@ impl ChartNavigation {
         if !overlaps.is_empty() {
             self.overlap_cycle = (self.overlap_cycle + 1) % overlaps.len();
             self.active = Some(overlaps[self.overlap_cycle]);
+            self.sync_identity(hits);
         }
+    }
+
+    fn sync_identity(&mut self, hits: &[ChartHit]) {
+        self.active_identity = self.active.and_then(|index| {
+            hits.get(index)
+                .map(|hit| (hit.dataset.clone(), hit.row.clone(), hit.series.clone()))
+        });
     }
 }
 
@@ -293,6 +319,29 @@ mod tests {
         assert!(
             matches!(event, ChartEvent::Select { row, revision: 7, .. } if row == RowKey::from("b"))
         );
+    }
+
+    #[test]
+    fn reconciliation_preserves_stable_identity_and_uses_neighbor_after_removal() {
+        let original = vec![hit("a", 0.0), hit("b", 10.0), hit("c", 20.0)];
+        let mut navigation = ChartNavigation::default();
+        navigation.set_active_index(&original, 1);
+
+        let reordered = vec![hit("c", 0.0), hit("a", 10.0), hit("b", 20.0)];
+        navigation.reconcile(&reordered);
+        assert_eq!(
+            navigation.active(&reordered).unwrap().row,
+            RowKey::from("b")
+        );
+        assert_eq!(navigation.active_index(), Some(2));
+
+        let removed = vec![hit("c", 0.0), hit("a", 10.0)];
+        navigation.reconcile(&removed);
+        assert_eq!(navigation.active_index(), Some(1));
+        assert_eq!(navigation.active(&removed).unwrap().row, RowKey::from("a"));
+
+        navigation.reconcile(&[]);
+        assert!(navigation.active(&[]).is_none());
     }
     #[test]
     fn zoom_is_anchored_clamped_and_has_minimum_span() {
