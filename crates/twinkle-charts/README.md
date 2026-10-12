@@ -1,0 +1,102 @@
+# twinkle-charts
+
+`twinkle-charts` is Twinkle's optional, bounded native chart engine. It exposes
+ordinary Rust data, grammar, recipe, state, diagnostics, table, and export types.
+Applications that do not depend on this crate do not acquire chart or timezone
+code. The optional JSX adapter in `twinkle-presentation` lowers typed JSON-safe
+declarations into this same engine.
+
+## Ownership and revisions
+
+- The application owns immutable `Arc<ChartData>`, `Arc<ChartSpec>`, and
+  `ChartState` values. Row keys are durable identity; vector positions are not.
+- Increment `ChartData::revision()` whenever any admitted cell or row identity
+  changes. Reusing a revision after mutation violates retained-cache identity.
+- Keep `ChartView` in application state. Calling `element` projects its accepted
+  snapshot into the ordinary Twinkle tree; rebuilding that projection does not
+  replace the retained model.
+- `replace_and_update` and `update_state` stage a candidate. Validation,
+  preparation, or host-admission failure preserves the previous paint, hits,
+  semantics, and revision.
+
+```rust
+use std::sync::Arc;
+use twinkle_charts::{ChartData, ChartLimits, ChartModel, ChartView, Recipes};
+
+# fn build_data() -> ChartData { todo!() }
+# fn fields() -> (twinkle_charts::FieldRef, twinkle_charts::FieldRef) { todo!() }
+let limits = ChartLimits::default();
+let data = Arc::new(build_data());
+let (x, y) = fields();
+let spec = Arc::new(Recipes::line("Latency", x, y));
+let mut chart = ChartView::new(ChartModel::new(spec, data, limits)?)?;
+# Ok::<(), twinkle_charts::ChartError>(())
+```
+
+See `examples/dashboard.rs` for complete data construction, recipes, controlled
+series state, native preparation, accessible table access, CSV, and raster export.
+
+## Grammar and recipes
+
+`ChartSpec` composes `Layer`, `Mark`, `Encoding`, named `Scale`, ordered
+`Transform`, `Axis`, `Legend`, `Annotation`, and `Facet` descriptors. Named scales
+are shared across layers. Facets share domains by default and can explicitly use
+independent domains. Convenience recipes return normal inspectable specs, so an
+application can append layers or guides before creating a model.
+
+The v1 recipe surface includes line/step/multi-series, vertical and horizontal
+simple/grouped/stacked/normalized bars, area/stacked area, scatter/bubble,
+pie/donut, histogram, heatmap, and sparkline. `Rule` and `Text` marks and layered
+recipes form combo charts without a separate rendering implementation.
+
+Null is distinct from zero. Lines and areas break at missing observations. Bar
+and area quantitative domains include zero unless an explicit domain or viewport
+overrides it. Pie values must be finite and nonnegative. Bubble radius is the
+square root of the size ratio, so visible area is proportional to the value.
+Normalized positive and negative stacks are computed independently and preserve
+raw/source provenance.
+
+## Interaction and accessibility
+
+`ChartView::nearest`, `inspect_nearest`, and `navigate` use accepted indexed hit
+records and return `ChartEvent` values carrying stable row keys and the accepted
+data revision. Applications own selection, visible-series, and viewport state and
+feed the next `ChartState` back through `update_state`; the chart never mutates a
+second hidden store. `PanZoomPolicy` provides pure anchored zoom, constrained pan,
+and reset operations for the same event flow.
+
+The native projection has one bounded graphical-control entry plus ordinary
+focusable legend controls. Its mechanical summary reports source rows,
+inspectable/displayed values, missing data, selection, and reduction. Activation
+requests the exact paged data-table mode. `ChartTable` keeps all admitted rows
+reachable without creating one UI node per row. Platform screen-reader support is
+separate from these semantic records; Twinkle does not claim a tested Linux
+screen-reader bridge yet.
+
+## Limits, diagnostics, and reduction
+
+`ChartLimits` bounds input rows, columns, series, facets, layers, transforms,
+geometry, ticks, annotations, table pages, label bytes, and steady/peak ownership.
+The retained-surface host independently bounds paint, interaction, semantic, and
+damage records. Raise limits deliberately; their Cartesian product is not an
+admission promise.
+
+Line/area geometry is reduced against logical pixel width while retaining
+endpoints and bucket extrema. Exact accepted rows remain in the hit index and
+table. `ChartDiagnostics` exposes row/display counts, geometry vertices, index
+bytes, guide/command/semantic counts, retained-byte estimates, rejection and
+cache counters, preparation time, and reduction notices.
+
+## Time, themes, and export
+
+Timestamps are Unix-epoch milliseconds. UTC is deterministic by default;
+fixed-offset calendar policies are explicit, and unsupported named zones return
+an error rather than silently using process-local time. Light, dark, and
+high-contrast semantic themes use color-blind-conscious categorical cues and
+secondary shape/dash cues when the palette is exhausted.
+
+`export_csv` quotes every cell and can protect spreadsheet formula prefixes.
+`export_raster` renders one accepted revision through the software renderer with
+explicit logical dimensions, scale, background, pixel, and byte bounds. File
+dialogs, paths, clipboard access, and effects remain application/host authority.
+
