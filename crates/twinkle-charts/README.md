@@ -41,6 +41,9 @@ let mut chart = ChartView::new(ChartModel::new(spec, data, limits)?)?;
 
 See `examples/dashboard.rs` for complete data construction, recipes, controlled
 series state, native preparation, accessible table access, CSV, and raster export.
+The serial release admission harness is `examples/measure.rs`; its pinned
+reference results and exact scope are documented in
+[`../../docs/chart-performance.md`](../../docs/chart-performance.md).
 
 ## Grammar and recipes
 
