@@ -113,6 +113,7 @@ pub fn execute_transforms(
         });
     }
     let mut table = Table::from_dataset(source);
+    let mut density_bins: Vec<(String, f64)> = Vec::new();
     for step in plan {
         table = match step {
             Transform::Sort { field, descending } => table.sort(field, *descending)?,
@@ -120,14 +121,34 @@ pub fn execute_transforms(
                 field,
                 output,
                 options,
-            } => table.bin(field, output, *options)?,
+            } => {
+                if options.density {
+                    let width = (options.end - options.start) / options.count as f64;
+                    if width.is_finite() && width > 0.0 {
+                        density_bins.push((output.clone(), width));
+                    }
+                }
+                table.bin(field, output, *options)?
+            }
             Transform::Aggregate {
                 group_by,
                 field,
                 output,
                 operation,
                 missing,
-            } => table.aggregate(group_by, field.as_deref(), output, *operation, *missing)?,
+            } => {
+                let mut aggregated =
+                    table.aggregate(group_by, field.as_deref(), output, *operation, *missing)?;
+                if *operation == AggregateOp::Count
+                    && let Some((_, width)) = density_bins
+                        .iter()
+                        .rev()
+                        .find(|(bin, _)| group_by.iter().any(|group| group == bin))
+                {
+                    aggregated.normalize_density(output, *width)?;
+                }
+                aggregated
+            }
             Transform::Stack {
                 category,
                 series,
@@ -271,6 +292,11 @@ impl Table {
         }
         let mut groups: BTreeMap<Vec<String>, Vec<&TableRow>> = BTreeMap::new();
         for row in &self.rows {
+            if missing == MissingPolicy::Omit
+                && group_by.iter().any(|field| row.values[field].is_null())
+            {
+                continue;
+            }
             let key = group_by
                 .iter()
                 .map(|field| value_key(&row.values[field]))
@@ -389,6 +415,27 @@ impl Table {
             return Err(ChartError::DuplicateKey(name));
         }
         self.columns.push(name);
+        Ok(())
+    }
+
+    fn normalize_density(&mut self, output: &str, width: f64) -> Result<(), ChartError> {
+        let total = self
+            .rows
+            .iter()
+            .filter_map(|row| row.values.get("__source_count").and_then(DataValue::number))
+            .sum::<f64>();
+        if total <= 0.0 || !width.is_finite() || width <= 0.0 {
+            return Err(ChartError::invalid(
+                ChartStage::Transform,
+                "density normalization requires a positive count and bin width",
+            ));
+        }
+        for row in &mut self.rows {
+            if let Some(value) = row.values.get(output).and_then(DataValue::number) {
+                row.values
+                    .insert(output.into(), DataValue::Number(value / (total * width)));
+            }
+        }
         Ok(())
     }
     fn into_dataset(self, source: &Dataset) -> Result<Dataset, ChartError> {
@@ -571,6 +618,44 @@ mod tests {
             result.column("value_raw").unwrap().values[1],
             DataValue::Number(-3.0)
         );
+    }
+
+    #[test]
+    fn histogram_density_integrates_to_one_and_omits_out_of_range_rows() {
+        let result = execute_transforms(
+            &dataset(&[0.0, 4.0, 10.0, 20.0]),
+            &[
+                Transform::Bin {
+                    field: "value".into(),
+                    output: "bin".into(),
+                    options: BinOptions {
+                        start: 0.0,
+                        end: 10.0,
+                        count: 2,
+                        density: true,
+                    },
+                },
+                Transform::Aggregate {
+                    group_by: vec!["bin".into()],
+                    field: None,
+                    output: "density".into(),
+                    operation: AggregateOp::Count,
+                    missing: MissingPolicy::Omit,
+                },
+            ],
+            &ChartLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(result.len(), 2);
+        let integral = result
+            .column("density")
+            .unwrap()
+            .values
+            .iter()
+            .filter_map(DataValue::number)
+            .sum::<f64>()
+            * 5.0;
+        assert!((integral - 1.0).abs() < 1e-12);
     }
 }
 use std::{cmp::Ordering, collections::BTreeMap, sync::Arc};

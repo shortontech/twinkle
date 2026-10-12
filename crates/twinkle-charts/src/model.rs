@@ -11,14 +11,9 @@ use twinkle_ui::{
 };
 
 use crate::{
-    Channel, ChartData, ChartDiagnostics, ChartError, ChartLimits, ChartSpec, DataValue, Encoding,
-    Mark,
+    Channel, ChartData, ChartDiagnostics, ChartError, ChartLimits, ChartSpec, ChartTheme,
+    DataValue, Encoding, Mark,
 };
-
-const PALETTE: [u32; 10] = [
-    0x3975D8, 0xE66C37, 0x2E9D67, 0xA75CCA, 0xC59222, 0xD54864, 0x2A9AA0, 0x7569D1, 0x71812B,
-    0x9B6B43,
-];
 
 /// Accepted spatial-index entry retaining stable source identity.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +31,7 @@ pub struct ChartModel {
     spec: Arc<ChartSpec>,
     data: Arc<ChartData>,
     limits: ChartLimits,
+    theme: ChartTheme,
     diagnostics: ChartDiagnostics,
     hits: Vec<ChartHit>,
     renderer_generation: u64,
@@ -48,14 +44,22 @@ impl ChartModel {
         limits: ChartLimits,
     ) -> Result<Self, ChartError> {
         spec.validate(&data, &limits)?;
+        let theme = ChartTheme::default();
+        theme.validate()?;
         Ok(Self {
             spec,
             data,
             limits,
+            theme,
             diagnostics: ChartDiagnostics::default(),
             hits: Vec::new(),
             renderer_generation: 0,
         })
+    }
+    pub fn with_theme(mut self, theme: ChartTheme) -> Result<Self, ChartError> {
+        theme.validate()?;
+        self.theme = theme;
+        Ok(self)
     }
     pub fn replace(
         &mut self,
@@ -96,11 +100,11 @@ impl ChartModel {
         let plot = inset(input.bounds, 36.0, 18.0, 18.0, 30.0);
         output.paint.push(PaintCommand::Fill {
             rect: input.bounds,
-            color: 0xF7F9FC,
+            color: self.theme.background,
         });
         output.paint.push(PaintCommand::Stroke {
             rect: plot,
-            color: 0x667085,
+            color: self.theme.grid,
             width: 1.0,
         });
         output.paint.push(PaintCommand::Text {
@@ -112,7 +116,7 @@ impl ChartModel {
             ),
             text: self.spec.title.to_string(),
             scale: 1.0,
-            color: 0x172033,
+            color: self.theme.foreground,
             align: twinkle_ui::TextAlign::Start,
             bold: true,
             wrap: false,
@@ -150,7 +154,7 @@ impl ChartModel {
                 bounds: plot,
                 text: "No data".into(),
                 scale: 1.0,
-                color: 0x667085,
+                color: self.theme.muted,
                 align: twinkle_ui::TextAlign::Center,
                 bold: false,
                 wrap: false,
@@ -286,7 +290,7 @@ impl ChartModel {
                 [plot.origin.y + plot.size.height, plot.origin.y],
             ),
         };
-        let color = PALETTE[layer_index % PALETTE.len()];
+        let color = self.theme.series_cue(layer_index).color;
         match &layer.mark {
             Mark::Line { .. } => {
                 let mut triangles = Vec::new();
@@ -488,7 +492,7 @@ impl ChartModel {
             }
             output.paint.push(fill_path_command(
                 triangles,
-                PALETTE[(layer_index + slice) % PALETTE.len()],
+                self.theme.series_cue(layer_index + slice).color,
                 steps + 1,
             )?);
             self.push_hit(
