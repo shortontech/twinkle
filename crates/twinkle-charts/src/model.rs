@@ -1763,6 +1763,14 @@ impl ChartView {
         &mut self,
         input: RetainedSurfaceInput,
     ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
+        if self.host.snapshot().input == Some(input) {
+            self.host
+                .update(input)
+                .map_err(|message| ChartError::invalid(crate::ChartStage::Geometry, message))?;
+            self.fallback = RetainedSurfaceSnapshot::default();
+            self.last_error = None;
+            return Ok(self.host.snapshot());
+        }
         let mut candidate = self.host.begin_candidate();
         if let Err(message) = candidate.update(input) {
             let error = ChartError::invalid(crate::ChartStage::Geometry, message);
@@ -2614,6 +2622,35 @@ mod tests {
         ));
         assert!(view.inspect_nearest(Point { x: 380.0, y: 20.0 }).is_some());
         assert!(view.active_hit().is_some());
+    }
+
+    #[test]
+    fn identical_input_reuses_accepted_output_without_model_preparation() {
+        let mut view = ChartView::new(model()).unwrap();
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 7,
+                ..Default::default()
+            },
+        );
+        view.update(input).unwrap();
+        let paint = view.snapshot().output.paint.as_ptr();
+        let chart_diagnostics = view.diagnostics().clone();
+        let retained = view.retained_diagnostics();
+
+        view.update(input).unwrap();
+        assert_eq!(view.snapshot().output.paint.as_ptr(), paint);
+        assert_eq!(view.diagnostics(), &chart_diagnostics);
+        assert_eq!(
+            view.retained_diagnostics().update_calls,
+            retained.update_calls
+        );
+        assert_eq!(
+            view.retained_diagnostics().unchanged_reuses,
+            retained.unchanged_reuses + 1
+        );
     }
 
     #[test]
