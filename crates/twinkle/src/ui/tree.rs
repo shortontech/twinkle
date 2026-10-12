@@ -846,6 +846,7 @@ pub struct UiFrame<Message = String> {
     output_reuse: OutputReuseStats,
     declaration_root: Option<Element<Message>>,
     declaration_root_id: Option<UiId>,
+    generated_children: HashMap<UiId, Element<Message>>,
     transient_style_overlay_count: usize,
     transient_kind_overlay_count: usize,
     transient_whole_payload_clone_bytes: usize,
@@ -928,6 +929,7 @@ impl<Message> Default for UiFrame<Message> {
             output_reuse: OutputReuseStats::default(),
             declaration_root: None,
             declaration_root_id: None,
+            generated_children: HashMap::new(),
             transient_style_overlay_count: 0,
             transient_kind_overlay_count: 0,
             transient_whole_payload_clone_bytes: 0,
@@ -2497,8 +2499,12 @@ impl<Message: Clone> UiFrame<Message> {
             );
         }
         transient_overlay.finalize(&root, &root_id, Some(&tree.retained_nodes));
-        tree.selection_regions =
-            collect_selection_regions(&root, &tree.resolved, Some(&transient_overlay));
+        tree.selection_regions = collect_selection_regions(
+            &root,
+            &tree.resolved,
+            &tree.generated_children,
+            Some(&transient_overlay),
+        );
         for region in &tree.selection_regions {
             state.touch(region.id.clone());
             state.reconcile_document_selection(region.id.clone(), region.document.clone());
@@ -2739,9 +2745,10 @@ impl<Message: Clone> UiFrame<Message> {
             return;
         }
         let id = self.resolved.nodes[node_index].id.clone();
-        let independent_output_reuse_safe = self
-            .retained_nodes
-            .subtree_independent_output_reuse_safe(&id);
+        let independent_output_reuse_safe = element.declared_layout_child().is_none()
+            && self
+                .retained_nodes
+                .subtree_independent_output_reuse_safe(&id);
         let translation = (previous.is_some() && independent_output_reuse_safe)
             .then(|| {
                 self.retained_layout
@@ -3290,7 +3297,8 @@ impl<Message: Clone> UiFrame<Message> {
             &mut tree,
             None,
         );
-        tree.selection_regions = collect_selection_regions(&root, &tree.resolved, None);
+        tree.selection_regions =
+            collect_selection_regions(&root, &tree.resolved, &tree.generated_children, None);
         tree.reset_emission();
         emit_element(&root, 0, None, None, &mut tree, None, EmissionPhases::ALL);
         tree.append_scrollbars(None);
@@ -8908,7 +8916,7 @@ fn evaluate_element_effective<Message>(
         (constraints.max.height - vertical_padding).max(0.0),
     );
     let child_constraints = Constraints::loose(child_max);
-    let content = match kind {
+    let mut content = match kind {
         Kind::CustomPaint { .. } | Kind::CustomPaintCommands { .. } => Size::default(),
         Kind::Text {
             value,
@@ -9262,6 +9270,10 @@ fn evaluate_element_effective<Message>(
             })
             .unwrap_or_default(),
     };
+    if let Some(layout_child) = element.declared_layout_child() {
+        content.width = content.width.max(layout_child.preferred.width.max(0.0));
+        content.height = content.height.max(layout_child.preferred.height.max(0.0));
+    }
     let intrinsic_width = match (kind, style.width()) {
         (
             Kind::Text {
@@ -9336,12 +9348,14 @@ fn is_scroll_container<Message>(element: &Element<Message>) -> bool {
 fn collect_selection_regions<Message>(
     root: &Element<Message>,
     resolved: &ResolvedLayout,
+    generated_children: &HashMap<UiId, Element<Message>>,
     overlay: Option<&TransientStateJournal>,
 ) -> Vec<SelectionRegionLayout> {
     fn visit<Message>(
         element: &Element<Message>,
         node_index: usize,
         resolved: &ResolvedLayout,
+        generated_children: &HashMap<UiId, Element<Message>>,
         builders: &mut Vec<SelectionRegionBuilder>,
         active: Option<usize>,
         excluded: bool,
@@ -9449,6 +9463,21 @@ fn collect_selection_regions<Message>(
                 child,
                 child_index,
                 resolved,
+                generated_children,
+                builders,
+                active,
+                excluded,
+                overlay,
+            );
+        }
+        if let Some(child) = generated_children.get(&node.id)
+            && let Some(&child_index) = node.children.get(element.children.len())
+        {
+            visit(
+                child,
+                child_index,
+                resolved,
+                generated_children,
                 builders,
                 active,
                 excluded,
@@ -9458,7 +9487,16 @@ fn collect_selection_regions<Message>(
     }
 
     let mut builders = Vec::new();
-    visit(root, 0, resolved, &mut builders, None, false, overlay);
+    visit(
+        root,
+        0,
+        resolved,
+        generated_children,
+        &mut builders,
+        None,
+        false,
+        overlay,
+    );
     builders
         .into_iter()
         .map(|builder| SelectionRegionLayout {

@@ -8735,3 +8735,67 @@ fn definite_measurement_preserves_parent_constraints_and_style_limits() {
         Size::new(42.0, 17.0)
     );
 }
+
+#[test]
+fn layout_child_uses_final_content_rect_and_shares_frame_authority() {
+    let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observer = observed.clone();
+    let root = Container::new()
+        .id("responsive")
+        .fill_width()
+        .fill_height()
+        .padding(Insets::all(12.0))
+        .into_element()
+        .with_layout_child(move |rect| {
+            observer.borrow_mut().push(rect);
+            Container::new()
+                .fill_width()
+                .fill_height()
+                .child(Button::new(TestMessage::Named("generated"), "Generated"))
+                .into_element()
+        });
+    let frame = UiFrame::layout(root, Rect::new(5.0, 7.0, 240.0, 120.0));
+
+    assert_eq!(
+        observed.borrow().as_slice(),
+        &[Rect::new(17.0, 19.0, 216.0, 96.0)]
+    );
+    let generated = frame
+        .resolved_layout()
+        .nodes()
+        .iter()
+        .find(|node| node.id.as_str() == "root/responsive/$layout")
+        .expect("generated child belongs to the ordinary resolved tree");
+    assert_eq!(generated.allocated, Rect::new(17.0, 19.0, 216.0, 96.0));
+
+    let target = frame
+        .semantic_targets_for_message(&TestMessage::Named("generated"))
+        .into_iter()
+        .next()
+        .expect("generated child contributes ordinary hit and semantic records");
+    assert!(target.bounds.size.width > 0.0);
+    assert!(frame.accessibility_nodes().iter().any(|node| {
+        node.id.as_str().starts_with("root/responsive/$layout")
+            && node.label.as_deref() == Some("Generated")
+    }));
+}
+
+#[test]
+fn layout_child_intrinsic_hint_never_executes_during_measurement() {
+    let builds = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = builds.clone();
+    let element = Container::<()>::new()
+        .into_element()
+        .with_layout_child_preferred(Size::new(160.0, 90.0), move |_| {
+            observed.set(observed.get() + 1);
+            Container::new().into_element()
+        });
+
+    assert_eq!(
+        element.measure(Constraints::unbounded()),
+        Size::new(160.0, 90.0)
+    );
+    assert_eq!(builds.get(), 0);
+    let _ = UiFrame::layout(element, Rect::new(0.0, 0.0, 320.0, 180.0));
+    assert_eq!(builds.get(), 1);
+}

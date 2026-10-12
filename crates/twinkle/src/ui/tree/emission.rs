@@ -1498,6 +1498,18 @@ pub(super) fn emit_element<Message: Clone>(
             }
         }
     }
+    if let Some(generated) = tree.generated_children.get(&node.id).cloned()
+        && let Some(&child_index) = node.children.get(element.children.len())
+    {
+        tree.emit_incremental(
+            &generated,
+            child_index,
+            foreground,
+            overlay,
+            previous,
+            phases,
+        );
+    }
     // Sliders and dropdowns paint their native surface after the generic
     // style layer. Repeat an active/focused border in the foreground so their
     // own track or header cannot cover the selection indicator.

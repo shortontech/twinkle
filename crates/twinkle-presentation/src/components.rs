@@ -4096,51 +4096,80 @@ impl PanelNode {
                     chart.class_name.as_deref(),
                 );
                 let scope = scope.map(str::to_owned);
-                let mut element = chart
-                    .element(|action, payload| {
-                        Message::from_plugin_scoped(
-                            PluginMessage::Chart(action, payload),
-                            scope.as_deref(),
-                        )
-                    })
-                    .expect("admitted chart snapshot has a native projection")
-                    .into_element();
-                if let Some(action) = chart.inspect_action
-                    && !chart.inspector.is_empty()
-                {
-                    element = element.on_pointer_move_seeded(
-                        Message::from_plugin_scoped(
-                            PluginMessage::ChartInspect(action, chart.inspector.clone()),
-                            scope.as_deref(),
-                        ),
-                        Message::pointer,
-                    );
-                }
-                if let Some(action) = chart.pan_action {
-                    element = element.on_drag(
-                        Message::from_plugin_scoped(
-                            PluginMessage::ChartDrag(action),
-                            scope.as_deref(),
-                        ),
-                        Message::drag,
-                    );
-                }
-                if let Some(action) = chart.zoom_action {
-                    element = element.on_wheel_seeded(
-                        Message::from_plugin_scoped(
-                            PluginMessage::ChartWheel(action),
-                            scope.as_deref(),
-                        ),
-                        Message::wheel,
-                    );
-                }
-                with_margin(
-                    AnyView::new(apply_container_style(
-                        Container::new().id(chart.id.clone()).child(element),
-                        &style,
-                    )),
+                let authority = chart.shared_projection();
+                let inspect_action = chart.inspect_action;
+                let pan_action = chart.pan_action;
+                let zoom_action = chart.zoom_action;
+                let layout_scope = scope.clone();
+                let container = apply_container_style(
+                    Container::new()
+                        .id(chart.id.clone())
+                        .width(chart.width)
+                        .height(chart.height),
                     &style,
-                )
+                );
+                let project = move |rect: twinkle::Rect| {
+                    if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
+                        return Container::new()
+                            .fill_width()
+                            .fill_height()
+                            .semantic_role(SemanticRole::GraphicalCustomControl)
+                            .accessibility_label(authority.id.clone())
+                            .into_element();
+                    }
+                    let projected = authority
+                        .projected_for_bounds(rect)
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "admitted chart bounds {rect:?} have a native projection: {error}"
+                            )
+                        });
+                    let message_scope = layout_scope.clone();
+                    let mut element = projected
+                        .element(move |action, payload| {
+                            Message::from_plugin_scoped(
+                                PluginMessage::Chart(action, payload),
+                                message_scope.as_deref(),
+                            )
+                        })
+                        .expect("admitted chart snapshot has a native projection")
+                        .into_element();
+                    if let Some(action) = inspect_action
+                        && !projected.inspector.is_empty()
+                    {
+                        element = element.on_pointer_move_seeded(
+                            Message::from_plugin_scoped(
+                                PluginMessage::ChartInspect(action, projected.inspector.clone()),
+                                layout_scope.as_deref(),
+                            ),
+                            Message::pointer,
+                        );
+                    }
+                    if let Some(action) = pan_action {
+                        element = element.on_drag(
+                            Message::from_plugin_scoped(
+                                PluginMessage::ChartDrag(action),
+                                layout_scope.as_deref(),
+                            ),
+                            Message::drag,
+                        );
+                    }
+                    if let Some(action) = zoom_action {
+                        element = element.on_wheel_seeded(
+                            Message::from_plugin_scoped(
+                                PluginMessage::ChartWheel(action),
+                                layout_scope.as_deref(),
+                            ),
+                            Message::wheel,
+                        );
+                    }
+                    element
+                };
+                let element = container.into_element().with_layout_child_preferred(
+                    twinkle::Size::new(chart.width, chart.height),
+                    project,
+                );
+                with_margin(AnyView::new(element), &style)
             }
             Self::Badge {
                 label,
@@ -6910,6 +6939,98 @@ mod class_lookup_tests {
         assert_eq!(retained.node(), accepted.node());
         assert_eq!(retained.source(), accepted.source());
         assert_eq!(retained.generation(), 2);
+    }
+
+    #[cfg(feature = "charts")]
+    #[test]
+    fn chart_projection_tracks_final_flex_and_grid_allocations_once_per_size() {
+        for display in ["flex", "grid"] {
+            let source = json!({
+                "kind":"chart", "__nativeId":"chart", "id":"chart",
+                "width":320, "height":180, "tableAction":0, "children":[],
+                "data":{"revision":1,"datasets":[{"id":"d","keys":["a","b"],"columns":[
+                    {"name":"x","type":"number","values":[0,1]},
+                    {"name":"y","type":"number","values":[1,2]}
+                ]}]},
+                "spec":{"family":"line","title":"Trend","dataset":"d","x":"x","y":"y"}
+            });
+            let manifest = twinkle_protocol::SurfaceBounds {
+                surfaces: Vec::new(),
+            };
+            let sheet =
+                super::StyleSheet::compile("#chart { width: 100%; height: 100%; flex-grow: 1; }")
+                    .unwrap();
+            let retained = RetainedPanelTree::admit(&source, &manifest, None, 1).unwrap();
+            let images = super::PluginImages::new();
+            let view = || {
+                let chart = retained.node().view(&images, &sheet);
+                if display == "flex" {
+                    twinkle::AnyView::new(
+                        twinkle::Row::new()
+                            .fill_width()
+                            .fill_height()
+                            .align_items(twinkle::Align::Stretch)
+                            .child(chart),
+                    )
+                } else {
+                    twinkle::AnyView::new(
+                        twinkle::Component::into_element(
+                            twinkle::Grid::fixed(1).fill_width().child(chart),
+                        )
+                        .fill_height(),
+                    )
+                }
+            };
+
+            let first =
+                twinkle::UiFrame::layout(view(), twinkle::Rect::new(0.0, 0.0, 500.0, 300.0));
+            let PanelNode::Chart(chart) = retained.node() else {
+                panic!("expected chart")
+            };
+            assert_eq!(chart.retained_update_calls(), 2, "{display}");
+            let generated = first
+                .resolved_layout()
+                .nodes()
+                .iter()
+                .find(|node| node.id.as_str().ends_with("chart/$layout"))
+                .expect("chart projection is in the dashboard frame");
+            assert_eq!(
+                generated.allocated.size,
+                twinkle::Size::new(500.0, if display == "flex" { 180.0 } else { 300.0 })
+            );
+            assert!(first.accessibility_nodes().iter().any(|node| {
+                node.id.as_str().contains("chart/$layout")
+                    && node.role.as_deref() == Some("graphics-object")
+            }));
+
+            let _same =
+                twinkle::UiFrame::layout(view(), twinkle::Rect::new(0.0, 0.0, 500.0, 300.0));
+            assert_eq!(chart.retained_update_calls(), 2, "{display}");
+            let smaller =
+                twinkle::UiFrame::layout(view(), twinkle::Rect::new(0.0, 0.0, 260.0, 140.0));
+            assert_eq!(chart.retained_update_calls(), 3, "{display}");
+            let generated = smaller
+                .resolved_layout()
+                .nodes()
+                .iter()
+                .find(|node| node.id.as_str().ends_with("chart/$layout"))
+                .unwrap();
+            assert_eq!(generated.allocated.size, twinkle::Size::new(260.0, 140.0));
+
+            let zero = twinkle::UiFrame::layout(view(), twinkle::Rect::new(0.0, 0.0, 260.0, 0.0));
+            assert_eq!(chart.retained_update_calls(), 3, "{display}");
+            let generated = zero
+                .resolved_layout()
+                .nodes()
+                .iter()
+                .find(|node| node.id.as_str().ends_with("chart/$layout"))
+                .unwrap();
+            assert_eq!(generated.allocated.size.height, 0.0);
+            assert!(zero.accessibility_nodes().iter().any(|node| {
+                node.id.as_str().contains("chart/$layout")
+                    && node.role.as_deref() == Some("graphics-object")
+            }));
+        }
     }
 
     #[test]

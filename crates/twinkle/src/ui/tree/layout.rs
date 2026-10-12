@@ -959,6 +959,23 @@ pub(super) fn layout_element<Message: Clone>(
             }
         }
     }
+    if let Some(layout_child) = element.declared_layout_child() {
+        let content = tree.resolved.nodes[node_index].content;
+        let generated = (layout_child.build)(content);
+        let generated_id = id.scoped("$layout");
+        child_indices.push(layout_element(
+            &generated,
+            &generated_id,
+            content,
+            foreground,
+            descendant_clip,
+            overlay,
+            measurement,
+            tree,
+            previous,
+        ));
+        tree.generated_children.insert(id.clone(), generated);
+    }
     tree.resolved.nodes[node_index].children = child_indices;
     node_index
 }
@@ -971,7 +988,7 @@ fn geometry_reuse_safe<Message>(element: &Element<Message>) -> bool {
     // Reused geometry still recursively lays out every child. A descendant
     // therefore recreates its own scroll/dropdown records when reached; only
     // the current node must decline reuse when it owns auxiliary records.
-    !owns_auxiliary_layout_records
+    !owns_auxiliary_layout_records && element.declared_layout_child().is_none()
 }
 
 pub(super) fn resolved_child_id<Message>(

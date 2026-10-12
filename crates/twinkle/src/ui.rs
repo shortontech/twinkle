@@ -1596,8 +1596,21 @@ pub struct Element<Message = String> {
     adjustment_step: f32,
 }
 
+#[derive(Clone)]
+struct LayoutChild<Message> {
+    preferred: Size,
+    build: std::rc::Rc<dyn Fn(Rect) -> Element<Message>>,
+}
+
+impl<Message> std::fmt::Debug for LayoutChild<Message> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LayoutChild(..)")
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ElementEvents<Message> {
+    layout_child: Option<LayoutChild<Message>>,
     message: Option<Message>,
     context_message: Option<Message>,
     decrement_message: Option<Message>,
@@ -1621,6 +1634,7 @@ struct ElementEvents<Message> {
 impl<Message> Default for ElementEvents<Message> {
     fn default() -> Self {
         Self {
+            layout_child: None,
             message: None,
             context_message: None,
             decrement_message: None,
@@ -1644,6 +1658,37 @@ impl<Message> Default for ElementEvents<Message> {
 }
 
 impl<Message> Element<Message> {
+    /// Generate one native child from this element's final content rectangle.
+    ///
+    /// This is intended for bounded retained surfaces whose geometry,
+    /// interactions, and semantics must be prepared from the actual parent
+    /// allocation. The generated child participates in the same frame and is
+    /// never measured to determine its parent's size, preventing resize loops.
+    pub fn with_layout_child(self, builder: impl Fn(Rect) -> Element<Message> + 'static) -> Self {
+        self.with_layout_child_preferred(Size::default(), builder)
+    }
+
+    /// Generate a layout-time child with a stable intrinsic-size hint.
+    ///
+    /// The hint participates only in parent measurement; the child is still
+    /// built exactly once from the final allocated content rectangle.
+    pub fn with_layout_child_preferred(
+        mut self,
+        preferred: Size,
+        builder: impl Fn(Rect) -> Element<Message> + 'static,
+    ) -> Self {
+        self.events_mut().layout_child = Some(LayoutChild {
+            preferred,
+            build: std::rc::Rc::new(builder),
+        });
+        self
+    }
+
+    fn declared_layout_child(&self) -> Option<&LayoutChild<Message>> {
+        self.events
+            .as_deref()
+            .and_then(|events| events.layout_child.as_ref())
+    }
     fn events_mut(&mut self) -> &mut ElementEvents<Message> {
         self.events
             .get_or_insert_with(|| Box::new(ElementEvents::default()))
@@ -2321,7 +2366,8 @@ impl<Message> Element<Message> {
         Map: FnMut(Message) -> ParentMessage,
     {
         assert!(
-            self.message_mapper.is_none()
+            self.declared_layout_child().is_none()
+                && self.message_mapper.is_none()
                 && self.seeded_value_mapper.is_none()
                 && self.declared_pointer_move_mapper().is_none()
                 && self.declared_seeded_pointer_move_mapper().is_none()
@@ -2335,6 +2381,7 @@ impl<Message> Element<Message> {
         let events = self.events.and_then(|events| {
             let events = *events;
             let mapped = ElementEvents {
+                layout_child: None,
                 message: events.message.map(&mut *map),
                 context_message: events.context_message.map(&mut *map),
                 decrement_message: events.decrement_message.map(&mut *map),

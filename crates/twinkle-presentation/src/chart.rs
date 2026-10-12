@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc, sync::Arc};
 
 use serde_json::{Value, json};
 use twinkle::retained_surface::{
@@ -18,12 +18,82 @@ enum ChartProjectionAction {
     Event(ChartEvent),
 }
 
-#[derive(Clone, Debug)]
-struct RetainedChartView(ChartView);
+#[derive(Clone, Copy)]
+struct ChartActionMap {
+    table: usize,
+    toggle: Option<usize>,
+    navigate: Option<usize>,
+    select: Option<usize>,
+    inspect: Option<usize>,
+    viewport: Option<usize>,
+    viewport_command: Option<usize>,
+}
+
+impl ChartActionMap {
+    fn event(self, event: ChartEvent) -> (usize, Value) {
+        match event {
+            ChartEvent::Navigate(command) => (
+                self.navigate.unwrap_or(self.table),
+                json!({"kind":"navigate","command":format!("{command:?}")}),
+            ),
+            ChartEvent::ToggleSeries { series, visible } => (
+                self.toggle.unwrap_or(self.table),
+                json!({"series": series.as_ref(), "visible": visible}),
+            ),
+            ChartEvent::TableMode(visible) => (self.table, json!(visible)),
+            ChartEvent::Select {
+                dataset,
+                row,
+                series,
+                revision,
+            } => (
+                self.select.unwrap_or(self.table),
+                json!({"kind":"select","dataset":dataset.as_ref(),"row":row.0.as_ref(),"series":series.as_deref(),"revision":revision}),
+            ),
+            ChartEvent::Inspect {
+                dataset,
+                row,
+                revision,
+            } => (
+                self.inspect.unwrap_or(self.table),
+                json!({"kind":"inspect","dataset":dataset.as_ref(),"row":row.0.as_ref(),"revision":revision}),
+            ),
+            ChartEvent::ViewportChanged(viewport) => (
+                self.viewport.unwrap_or(self.table),
+                json!({"kind":"viewport","x":viewport.x,"y":viewport.y}),
+            ),
+            ChartEvent::Viewport(command) => (
+                self.viewport_command.unwrap_or(self.table),
+                json!({"kind":"viewportCommand","command":format!("{command:?}")}),
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RetainedChartView(Rc<RefCell<ChartView>>);
+
+impl Clone for RetainedChartView {
+    fn clone(&self) -> Self {
+        Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+    }
+}
+
+impl RetainedChartView {
+    fn new(view: ChartView) -> Self {
+        Self(Rc::new(RefCell::new(view)))
+    }
+
+    fn shared(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
 
 impl PartialEq for RetainedChartView {
     fn eq(&self, other: &Self) -> bool {
-        self.0.snapshot() == other.0.snapshot() && self.0.hits() == other.0.hits()
+        let this = self.0.borrow();
+        let other = other.0.borrow();
+        this.snapshot() == other.snapshot() && this.hits() == other.hits()
     }
 }
 
@@ -44,13 +114,97 @@ pub struct ChartDeclaration {
     pub(crate) pan_action: Option<usize>,
     pub(crate) zoom_action: Option<usize>,
     pub(crate) retained_bytes: usize,
-    width: f32,
-    height: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
     controlled_inspection: Option<(String, RowKey)>,
     retained: RetainedChartView,
 }
 
 impl ChartDeclaration {
+    fn action_map(&self) -> ChartActionMap {
+        ChartActionMap {
+            table: self.table_action,
+            toggle: self.toggle_action,
+            navigate: self.navigate_action,
+            select: self.select_action,
+            inspect: self.inspect_action,
+            viewport: self.viewport_action,
+            viewport_command: self.viewport_command_action,
+        }
+    }
+
+    pub(crate) fn shared_projection(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            class_name: self.class_name.clone(),
+            snapshot: self.snapshot.clone(),
+            inspector: self.inspector.clone(),
+            table_action: self.table_action,
+            toggle_action: self.toggle_action,
+            navigate_action: self.navigate_action,
+            select_action: self.select_action,
+            inspect_action: self.inspect_action,
+            viewport_action: self.viewport_action,
+            viewport_command_action: self.viewport_command_action,
+            pan_action: self.pan_action,
+            zoom_action: self.zoom_action,
+            retained_bytes: self.retained_bytes,
+            width: self.width,
+            height: self.height,
+            controlled_inspection: self.controlled_inspection.clone(),
+            retained: self.retained.shared(),
+        }
+    }
+
+    pub(crate) fn projected_for_bounds(&self, bounds: Rect) -> Result<Self, String> {
+        let mut projection = self.shared_projection();
+        let bounds = Rect::new(
+            0.0,
+            0.0,
+            bounds.size.width.max(0.0),
+            bounds.size.height.max(0.0),
+        );
+        let mut input = projection
+            .retained
+            .0
+            .borrow()
+            .snapshot()
+            .input
+            .ok_or("accepted chart projection has no retained input")?;
+        if input.bounds != bounds {
+            input.bounds = bounds;
+            projection
+                .retained
+                .0
+                .borrow_mut()
+                .update(input)
+                .map_err(|error| error.to_string())?;
+        }
+        let (inspector, mut snapshot, steady_bytes) = {
+            let retained = projection.retained.0.borrow();
+            (
+                retained.inspector(),
+                retained.snapshot().clone(),
+                retained.diagnostics().steady_bytes,
+            )
+        };
+        let has_overlay = projection
+            .controlled_inspection
+            .as_ref()
+            .and_then(|(dataset, row)| inspector.inspect_identity(dataset, row))
+            .is_some_and(|(hit, detail)| {
+                project_inspection_overlay(&mut snapshot, &hit, &detail, &ChartTheme::default())
+            });
+        projection.width = bounds.size.width;
+        projection.height = bounds.size.height;
+        projection.inspector = inspector;
+        projection.snapshot = snapshot;
+        projection.retained_bytes = steady_bytes
+            .saturating_add(projection.inspector.retained_bytes())
+            .saturating_add(if has_overlay { 2 * 1024 } else { 0 });
+        Ok(projection)
+    }
+
     pub fn parse(value: &Value, class_name: Option<String>) -> Result<Self, String> {
         let id = bounded_string(value, "id", 128)?;
         let width = dimension(value, "width")?;
@@ -119,7 +273,7 @@ impl ChartDeclaration {
             width,
             height,
             controlled_inspection,
-            retained: RetainedChartView(view),
+            retained: RetainedChartView::new(view),
         })
     }
 
@@ -136,12 +290,14 @@ impl ChartDeclaration {
         input.bounds = Rect::new(0.0, 0.0, width, height);
         self.retained
             .0
+            .borrow_mut()
             .update(input)
             .map_err(|error| error.to_string())?;
         self.width = width;
         self.height = height;
-        self.inspector = self.retained.0.inspector();
-        self.snapshot = self.retained.0.snapshot().clone();
+        let retained = self.retained.0.borrow();
+        self.inspector = retained.inspector();
+        self.snapshot = retained.snapshot().clone();
         let has_overlay = self
             .controlled_inspection
             .as_ref()
@@ -154,9 +310,7 @@ impl ChartDeclaration {
                     &ChartTheme::default(),
                 )
             });
-        self.retained_bytes = self
-            .retained
-            .0
+        self.retained_bytes = retained
             .diagnostics()
             .steady_bytes
             .saturating_add(self.inspector.retained_bytes())
@@ -166,46 +320,11 @@ impl ChartDeclaration {
 
     #[cfg(test)]
     pub(crate) fn retained_update_calls(&self) -> u64 {
-        self.retained.0.retained_diagnostics().update_calls
+        self.retained.0.borrow().retained_diagnostics().update_calls
     }
 
     pub fn event(&self, event: ChartEvent) -> (usize, Value) {
-        match event {
-            ChartEvent::Navigate(command) => (
-                self.navigate_action.unwrap_or(self.table_action),
-                json!({"kind":"navigate","command":format!("{command:?}")}),
-            ),
-            ChartEvent::ToggleSeries { series, visible } => (
-                self.toggle_action.unwrap_or(self.table_action),
-                json!({"series": series.as_ref(), "visible": visible}),
-            ),
-            ChartEvent::TableMode(visible) => (self.table_action, json!(visible)),
-            ChartEvent::Select {
-                dataset,
-                row,
-                series,
-                revision,
-            } => (
-                self.select_action.unwrap_or(self.table_action),
-                json!({"kind":"select","dataset":dataset.as_ref(),"row":row.0.as_ref(),"series":series.as_deref(),"revision":revision}),
-            ),
-            ChartEvent::Inspect {
-                dataset,
-                row,
-                revision,
-            } => (
-                self.inspect_action.unwrap_or(self.table_action),
-                json!({"kind":"inspect","dataset":dataset.as_ref(),"row":row.0.as_ref(),"revision":revision}),
-            ),
-            ChartEvent::ViewportChanged(viewport) => (
-                self.viewport_action.unwrap_or(self.table_action),
-                json!({"kind":"viewport","x":viewport.x,"y":viewport.y}),
-            ),
-            ChartEvent::Viewport(command) => (
-                self.viewport_command_action.unwrap_or(self.table_action),
-                json!({"kind":"viewportCommand","command":format!("{command:?}")}),
-            ),
-        }
+        self.action_map().event(event)
     }
 
     pub fn element<Message: Clone>(
@@ -278,9 +397,10 @@ impl ChartDeclaration {
                 element = element.accessibility_state(state);
             }
         }
+        let actions = self.action_map();
         Ok(element.map_message(move |action| match action {
             ChartProjectionAction::Event(event) => {
-                let (action, payload) = self.event(event);
+                let (action, payload) = actions.event(event);
                 message(action, payload)
             }
         }))
@@ -1236,18 +1356,34 @@ mod tests {
         let mut value = declaration();
         let mut chart = ChartDeclaration::parse(&value, None).unwrap();
         let original = chart.clone();
-        let old_hit = chart.retained.0.hits()[0].bounds;
-        assert_eq!(chart.retained.0.retained_diagnostics().update_calls, 1);
+        let old_hit = chart.retained.0.borrow().hits()[0].bounds;
+        assert_eq!(
+            chart
+                .retained
+                .0
+                .borrow()
+                .retained_diagnostics()
+                .update_calls,
+            1
+        );
 
         value["width"] = json!(840);
         value["height"] = json!(360);
         chart.resize(&value).unwrap();
-        assert_eq!(chart.retained.0.retained_diagnostics().update_calls, 2);
+        assert_eq!(
+            chart
+                .retained
+                .0
+                .borrow()
+                .retained_diagnostics()
+                .update_calls,
+            2
+        );
         assert_eq!(
             chart.snapshot.input.unwrap().bounds,
             Rect::new(0.0, 0.0, 840.0, 360.0)
         );
-        assert_ne!(chart.retained.0.hits()[0].bounds, old_hit);
+        assert_ne!(chart.retained.0.borrow().hits()[0].bounds, old_hit);
         assert!(chart.snapshot.output.semantics.iter().any(|semantic| {
             semantic.id.as_str() == "chart/inspection"
                 && semantic
