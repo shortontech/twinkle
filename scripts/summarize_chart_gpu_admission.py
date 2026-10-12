@@ -32,6 +32,8 @@ reuse_index = next(
 )
 if reuse_index is None:
     parser.error("trace has no zero-preparation, zero-upload retained reuse frame")
+if reuse_index == 0 or frames[reuse_index - 1].get("commands_prepared", 0) < 100:
+    parser.error("trace does not contain the expected 16-chart initial frame")
 
 changed = [
     frame
@@ -56,6 +58,7 @@ fields = (
 summary = {
     "status": "valid",
     "gpuFrames": len(frames),
+    "initial": {field: frames[reuse_index - 1].get(field) for field in fields},
     "unchanged": {field: frames[reuse_index].get(field) for field in fields},
     "hover": {field: changed[0].get(field) for field in fields},
     "zoom": {field: changed[1].get(field) for field in fields},

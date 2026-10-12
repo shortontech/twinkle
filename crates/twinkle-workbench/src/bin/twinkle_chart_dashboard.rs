@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, error::Error, sync::Arc, time::Duration};
 
 use twinkle::retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions};
 use twinkle::{
-    Application, Button, Column as UiColumn, Component, DragGesture, DragPhase, Point, Rect, Row,
-    Text, ViewContext, WheelGesture,
+    Application, Button, Column as UiColumn, Component, DragGesture, DragPhase, Grid, Point, Rect,
+    Row, Text, ViewContext, WheelGesture,
 };
 use twinkle_charts::{
     ChartData, ChartEvent, ChartInputBindings, ChartLimits, ChartModel, ChartState, ChartTable,
@@ -15,6 +15,7 @@ use twinkle_charts::{
 };
 
 const CHART_BOUNDS: Rect = Rect::new(0.0, 0.0, 760.0, 410.0);
+const GPU_ADMISSION_CHART_BOUNDS: Rect = Rect::new(0.0, 0.0, 240.0, 145.0);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Message {
@@ -48,6 +49,7 @@ struct Dashboard {
     drag_origin: Option<(Point, Viewport)>,
     status: String,
     gpu_admission_step: Option<u8>,
+    gpu_admission_charts: Option<Vec<ChartView>>,
 }
 
 impl Dashboard {
@@ -77,6 +79,7 @@ impl Dashboard {
             drag_origin: None,
             status: "Hover a datum or use keyboard/controller navigation".into(),
             gpu_admission_step: None,
+            gpu_admission_charts: None,
         };
         dashboard.prepare()?;
         Ok(dashboard)
@@ -115,9 +118,31 @@ impl Dashboard {
         }
     }
 
-    fn enable_gpu_admission(mut self) -> Self {
+    fn enable_gpu_admission(mut self) -> Result<Self, twinkle_charts::ChartError> {
+        let chart_spec = Arc::new(spec());
+        let mut charts = Vec::with_capacity(16);
+        for index in 0..16 {
+            let mut chart = ChartView::new(
+                ChartModel::new(
+                    Arc::clone(&chart_spec),
+                    Arc::clone(&self.data),
+                    self.limits.clone(),
+                )?
+                .with_state(self.state.clone()),
+            )?;
+            chart.update(RetainedSurfaceInput::new(
+                GPU_ADMISSION_CHART_BOUNDS,
+                1.0,
+                RetainedSurfaceRevisions {
+                    content: self.data.revision().saturating_add(index as u64),
+                    ..RetainedSurfaceRevisions::default()
+                },
+            ))?;
+            charts.push(chart);
+        }
         self.gpu_admission_step = Some(0);
-        self
+        self.gpu_admission_charts = Some(charts);
+        Ok(self)
     }
 }
 
@@ -230,18 +255,35 @@ impl Application for Dashboard {
             // records retained scene reuse independently of chart mutation.
             0 => self.gpu_admission_step = Some(1),
             1 => {
-                let _ = self
-                    .chart
-                    .inspect_nearest_detail(Point { x: 380.0, y: 205.0 });
+                let charts = self
+                    .gpu_admission_charts
+                    .as_mut()
+                    .expect("admission charts exist while admission is active");
+                let _ = charts[0].inspect_nearest_detail(Point { x: 120.0, y: 72.0 });
                 self.status = "GPU admission hover".into();
                 self.gpu_admission_step = Some(2);
             }
             2 => {
-                if let Some(ChartEvent::ViewportChanged(viewport)) = self
-                    .chart
-                    .viewport_event(ViewportCommand::ZoomIn, Self::policy())
+                let charts = self
+                    .gpu_admission_charts
+                    .as_mut()
+                    .expect("admission charts exist while admission is active");
+                if let Some(ChartEvent::ViewportChanged(viewport)) =
+                    charts[0].viewport_event(ViewportCommand::ZoomIn, Self::policy())
                 {
-                    self.apply_viewport(viewport);
+                    self.state.viewport = Some(viewport);
+                    self.revision = self.revision.saturating_add(1);
+                    let _ = charts[0].update_state(
+                        self.state.clone(),
+                        RetainedSurfaceInput::new(
+                            GPU_ADMISSION_CHART_BOUNDS,
+                            1.0,
+                            RetainedSurfaceRevisions {
+                                content: self.revision,
+                                ..RetainedSurfaceRevisions::default()
+                            },
+                        ),
+                    );
                 }
                 self.status = "GPU admission zoom".into();
                 self.gpu_admission_step = Some(3);
@@ -259,7 +301,17 @@ impl Application for Dashboard {
     }
 
     fn view(&self, context: ViewContext) -> impl twinkle::View<Message> {
-        let content = if self.table_mode {
+        let content = if let Some(charts) = &self.gpu_admission_charts {
+            Grid::fixed(4)
+                .gap(4.0)
+                .children(charts.iter().enumerate().map(|(index, chart)| {
+                    chart
+                        .element(format!("gpu-admission-chart-{index}"), Message::Chart)
+                        .expect("accepted admission chart projects through public APIs")
+                        .into_element()
+                }))
+                .into_element()
+        } else if self.table_mode {
             let table = ChartTable::new(self.data.clone(), self.limits.clone());
             let page = table
                 .page_filtered(
@@ -388,7 +440,7 @@ fn data(limits: &ChartLimits) -> Result<ChartData, twinkle_charts::ChartError> {
 fn main() -> Result<(), Box<dyn Error>> {
     let dashboard = Dashboard::new()?;
     let dashboard = if std::env::args().any(|argument| argument == "--gpu-admission") {
-        dashboard.enable_gpu_admission()
+        dashboard.enable_gpu_admission()?
     } else {
         dashboard
     };
@@ -451,6 +503,41 @@ mod tests {
                 .semantic_nodes()
                 .iter()
                 .any(|node| node.role == Some(SemanticRole::Grid))
+        );
+    }
+
+    #[test]
+    fn gpu_admission_uses_sixteen_independent_charts_and_mutates_only_the_first() {
+        let mut dashboard = Dashboard::new().unwrap().enable_gpu_admission().unwrap();
+        let charts = dashboard.gpu_admission_charts.as_ref().unwrap();
+        assert_eq!(charts.len(), 16);
+        assert!(
+            charts
+                .iter()
+                .all(|chart| chart.active_inspection().is_none())
+        );
+
+        assert!(dashboard.poll()); // unchanged retained frame
+        assert!(dashboard.poll()); // one-chart hover
+        let charts = dashboard.gpu_admission_charts.as_ref().unwrap();
+        assert!(charts[0].active_inspection().is_some());
+        assert!(
+            charts[1..]
+                .iter()
+                .all(|chart| chart.active_inspection().is_none())
+        );
+
+        let frame = UiFrame::layout(
+            dashboard.view(context(1080.0)),
+            Rect::new(0.0, 0.0, 1080.0, 760.0),
+        );
+        assert_eq!(
+            frame
+                .semantic_nodes()
+                .iter()
+                .filter(|node| node.role == Some(SemanticRole::GraphicalCustomControl))
+                .count(),
+            16
         );
     }
 }
