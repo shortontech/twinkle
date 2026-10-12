@@ -2,6 +2,16 @@ use super::*;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
+// Output-attribution counters must not perturb normal release timings.
+macro_rules! count_output_reuse {
+    ($stats:expr, $field:ident, $amount:expr) => {
+        #[cfg(feature = "pipeline-attribution")]
+        {
+            $stats.$field = $stats.$field.saturating_add($amount);
+        }
+    };
+}
+
 mod emission;
 mod layout;
 mod scrollbar;
@@ -681,6 +691,37 @@ pub(crate) struct RetainedPaintWork {
     pub vector_bytes_after: usize,
 }
 
+#[cfg(feature = "pipeline-attribution")]
+#[derive(Clone, Copy, Debug, Default)]
+struct OutputReuseStats {
+    resolved_records_copied: usize,
+    resolved_record_bytes_copied: usize,
+    resolved_child_index_bytes_copied: usize,
+    paint_commands_copied: usize,
+    paint_command_record_bytes_copied: usize,
+    paint_command_payload_bytes_copied: usize,
+    paint_fragments_copied: usize,
+    paint_fragment_record_bytes_copied: usize,
+    zero_translation_commands: usize,
+    translated_commands: usize,
+    interaction_records_scanned: usize,
+    interaction_records_copied: usize,
+    interaction_subtree_node_probes: usize,
+    hit_records_scanned: usize,
+    hit_records_copied: usize,
+    message_records_scanned: usize,
+    message_records_copied: usize,
+    context_records_scanned: usize,
+    context_records_copied: usize,
+    focus_records_scanned: usize,
+    focus_records_copied: usize,
+    text_input_records_scanned: usize,
+    text_input_records_copied: usize,
+    text_input_payload_bytes_copied: usize,
+    text_command_records_scanned: usize,
+    text_command_records_copied: usize,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DiagnosticMode {
     #[default]
@@ -789,6 +830,8 @@ pub struct UiFrame<Message = String> {
     interaction_nodes_reused: usize,
     semantic_nodes_executed: usize,
     semantic_nodes_reused: usize,
+    #[cfg(feature = "pipeline-attribution")]
+    output_reuse: OutputReuseStats,
     declaration_root: Option<Element<Message>>,
     declaration_root_id: Option<UiId>,
     transient_style_overlay_count: usize,
@@ -869,6 +912,8 @@ impl<Message> Default for UiFrame<Message> {
             interaction_nodes_reused: 0,
             semantic_nodes_executed: 0,
             semantic_nodes_reused: 0,
+            #[cfg(feature = "pipeline-attribution")]
+            output_reuse: OutputReuseStats::default(),
             declaration_root: None,
             declaration_root_id: None,
             transient_style_overlay_count: 0,
@@ -2460,6 +2505,36 @@ impl<Message: Clone> UiFrame<Message> {
         tree.transient_overlay_table_allocations = transient_overlay.table_allocations();
         tree.declaration_root = Some(root);
         tree.release_build_scratch();
+        crate::pipeline_trace::event!({
+            "event": "native_output_reuse",
+            "resolvedRecordsCopied": tree.output_reuse.resolved_records_copied,
+            "resolvedRecordBytesCopied": tree.output_reuse.resolved_record_bytes_copied,
+            "resolvedChildIndexBytesCopied": tree.output_reuse.resolved_child_index_bytes_copied,
+            "paintCommandsCopied": tree.output_reuse.paint_commands_copied,
+            "paintCommandRecordBytesCopied": tree.output_reuse.paint_command_record_bytes_copied,
+            "paintCommandPayloadBytesCopied": tree.output_reuse.paint_command_payload_bytes_copied,
+            "paintFragmentsCopied": tree.output_reuse.paint_fragments_copied,
+            "paintFragmentRecordBytesCopied": tree.output_reuse.paint_fragment_record_bytes_copied,
+            "zeroTranslationCommands": tree.output_reuse.zero_translation_commands,
+            "translatedCommands": tree.output_reuse.translated_commands,
+            "interactionRecordsScanned": tree.output_reuse.interaction_records_scanned,
+            "interactionRecordsCopied": tree.output_reuse.interaction_records_copied,
+            "interactionSubtreeNodeProbes": tree.output_reuse.interaction_subtree_node_probes,
+            "hitRecordsScanned": tree.output_reuse.hit_records_scanned,
+            "hitRecordsCopied": tree.output_reuse.hit_records_copied,
+            "messageRecordsScanned": tree.output_reuse.message_records_scanned,
+            "messageRecordsCopied": tree.output_reuse.message_records_copied,
+            "contextRecordsScanned": tree.output_reuse.context_records_scanned,
+            "contextRecordsCopied": tree.output_reuse.context_records_copied,
+            "focusRecordsScanned": tree.output_reuse.focus_records_scanned,
+            "focusRecordsCopied": tree.output_reuse.focus_records_copied,
+            "textInputRecordsScanned": tree.output_reuse.text_input_records_scanned,
+            "textInputRecordsCopied": tree.output_reuse.text_input_records_copied,
+            "textInputPayloadBytesCopied": tree.output_reuse.text_input_payload_bytes_copied,
+            "textCommandRecordsScanned": tree.output_reuse.text_command_records_scanned,
+            "textCommandRecordsCopied": tree.output_reuse.text_command_records_copied,
+            "boundary": "Candidate-frame output reuse work. Record bytes include complete inline record storage. Paint payload bytes include cloned String UTF-8 and StyledText span storage; Arc image pixels and Arc font-family bytes are shared and therefore excluded. Text-input payload bytes include cloned initial String UTF-8. Generic Message-owned heap payload is opaque and excluded. Scans count prior-generation records tested for subtree membership; node probes count retained subtree cardinality queries. Whole-frame allocation calls/bytes are emitted by allocator attribution when its counter is installed."
+        });
         tree
     }
 
@@ -2671,12 +2746,6 @@ impl<Message: Clone> UiFrame<Message> {
             return false;
         };
         let command_offset = self.commands.len();
-        self.commands.extend(
-            commands
-                .iter()
-                .cloned()
-                .map(|command| translate_paint_command(command, translation)),
-        );
         let Some(fragments) = previous.paint_fragments.get(fragment_range) else {
             return false;
         };
@@ -2689,6 +2758,41 @@ impl<Message: Clone> UiFrame<Message> {
         {
             return false;
         }
+        count_output_reuse!(self.output_reuse, paint_commands_copied, commands.len());
+        count_output_reuse!(
+            self.output_reuse,
+            paint_command_record_bytes_copied,
+            commands
+                .len()
+                .saturating_mul(std::mem::size_of::<PaintCommand>())
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            paint_command_payload_bytes_copied,
+            commands
+                .iter()
+                .map(paint_command_cloned_payload_bytes)
+                .fold(0usize, usize::saturating_add)
+        );
+        if translation == Point::default() {
+            count_output_reuse!(self.output_reuse, zero_translation_commands, commands.len());
+        } else {
+            count_output_reuse!(self.output_reuse, translated_commands, commands.len());
+        }
+        self.commands.extend(
+            commands
+                .iter()
+                .cloned()
+                .map(|command| translate_paint_command(command, translation)),
+        );
+        count_output_reuse!(self.output_reuse, paint_fragments_copied, fragments.len());
+        count_output_reuse!(
+            self.output_reuse,
+            paint_fragment_record_bytes_copied,
+            fragments
+                .len()
+                .saturating_mul(std::mem::size_of::<PaintFragment>())
+        );
         for fragment in fragments {
             self.paint_fragments.push(PaintFragment {
                 id: fragment.id.clone(),
@@ -2719,6 +2823,11 @@ impl<Message: Clone> UiFrame<Message> {
             return false;
         }
         let subtree_nodes = self.retained_nodes.subtree_node_count(id).unwrap_or(1);
+        count_output_reuse!(
+            self.output_reuse,
+            interaction_subtree_node_probes,
+            subtree_nodes
+        );
         if subtree_nodes == 1 {
             if let Some(hit) = previous
                 .resolved_indices
@@ -2736,11 +2845,22 @@ impl<Message: Clone> UiFrame<Message> {
                     .map(|bounds| translate_rect(bounds, translation));
                 let hit_id = hit.id.clone();
                 self.hits.push(hit);
+                count_output_reuse!(self.output_reuse, interaction_records_copied, 1);
+                count_output_reuse!(self.output_reuse, hit_records_scanned, 1);
+                count_output_reuse!(self.output_reuse, hit_records_copied, 1);
                 if let Some(node) = self.resolved.find_mut(&hit_id) {
                     node.hit_stack = Some(current_index);
                 }
             }
             if let Some(indices) = previous.message_indices.get(id) {
+                count_output_reuse!(
+                    self.output_reuse,
+                    interaction_records_scanned,
+                    indices.len()
+                );
+                count_output_reuse!(self.output_reuse, interaction_records_copied, indices.len());
+                count_output_reuse!(self.output_reuse, message_records_scanned, indices.len());
+                count_output_reuse!(self.output_reuse, message_records_copied, indices.len());
                 self.messages.extend(indices.iter().filter_map(|index| {
                     let mut region = previous.messages.get(*index)?.clone();
                     region.rect = translate_rect(region.rect, translation);
@@ -2748,6 +2868,17 @@ impl<Message: Clone> UiFrame<Message> {
                 }));
             }
         } else {
+            count_output_reuse!(
+                self.output_reuse,
+                interaction_records_scanned,
+                previous.hits.len() + previous.messages.len()
+            );
+            count_output_reuse!(self.output_reuse, hit_records_scanned, previous.hits.len());
+            count_output_reuse!(
+                self.output_reuse,
+                message_records_scanned,
+                previous.messages.len()
+            );
             for hit in &previous.hits {
                 if previous.is_descendant_or_self(id, &hit.id) {
                     let current_index = self.hits.len();
@@ -2759,11 +2890,15 @@ impl<Message: Clone> UiFrame<Message> {
                         .map(|bounds| translate_rect(bounds, translation));
                     let hit_id = hit.id.clone();
                     self.hits.push(hit);
+                    count_output_reuse!(self.output_reuse, interaction_records_copied, 1);
+                    count_output_reuse!(self.output_reuse, hit_records_copied, 1);
                     if let Some(node) = self.resolved.find_mut(&hit_id) {
                         node.hit_stack = Some(current_index);
                     }
                 }
             }
+            #[cfg(feature = "pipeline-attribution")]
+            let message_start = self.messages.len();
             self.messages.extend(
                 previous
                     .messages
@@ -2775,7 +2910,57 @@ impl<Message: Clone> UiFrame<Message> {
                         region
                     }),
             );
+            count_output_reuse!(
+                self.output_reuse,
+                interaction_records_copied,
+                self.messages.len().saturating_sub(message_start)
+            );
+            count_output_reuse!(
+                self.output_reuse,
+                message_records_copied,
+                self.messages.len().saturating_sub(message_start)
+            );
         }
+        count_output_reuse!(
+            self.output_reuse,
+            interaction_records_scanned,
+            previous.context_messages.len()
+                + previous.focus_messages.len()
+                + previous.text_inputs.len()
+                + previous.text_commands.len()
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            context_records_scanned,
+            previous.context_messages.len()
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            focus_records_scanned,
+            previous.focus_messages.len()
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            text_input_records_scanned,
+            previous.text_inputs.len()
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            text_command_records_scanned,
+            previous.text_commands.len()
+        );
+        #[cfg(feature = "pipeline-attribution")]
+        let ancillary_start = self.context_messages.len()
+            + self.focus_messages.len()
+            + self.text_inputs.len()
+            + self.text_commands.len();
+        #[cfg(feature = "pipeline-attribution")]
+        let channel_starts = (
+            self.context_messages.len(),
+            self.focus_messages.len(),
+            self.text_inputs.len(),
+            self.text_commands.len(),
+        );
         self.context_messages.extend(
             previous
                 .context_messages
@@ -2811,6 +2996,43 @@ impl<Message: Clone> UiFrame<Message> {
                 .iter()
                 .filter(|region| previous.is_descendant_or_self(id, &region.id))
                 .cloned(),
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            interaction_records_copied,
+            self.context_messages.len()
+                + self.focus_messages.len()
+                + self.text_inputs.len()
+                + self.text_commands.len()
+                - ancillary_start
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            context_records_copied,
+            self.context_messages.len() - channel_starts.0
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            focus_records_copied,
+            self.focus_messages.len() - channel_starts.1
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            text_input_records_copied,
+            self.text_inputs.len() - channel_starts.2
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            text_input_payload_bytes_copied,
+            self.text_inputs[channel_starts.2..]
+                .iter()
+                .map(|region| region.initial.len())
+                .fold(0usize, usize::saturating_add)
+        );
+        count_output_reuse!(
+            self.output_reuse,
+            text_command_records_copied,
+            self.text_commands.len() - channel_starts.3
         );
         true
     }
@@ -8010,6 +8232,20 @@ fn translate_rect(mut rect: Rect, translation: Point) -> Rect {
     rect.origin.x += translation.x;
     rect.origin.y += translation.y;
     rect
+}
+
+#[cfg(feature = "pipeline-attribution")]
+fn paint_command_cloned_payload_bytes(command: &PaintCommand) -> usize {
+    match command {
+        PaintCommand::Text { text, .. } => text.len(),
+        PaintCommand::StyledText { text, spans, .. } => text.len().saturating_add(
+            spans
+                .len()
+                .saturating_mul(std::mem::size_of::<StyledTextSpan>()),
+        ),
+        // Image pixels and optional high-density pixels remain shared Arc allocations.
+        _ => 0,
+    }
 }
 
 fn translate_paint_command(mut command: PaintCommand, translation: Point) -> PaintCommand {

@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+#[ignore = "release-profile stationary sparse paint-output reuse workload"]
+fn stationary_sparse_paint_output_reuse_release_workload() {
+    const NODES: usize = 4_096;
+    const WARMUP: usize = 10;
+    const ITERATIONS: usize = 200;
+    let view = |revision: usize| {
+        Column::new()
+            .children((0..NODES).map(|index| {
+                Container::<()>::new()
+                    .id(format!("paint-{index}"))
+                    .width(4.0)
+                    .height(4.0)
+                    .background(if index == revision % NODES {
+                        0xff44_6688
+                    } else {
+                        0xff22_3344
+                    })
+            }))
+            .into_element()
+    };
+    let bounds = Rect::new(0.0, 0.0, 640.0, 20_000.0);
+    let mut state = UiStateStore::default();
+    let mut frame = UiFrame::resolve(view(0), FrameRequest::new(bounds, &mut state));
+    for revision in 1..=WARMUP {
+        frame = UiFrame::resolve_against_reusing(
+            view(revision),
+            FrameRequest::new(bounds, &mut state),
+            &mut frame,
+        );
+    }
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    let total_started = std::time::Instant::now();
+    for iteration in 0..ITERATIONS {
+        let declaration = view(WARMUP + iteration + 1);
+        let started = std::time::Instant::now();
+        frame = UiFrame::resolve_against_reusing(
+            declaration,
+            FrameRequest::new(bounds, &mut state),
+            &mut frame,
+        );
+        samples.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    let total_us = total_started.elapsed().as_secs_f64() * 1_000_000.0;
+    samples.sort_by(f64::total_cmp);
+    eprintln!(
+        "stationary_sparse_paint_output nodes={NODES} warmup={WARMUP} iterations={ITERATIONS} p50_us={:.3} p95_us={:.3} total_us={total_us:.3}",
+        samples[ITERATIONS / 2],
+        samples[(ITERATIONS * 95).div_ceil(100) - 1],
+    );
+}
+
+#[test]
 #[ignore = "release-profile sparse active-overlay admission workload"]
 fn sparse_active_overlay_dependency_elision_release_workload() {
     const WARMUP: usize = 10;
@@ -1327,6 +1379,35 @@ fn consuming_rebuild_transfers_declaration_without_staging_message_clone() {
             .transient_declaration_nodes_cloned,
         0
     );
+}
+
+#[test]
+fn invalid_paint_reuse_range_falls_back_without_duplicate_output() {
+    let view = || {
+        Column::new()
+            .child(Text::<()>::new("one").id("one"))
+            .child(Text::<()>::new("two").id("two"))
+            .into_element()
+    };
+    let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+    let mut state = UiStateStore::default();
+    let mut previous = UiFrame::resolve(view(), FrameRequest::new(bounds, &mut state));
+    let root_command_end = previous
+        .paint_fragments
+        .last()
+        .expect("root fragment")
+        .commands
+        .end;
+    // Keep the root command range valid while corrupting a descendant range.
+    // The old ordering appended the root commands before discovering this error.
+    previous.paint_fragments[0].commands.end = root_command_end + 1;
+
+    let recovered =
+        UiFrame::resolve_against(view(), FrameRequest::new(bounds, &mut state), &previous);
+    let mut cold_state = UiStateStore::default();
+    let cold = UiFrame::resolve(view(), FrameRequest::new(bounds, &mut cold_state));
+    assert_eq!(recovered.commands(), cold.commands());
+    assert_eq!(recovered.resolved_layout(), cold.resolved_layout());
 }
 
 #[test]

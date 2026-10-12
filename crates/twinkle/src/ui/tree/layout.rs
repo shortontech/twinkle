@@ -72,6 +72,21 @@ pub(super) fn layout_element<Message: Clone>(
                 }
                 node
             }));
+        count_output_reuse!(tree.output_reuse, resolved_records_copied, count);
+        count_output_reuse!(
+            tree.output_reuse,
+            resolved_record_bytes_copied,
+            count.saturating_mul(std::mem::size_of::<ResolvedNode>())
+        );
+        count_output_reuse!(
+            tree.output_reuse,
+            resolved_child_index_bytes_copied,
+            old_nodes
+                .iter()
+                .map(|node| node.children.len())
+                .fold(0usize, usize::saturating_add)
+                .saturating_mul(std::mem::size_of::<usize>())
+        );
         tree.resolved_nodes_reused = tree.resolved_nodes_reused.saturating_add(count);
         return new_start;
     }
