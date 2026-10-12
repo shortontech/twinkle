@@ -153,6 +153,12 @@ coordinate/reduction, tessellation-geometry, and transform-table scratch owners.
 `ChartDiagnostics` reports each scratch ceiling, their total transient bytes,
 accepted steady bytes, and the combined peak; caller-owned source storage remains
 outside chart ownership.
+
+Retained-update tests use a forced-fresh model as an oracle after data replacement,
+visibility and viewport changes, theme changes, bounds changes, fractional scale,
+and font revision changes. Paint, interactions, semantics, measurement, and hit
+identity must match; damage records are intentionally excluded because a retained
+update may report a smaller valid damage region than a cold frame.
 Model construction and replacement revalidate immutable data against the model's
 own limits, even when that snapshot was originally created under looser limits.
 The cap-churn matrix rejects oversized rows, columns, layers, transforms, ticks,

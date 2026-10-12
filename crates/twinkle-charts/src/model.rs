@@ -4278,6 +4278,166 @@ mod tests {
     }
 
     #[test]
+    fn retained_transitions_match_forced_fresh_preparation() {
+        fn data(revision: u64, rows: &[(&str, f64, f64, &str)]) -> Arc<ChartData> {
+            let limits = ChartLimits::default();
+            Arc::new(
+                ChartData::new(
+                    revision,
+                    vec![
+                        Dataset::new(
+                            DatasetId::from("oracle"),
+                            rows.iter()
+                                .map(|row| RowKey::from(row.0))
+                                .collect::<Vec<_>>(),
+                            vec![
+                                Column::new(
+                                    "x",
+                                    rows.iter()
+                                        .map(|row| DataValue::Number(row.1))
+                                        .collect::<Vec<_>>(),
+                                ),
+                                Column::new(
+                                    "y",
+                                    rows.iter()
+                                        .map(|row| DataValue::Number(row.2))
+                                        .collect::<Vec<_>>(),
+                                ),
+                                Column::new(
+                                    "series",
+                                    rows.iter()
+                                        .map(|row| DataValue::Category(Arc::from(row.3)))
+                                        .collect::<Vec<_>>(),
+                                ),
+                            ],
+                        )
+                        .unwrap(),
+                    ],
+                    &limits,
+                )
+                .unwrap(),
+            )
+        }
+        fn spec() -> Arc<ChartSpec> {
+            let mut spec = Recipes::line(
+                "Oracle",
+                FieldRef::new("oracle", "x"),
+                FieldRef::new("oracle", "y"),
+            );
+            spec.layers[0].encodings.push(Encoding {
+                channel: Channel::Series,
+                field: FieldRef::new("oracle", "series"),
+                scale: Some(Arc::from("series")),
+            });
+            spec.scales.push(Scale {
+                name: Arc::from("series"),
+                kind: ScaleKind::Color,
+                domain: None,
+                clamp: false,
+                reversed: false,
+                unit: None,
+            });
+            spec.legends.push(crate::Legend {
+                scale: Arc::from("series"),
+                title: Some(Arc::from("Series")),
+                toggleable: true,
+            });
+            Arc::new(spec)
+        }
+        fn assert_fresh_parity(view: &ChartView, input: RetainedSurfaceInput) {
+            let accepted = view.host.model();
+            let model = ChartModel::new(
+                Arc::clone(&accepted.spec),
+                Arc::clone(&accepted.data),
+                accepted.limits.clone(),
+            )
+            .unwrap()
+            .with_theme(accepted.theme.clone())
+            .unwrap()
+            .with_state(accepted.state.clone());
+            let mut fresh = ChartView::new(model).unwrap();
+            fresh.update(input).unwrap();
+            assert_eq!(view.snapshot().output.paint, fresh.snapshot().output.paint);
+            assert_eq!(
+                view.snapshot().output.interactions,
+                fresh.snapshot().output.interactions
+            );
+            assert_eq!(
+                view.snapshot().output.semantics,
+                fresh.snapshot().output.semantics
+            );
+            assert_eq!(
+                view.snapshot().output.measured,
+                fresh.snapshot().output.measured
+            );
+            assert_eq!(view.hits(), fresh.hits());
+        }
+        let initial_data = data(
+            1,
+            &[
+                ("a", 0.0, 1.0, "one"),
+                ("b", 1.0, 3.0, "two"),
+                ("c", 2.0, 2.0, "one"),
+            ],
+        );
+        let spec = spec();
+        let mut view = ChartView::new(
+            ChartModel::new(Arc::clone(&spec), initial_data, ChartLimits::default()).unwrap(),
+        )
+        .unwrap();
+        let input = |bounds, scale, content, theme, font| {
+            RetainedSurfaceInput::new(
+                bounds,
+                scale,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content,
+                    theme,
+                    font,
+                    ..Default::default()
+                },
+            )
+        };
+
+        let mut accepted_input = input(Rect::new(0.0, 0.0, 320.0, 180.0), 1.0, 1, 0, 0);
+        view.update(accepted_input).unwrap();
+        assert_fresh_parity(&view, accepted_input);
+
+        accepted_input = input(Rect::new(0.0, 0.0, 640.0, 300.0), 1.25, 1, 0, 1);
+        view.update(accepted_input).unwrap();
+        assert_fresh_parity(&view, accepted_input);
+
+        let state = ChartState {
+            visible_series: Some([Arc::from("two")].into_iter().collect()),
+            viewport: Some(crate::Viewport {
+                x: Some([0.25, 1.75]),
+                y: Some([0.0, 4.0]),
+            }),
+            ..Default::default()
+        };
+        accepted_input = input(accepted_input.bounds, 1.25, 2, 0, 1);
+        view.update_state(state, accepted_input).unwrap();
+        assert_fresh_parity(&view, accepted_input);
+
+        accepted_input = input(accepted_input.bounds, 1.25, 2, 1, 1);
+        view.update_theme(ChartTheme::dark(), accepted_input)
+            .unwrap();
+        assert_fresh_parity(&view, accepted_input);
+
+        let replacement = data(
+            3,
+            &[
+                ("c", 2.0, 4.0, "one"),
+                ("b", 1.0, 2.0, "two"),
+                ("d", 3.0, 5.0, "two"),
+            ],
+        );
+        accepted_input = input(accepted_input.bounds, 1.25, 3, 1, 1);
+        view.replace_and_update(spec, replacement, accepted_input)
+            .unwrap();
+        assert_fresh_parity(&view, accepted_input);
+    }
+
+    #[test]
     fn structural_cap_replacement_matrix_preserves_then_contracts_accepted_state() {
         fn data_with(rows: usize, extra_column: bool, revision: u64) -> Arc<ChartData> {
             let keys = (0..rows)
