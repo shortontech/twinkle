@@ -50,7 +50,12 @@ reference results and exact scope are documented in
 `ChartSpec` composes `Layer`, `Mark`, `Encoding`, named `Scale`, ordered
 `Transform`, `Axis`, `Legend`, `Annotation`, and `Facet` descriptors. Named scales
 are shared across layers. Facets share domains by default and can explicitly use
-independent domains. Convenience recipes return normal inspectable specs, so an
+independent domains. V1 never infers a secondary axis: callers explicitly bind
+layers and axes to named scales. One vertical scale is placed on the left; an
+explicit second is placed on the right with reserved guide space. Both require
+a title or unit when independent, render once even when shared by several layers,
+and a third vertical axis is rejected instead of overlapping ambiguously.
+Convenience recipes return normal inspectable specs, so an
 application can append layers or guides before creating a model.
 
 The v1 recipe surface includes line/step/multi-series, vertical and horizontal

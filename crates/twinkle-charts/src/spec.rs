@@ -427,6 +427,37 @@ impl ChartSpec {
                 });
             }
         }
+        let vertical_axis_scales = self
+            .axes
+            .iter()
+            .filter(|axis| {
+                self.layers.iter().any(|layer| {
+                    layer.encodings.iter().any(|encoding| {
+                        matches!(encoding.channel, Channel::Y | Channel::Y2)
+                            && encoding.scale.as_deref() == Some(axis.scale.as_ref())
+                    })
+                })
+            })
+            .map(|axis| axis.scale.as_ref())
+            .collect::<BTreeSet<_>>();
+        if vertical_axis_scales.len() > 2 {
+            return Err(ChartError::invalid(
+                crate::ChartStage::Validate,
+                "v1 charts support at most two explicitly named vertical axes",
+            ));
+        }
+        if vertical_axis_scales.len() > 1
+            && self.axes.iter().any(|axis| {
+                vertical_axis_scales.contains(axis.scale.as_ref())
+                    && axis.title.is_none()
+                    && axis.unit.is_none()
+            })
+        {
+            return Err(ChartError::invalid(
+                crate::ChartStage::Validate,
+                "each independent vertical axis needs a title or unit",
+            ));
+        }
         for legend in &self.legends {
             if let Some(title) = &legend.title {
                 check_label(title)?;

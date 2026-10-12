@@ -336,7 +336,12 @@ impl ChartModel {
             damage: vec![input.bounds],
             ..RetainedSurfaceOutput::default()
         };
-        let plot = inset(input.bounds, 36.0, 18.0, 18.0, 30.0);
+        let right_guide = if self.has_secondary_y_axis() {
+            42.0
+        } else {
+            18.0
+        };
+        let plot = inset(input.bounds, 36.0, 18.0, right_guide, 30.0);
         output.paint.push(PaintCommand::Fill {
             rect: input.bounds,
             color: self.theme.background,
@@ -1134,11 +1139,17 @@ impl ChartModel {
             .into_iter()
             .filter(|(_, x, y)| in_domain(*x, x_domain) && in_domain(*y, y_domain))
             .collect::<Vec<_>>();
-        if layer_index == 0 {
-            self.prepare_guides(
-                plot, x_domain, y_domain, x_scale, y_scale, &x_mapper, &y_mapper, output,
-            )?;
-        }
+        self.prepare_guides(
+            layer_index,
+            plot,
+            x_domain,
+            y_domain,
+            x_scale,
+            y_scale,
+            &x_mapper,
+            &y_mapper,
+            output,
+        )?;
         let mut series_groups = series_groups(dataset, &layer.encodings, &self.state);
         for rows in &mut series_groups {
             rows.retain(|index| {
@@ -1669,6 +1680,7 @@ impl ChartModel {
 
     fn prepare_guides(
         &self,
+        layer_index: usize,
         plot: Rect,
         x_domain: [f64; 2],
         y_domain: [f64; 2],
@@ -1684,6 +1696,13 @@ impl ChartModel {
                 .unwrap_or(5)
                 .clamp(2, self.limits.max_ticks_per_axis);
             let is_x = x_scale == Some(axis.scale.as_ref());
+            let is_y = y_scale == Some(axis.scale.as_ref());
+            if (!is_x && !is_y)
+                || !self.is_first_visible_layer_for_scale(layer_index, axis.scale.as_ref())
+            {
+                continue;
+            }
+            let secondary_y = !is_x && is_y && self.y_axis_ordinal(axis.scale.as_ref()) > 0;
             let domain = if is_x {
                 x_domain
             } else if y_scale == Some(axis.scale.as_ref()) {
@@ -1733,18 +1752,71 @@ impl ChartModel {
                         });
                     }
                     output.paint.push(PaintCommand::Text {
-                        bounds: Rect::new((plot.origin.x - 34.0).max(0.0), y - 9.0, 30.0, 18.0),
+                        bounds: if secondary_y {
+                            Rect::new(plot.origin.x + plot.size.width + 4.0, y - 9.0, 34.0, 18.0)
+                        } else {
+                            Rect::new((plot.origin.x - 34.0).max(0.0), y - 9.0, 30.0, 18.0)
+                        },
                         text: format_tick(value, axis.unit.as_deref()),
                         scale: 0.7,
                         color: self.theme.muted,
-                        align: twinkle_ui::TextAlign::End,
+                        align: if secondary_y {
+                            twinkle_ui::TextAlign::Start
+                        } else {
+                            twinkle_ui::TextAlign::End
+                        },
                         bold: false,
                         wrap: false,
                     });
                 }
             }
+            if let Some(title) = &axis.title {
+                output.paint.push(PaintCommand::Text {
+                    bounds: if is_x {
+                        Rect::new(
+                            plot.origin.x,
+                            plot.origin.y + plot.size.height + 16.0,
+                            plot.size.width,
+                            12.0,
+                        )
+                    } else if secondary_y {
+                        Rect::new(
+                            plot.origin.x + plot.size.width + 4.0,
+                            plot.origin.y,
+                            34.0,
+                            14.0,
+                        )
+                    } else {
+                        Rect::new((plot.origin.x - 34.0).max(0.0), plot.origin.y, 30.0, 14.0)
+                    },
+                    text: title.to_string(),
+                    scale: 0.7,
+                    color: self.theme.foreground,
+                    align: if is_x {
+                        twinkle_ui::TextAlign::Center
+                    } else if secondary_y {
+                        twinkle_ui::TextAlign::Start
+                    } else {
+                        twinkle_ui::TextAlign::End
+                    },
+                    bold: true,
+                    wrap: false,
+                });
+            }
         }
         for annotation in &self.spec.annotations {
+            let annotation_scale = match annotation {
+                crate::Annotation::Rule { scale, .. } | crate::Annotation::Band { scale, .. } => {
+                    Some(scale.as_ref())
+                }
+                crate::Annotation::Text { .. } => None,
+            };
+            if annotation_scale
+                .is_some_and(|scale| !self.is_first_visible_layer_for_scale(layer_index, scale))
+                || (annotation_scale.is_none() && layer_index != 0)
+            {
+                continue;
+            }
             match annotation {
                 crate::Annotation::Rule {
                     scale,
@@ -1857,6 +1929,50 @@ impl ChartModel {
             }
         }
         Ok(())
+    }
+
+    fn y_axis_ordinal(&self, scale: &str) -> usize {
+        let mut seen = Vec::<&str>::new();
+        for axis in &self.spec.axes {
+            let used_on_y = self.spec.layers.iter().any(|layer| {
+                layer.encodings.iter().any(|encoding| {
+                    matches!(encoding.channel, Channel::Y | Channel::Y2)
+                        && encoding.scale.as_deref() == Some(axis.scale.as_ref())
+                })
+            });
+            if used_on_y && !seen.contains(&axis.scale.as_ref()) {
+                seen.push(axis.scale.as_ref());
+            }
+        }
+        seen.iter().position(|name| *name == scale).unwrap_or(0)
+    }
+
+    fn is_first_visible_layer_for_scale(&self, layer_index: usize, scale: &str) -> bool {
+        self.spec
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .position(|layer| {
+                layer.encodings.iter().any(|encoding| {
+                    matches!(
+                        encoding.channel,
+                        Channel::X | Channel::X2 | Channel::Y | Channel::Y2
+                    ) && encoding.scale.as_deref() == Some(scale)
+                })
+            })
+            == Some(layer_index)
+    }
+
+    fn has_secondary_y_axis(&self) -> bool {
+        self.spec.axes.iter().any(|axis| {
+            self.y_axis_ordinal(axis.scale.as_ref()) > 0
+                && self.spec.layers.iter().any(|layer| {
+                    layer.encodings.iter().any(|encoding| {
+                        matches!(encoding.channel, Channel::Y | Channel::Y2)
+                            && encoding.scale.as_deref() == Some(axis.scale.as_ref())
+                    })
+                })
+        })
     }
 
     fn prepare_arc(
@@ -4683,6 +4799,161 @@ mod tests {
                 |command| matches!(command, PaintCommand::Text { text, .. } if text == "Target")
             )
         );
+    }
+
+    #[test]
+    fn independent_y_scales_use_deterministic_left_and_right_guides() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            [RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new("x", vec![DataValue::Number(0.0), DataValue::Number(1.0)]),
+                Column::new("left", vec![DataValue::Number(1.0), DataValue::Number(2.0)]),
+                Column::new(
+                    "right",
+                    vec![DataValue::Number(100.0), DataValue::Number(200.0)],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(23, vec![dataset], &limits).unwrap());
+        let mut spec = Recipes::line(
+            "Two axes",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "left"),
+        );
+        spec.layers[0]
+            .encodings
+            .iter_mut()
+            .find(|encoding| encoding.channel == Channel::Y)
+            .unwrap()
+            .scale = Some(Arc::from("left"));
+        spec.scales
+            .iter_mut()
+            .find(|scale| scale.name.as_ref() == "y")
+            .unwrap()
+            .name = Arc::from("left");
+        spec.scales.push(Scale {
+            name: Arc::from("right"),
+            kind: ScaleKind::Linear,
+            domain: None,
+            clamp: false,
+            reversed: true,
+            unit: Some(Arc::from("percent")),
+        });
+        spec.layers.push(
+            crate::Layer::new(Mark::Line {
+                interpolation: crate::Interpolation::Straight,
+                points: true,
+            })
+            .encode(crate::Encoding {
+                channel: Channel::X,
+                field: FieldRef::new("d", "x"),
+                scale: Some(Arc::from("x")),
+            })
+            .encode(crate::Encoding {
+                channel: Channel::Y,
+                field: FieldRef::new("d", "right"),
+                scale: Some(Arc::from("right")),
+            }),
+        );
+        spec.axes.extend([
+            crate::Axis {
+                scale: Arc::from("left"),
+                title: Some(Arc::from("Revenue")),
+                unit: Some(Arc::from("USD")),
+                tick_count: Some(3),
+                grid: true,
+            },
+            crate::Axis {
+                scale: Arc::from("right"),
+                title: Some(Arc::from("Rate")),
+                unit: Some(Arc::from("percent")),
+                tick_count: Some(3),
+                grid: false,
+            },
+        ]);
+        let valid_spec = spec.clone();
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data.clone(), limits.clone()).unwrap())
+                .unwrap();
+        view.update(RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 23,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let titles = view
+            .snapshot()
+            .output
+            .paint
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Text { bounds, text, .. } if text == "Revenue" || text == "Rate" => {
+                    Some((text.as_str(), *bounds))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles.len(), 2, "shared guides render exactly once");
+        assert!(
+            titles
+                .iter()
+                .any(|(text, bounds)| *text == "Revenue" && bounds.origin.x < 36.0)
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|(text, bounds)| *text == "Rate" && bounds.origin.x > 358.0)
+        );
+
+        let mut unlabeled = valid_spec.clone();
+        let right_axis = unlabeled
+            .axes
+            .iter_mut()
+            .find(|axis| axis.scale.as_ref() == "right")
+            .unwrap();
+        right_axis.title = None;
+        right_axis.unit = None;
+        assert!(ChartModel::new(Arc::new(unlabeled), data.clone(), limits.clone()).is_err());
+
+        let mut three_axes = valid_spec;
+        three_axes.scales.push(Scale {
+            name: Arc::from("third"),
+            kind: ScaleKind::Linear,
+            domain: None,
+            clamp: false,
+            reversed: true,
+            unit: None,
+        });
+        three_axes.axes.push(crate::Axis {
+            scale: Arc::from("third"),
+            title: Some(Arc::from("Third")),
+            unit: None,
+            tick_count: Some(3),
+            grid: false,
+        });
+        three_axes.layers.push(
+            crate::Layer::new(Mark::Line {
+                interpolation: crate::Interpolation::Straight,
+                points: false,
+            })
+            .encode(crate::Encoding {
+                channel: Channel::X,
+                field: FieldRef::new("d", "x"),
+                scale: Some(Arc::from("x")),
+            })
+            .encode(crate::Encoding {
+                channel: Channel::Y,
+                field: FieldRef::new("d", "right"),
+                scale: Some(Arc::from("third")),
+            }),
+        );
+        assert!(ChartModel::new(Arc::new(three_axes), data, limits).is_err());
     }
 
     #[test]
