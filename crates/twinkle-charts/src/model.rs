@@ -234,14 +234,22 @@ impl ChartModel {
         if plot.size.width > 1.0 && plot.size.height > 1.0 && self.spec.facet.is_some() {
             self.prepare_facets(plot, input, &mut output, &mut hits)?;
         } else if plot.size.width > 1.0 && plot.size.height > 1.0 {
-            for (layer_index, layer) in self
+            let shared_model = if self.spec.layers.len() > 1 {
+                let mut model = self.clone();
+                model.spec = Arc::new(spec_with_shared_domains(&self.spec, &self.data));
+                Some(model)
+            } else {
+                None
+            };
+            let model = shared_model.as_ref().unwrap_or(self);
+            for (layer_index, layer) in model
                 .spec
                 .layers
                 .iter()
                 .filter(|layer| layer.visible)
                 .enumerate()
             {
-                self.prepare_layer(layer_index, layer, plot, &mut output, &mut hits)?;
+                model.prepare_layer(layer_index, layer, plot, &mut output, &mut hits)?;
             }
         }
         if self.data.row_count() == 0 {
@@ -1914,6 +1922,26 @@ fn spec_with_shared_domains(spec: &ChartSpec, data: &ChartData) -> ChartSpec {
                 _ => None,
             }));
         }
+        for layer in &shared.layers {
+            let baseline_channel = match layer.mark {
+                Mark::Area { baseline, .. } => Some((Channel::Y, baseline as f64)),
+                Mark::Bar {
+                    orientation: crate::Orientation::Vertical,
+                } => Some((Channel::Y, 0.0)),
+                Mark::Bar {
+                    orientation: crate::Orientation::Horizontal,
+                } => Some((Channel::X, 0.0)),
+                _ => None,
+            };
+            if let Some((channel, baseline)) = baseline_channel
+                && layer.encodings.iter().any(|encoding| {
+                    encoding.channel == channel
+                        && encoding.scale.as_deref() == Some(scale.name.as_ref())
+                })
+            {
+                values.push(baseline);
+            }
+        }
         if !values.is_empty() {
             scale.domain = Some(extent(values.into_iter()));
         }
@@ -3191,5 +3219,66 @@ mod tests {
             ChartView::new(ChartModel::new(Arc::new(invalid_spec), invalid_data, limits).unwrap())
                 .unwrap();
         assert!(invalid_view.update(input(20)).is_err());
+    }
+
+    #[test]
+    fn layered_combo_resolves_named_scales_once_for_every_layer() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            [RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new("x", vec![DataValue::Number(0.0), DataValue::Number(1.0)]),
+                Column::new("bars", vec![DataValue::Number(1.0), DataValue::Number(2.0)]),
+                Column::new(
+                    "line",
+                    vec![DataValue::Number(100.0), DataValue::Number(200.0)],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(21, vec![dataset], &limits).unwrap());
+        let mut spec = Recipes::bar("Combo", FieldRef::new("d", "x"), FieldRef::new("d", "bars"));
+        spec.layers.push(
+            crate::Layer::new(Mark::Line {
+                interpolation: crate::Interpolation::Straight,
+                points: true,
+            })
+            .encode(crate::Encoding {
+                channel: Channel::X,
+                field: FieldRef::new("d", "x"),
+                scale: Some(Arc::from("x")),
+            })
+            .encode(crate::Encoding {
+                channel: Channel::Y,
+                field: FieldRef::new("d", "line"),
+                scale: Some(Arc::from("y")),
+            }),
+        );
+        spec.annotations.push(crate::Annotation::Band {
+            scale: Arc::from("y"),
+            start: 90.0,
+            end: 110.0,
+            label: Some(Arc::from("Target")),
+            include_in_domain: false,
+        });
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        view.update(RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 21,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        assert_eq!(view.hits().len(), 4);
+        assert!((hit_center_y(&view.hits()[0]) - hit_center_y(&view.hits()[2])).abs() > 50.0);
+        assert!(
+            view.snapshot().output.paint.iter().any(
+                |command| matches!(command, PaintCommand::Text { text, .. } if text == "Target")
+            )
+        );
     }
 }
