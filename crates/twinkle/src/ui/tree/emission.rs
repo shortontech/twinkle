@@ -282,6 +282,8 @@ pub(super) fn emit_element<Message: Clone>(
                 increment_message: element.declared_increment_message().cloned(),
                 start_message: element.declared_start_message().cloned(),
                 end_message: element.declared_end_message().cloned(),
+                up_message: element.declared_up_message().cloned(),
+                down_message: element.declared_down_message().cloned(),
             });
         }
         if phases.interaction
@@ -298,6 +300,8 @@ pub(super) fn emit_element<Message: Clone>(
                 increment_message: None,
                 start_message: None,
                 end_message: None,
+                up_message: None,
+                down_message: None,
             });
         }
         let foreground = style.foreground().or(inherited_foreground);
@@ -427,6 +431,8 @@ pub(super) fn emit_element<Message: Clone>(
             increment_message: element.declared_increment_message().cloned(),
             start_message: element.declared_start_message().cloned(),
             end_message: element.declared_end_message().cloned(),
+            up_message: element.declared_up_message().cloned(),
+            down_message: element.declared_down_message().cloned(),
         });
         if !is_scroll_container(element)
             && let Some(hit_rect) = node
@@ -495,6 +501,8 @@ pub(super) fn emit_element<Message: Clone>(
             increment_message: None,
             start_message: None,
             end_message: None,
+            up_message: None,
+            down_message: None,
         });
         if element.primary_message().is_none()
             && !is_scroll_container(element)
@@ -898,6 +906,8 @@ pub(super) fn emit_element<Message: Clone>(
                             increment_message: None,
                             start_message: None,
                             end_message: None,
+                            up_message: None,
+                            down_message: None,
                         });
                         tree.hits.push(HitRegion {
                             id: link_id.clone(),
@@ -1300,6 +1310,8 @@ pub(super) fn emit_element<Message: Clone>(
                             increment_message: None,
                             start_message: None,
                             end_message: None,
+                            up_message: None,
+                            down_message: None,
                         });
                     }
                 }
@@ -1398,6 +1410,8 @@ pub(super) fn emit_element<Message: Clone>(
                             increment_message: None,
                             start_message: None,
                             end_message: None,
+                            up_message: None,
+                            down_message: None,
                         });
                     }
                     if let Some(hit_rect) = node

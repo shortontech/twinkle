@@ -82,7 +82,9 @@ to `ChartView::navigate` in the ordinary application update path. `PanZoomPolicy
 provides pure anchored zoom, constrained pan, and reset operations for the same
 event flow.
 Home and End emit `NavigationCommand::Home` and `End` for the focused chart rather
-than moving focus to unrelated native boundary controls.
+than moving focus to unrelated native boundary controls. While the chart is in
+adjustment mode, up/down emit `PreviousSeries`/`NextSeries`; left/right retain
+their previous/next datum behavior.
 
 Once a datum is active, the native projection adds a plot-bounded visible and
 semantic tooltip containing up to six exact fields; further fields remain

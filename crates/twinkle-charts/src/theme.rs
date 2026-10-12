@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use crate::{ChartError, ChartStage, Symbol};
 
+const HIGH_CONTRAST_SURFACE: u32 = 0;
+const HIGH_CONTRAST_TEXT: u32 = 0xFF_FF_FF;
+
 /// Non-color cue used when series outnumber categorical colors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SeriesCue {
@@ -64,11 +67,11 @@ impl ChartTheme {
     }
     pub fn high_contrast() -> Self {
         Self {
-            background: 0x000000,
-            plot_background: 0x000000,
-            foreground: 0xFFFFFF,
-            muted: 0xFFFFFF,
-            grid: 0xFFFFFF,
+            background: HIGH_CONTRAST_SURFACE,
+            plot_background: HIGH_CONTRAST_SURFACE,
+            foreground: HIGH_CONTRAST_TEXT,
+            muted: HIGH_CONTRAST_TEXT,
+            grid: HIGH_CONTRAST_TEXT,
             focus: 0x00FFFF,
             selection: 0xFFFF00,
             missing: 0xBFBFBF,

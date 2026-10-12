@@ -2276,6 +2276,14 @@ impl ChartView {
                 ChartProjectionAction::Event(ChartEvent::Navigate(crate::NavigationCommand::Home)),
                 ChartProjectionAction::Event(ChartEvent::Navigate(crate::NavigationCommand::End)),
             )
+            .on_vertical_adjust_messages(
+                ChartProjectionAction::Event(ChartEvent::Navigate(
+                    crate::NavigationCommand::PreviousSeries,
+                )),
+                ChartProjectionAction::Event(ChartEvent::Navigate(
+                    crate::NavigationCommand::NextSeries,
+                )),
+            )
             .adjustment_step(0.25);
         if let Some(semantic) = root_semantic {
             if let Some(label) = semantic.label {
@@ -3203,6 +3211,20 @@ mod tests {
                 .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateEnd)
                 .messages,
             vec![ChartEvent::Navigate(crate::NavigationCommand::End)]
+        );
+        assert_eq!(
+            frame
+                .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateUp)
+                .messages,
+            vec![ChartEvent::Navigate(
+                crate::NavigationCommand::PreviousSeries
+            )]
+        );
+        assert_eq!(
+            frame
+                .handle_event(&mut state, twinkle_ui::UiEvent::KeyboardNavigateDown)
+                .messages,
+            vec![ChartEvent::Navigate(crate::NavigationCommand::NextSeries)]
         );
         assert_eq!(
             frame

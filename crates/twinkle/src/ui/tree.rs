@@ -135,6 +135,8 @@ struct MessageRegion<Message> {
     increment_message: Option<Message>,
     start_message: Option<Message>,
     end_message: Option<Message>,
+    up_message: Option<Message>,
+    down_message: Option<Message>,
 }
 
 fn map_value<Message: Clone>(
@@ -1767,6 +1769,8 @@ impl<Message: Clone> UiFrame<Message> {
                     increment_message: None,
                     start_message: None,
                     end_message: None,
+                    up_message: None,
+                    down_message: None,
                 });
             }
             if let Some(command) = item.text_command {
@@ -7210,7 +7214,8 @@ impl<Message: Clone> UiFrame<Message> {
             return match direction {
                 ControllerDirection::Left => self.adjust_controller_value(state, -1.0, messages),
                 ControllerDirection::Right => self.adjust_controller_value(state, 1.0, messages),
-                ControllerDirection::Up | ControllerDirection::Down => Invalidation::None,
+                ControllerDirection::Up => self.adjust_controller_vertical(state, false, messages),
+                ControllerDirection::Down => self.adjust_controller_vertical(state, true, messages),
             };
         }
         if let Some(scope) = state
@@ -7381,6 +7386,35 @@ impl<Message: Clone> UiFrame<Message> {
             region.end_message.clone()
         } else {
             region.start_message.clone()
+        }
+    }
+
+    fn adjust_controller_vertical(
+        &self,
+        state: &UiStateStore,
+        down: bool,
+        messages: &mut Vec<Message>,
+    ) -> Invalidation {
+        let Some(id) = state
+            .navigation()
+            .controller_selected()
+            .or_else(|| state.focused())
+        else {
+            return Invalidation::None;
+        };
+        let Some(region) = self.messages.iter().find(|region| &region.id == id) else {
+            return Invalidation::None;
+        };
+        let message = if down {
+            region.down_message.clone()
+        } else {
+            region.up_message.clone()
+        };
+        if let Some(message) = message {
+            messages.push(message);
+            Invalidation::Layout
+        } else {
+            Invalidation::None
         }
     }
 

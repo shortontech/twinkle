@@ -1604,6 +1604,8 @@ struct ElementEvents<Message> {
     increment_message: Option<Message>,
     start_message: Option<Message>,
     end_message: Option<Message>,
+    up_message: Option<Message>,
+    down_message: Option<Message>,
     focus_message: Option<Message>,
     blur_message: Option<Message>,
     pointer_move_mapper: Option<fn(Point) -> Message>,
@@ -1621,6 +1623,8 @@ impl<Message> Default for ElementEvents<Message> {
             increment_message: None,
             start_message: None,
             end_message: None,
+            up_message: None,
+            down_message: None,
             focus_message: None,
             blur_message: None,
             pointer_move_mapper: None,
@@ -1673,6 +1677,18 @@ impl<Message> Element<Message> {
             .and_then(|events| events.end_message.as_ref())
     }
 
+    pub(crate) fn declared_up_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.up_message.as_ref())
+    }
+
+    pub(crate) fn declared_down_message(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.down_message.as_ref())
+    }
+
     pub(crate) fn declared_focus_message(&self) -> Option<&Message> {
         self.events
             .as_ref()
@@ -1715,6 +1731,8 @@ impl<Message> Element<Message> {
                 || events.increment_message.is_some()
                 || events.start_message.is_some()
                 || events.end_message.is_some()
+                || events.up_message.is_some()
+                || events.down_message.is_some()
                 || events.focus_message.is_some()
                 || events.blur_message.is_some()
                 || events.pointer_move_mapper.is_some()
@@ -1993,6 +2011,14 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Attach vertical adjustment messages to an ordinary focused control.
+    pub fn on_vertical_adjust_messages(mut self, up: Message, down: Message) -> Self {
+        let events = self.events_mut();
+        events.up_message = Some(up);
+        events.down_message = Some(down);
+        self
+    }
+
     pub fn text_align(mut self, align: TextAlign) -> Self {
         self.style.text_align = align;
         self
@@ -2250,6 +2276,8 @@ impl<Message> Element<Message> {
                 increment_message: events.increment_message.map(&mut *map),
                 start_message: events.start_message.map(&mut *map),
                 end_message: events.end_message.map(&mut *map),
+                up_message: events.up_message.map(&mut *map),
+                down_message: events.down_message.map(&mut *map),
                 focus_message: events.focus_message.map(&mut *map),
                 blur_message: events.blur_message.map(&mut *map),
                 pointer_move_mapper: None,
@@ -2263,6 +2291,8 @@ impl<Message> Element<Message> {
                 || mapped.increment_message.is_some()
                 || mapped.start_message.is_some()
                 || mapped.end_message.is_some()
+                || mapped.up_message.is_some()
+                || mapped.down_message.is_some()
                 || mapped.focus_message.is_some()
                 || mapped.blur_message.is_some())
             .then(|| Box::new(mapped))
