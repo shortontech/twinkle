@@ -965,7 +965,7 @@ impl ChartModel {
                     }
                 }
             }
-            Mark::Point { .. } => {
+            Mark::Point { symbol } => {
                 let max_marks =
                     ((plot.size.width * plot.size.height / 16.0) as usize).clamp(1, 50_000);
                 let step = values.len().div_ceil(max_marks).max(1);
@@ -992,17 +992,7 @@ impl ChartModel {
                     if radius == 0.0 {
                         continue;
                     }
-                    let bounds = Rect::new(
-                        center.x - radius,
-                        center.y - radius,
-                        radius * 2.0,
-                        radius * 2.0,
-                    );
-                    output.paint.push(PaintCommand::RoundedFill {
-                        rect: bounds,
-                        color,
-                        radius,
-                    });
+                    paint_symbol(output, plot, center, radius, *symbol, color)?;
                 }
             }
             Mark::Rect => {
@@ -1168,6 +1158,79 @@ impl ChartModel {
                     output.paint.push(PaintCommand::Fill {
                         rect: bounds,
                         color,
+                    });
+                    self.push_hit(dataset, *index, series_column, bounds, hits);
+                }
+            }
+            Mark::Rule => {
+                let mut triangles = Vec::new();
+                for (index, x, y) in &values {
+                    let start = map(*x, *y);
+                    let end_x = x2_column
+                        .and_then(|column| coordinate(&column.values[*index], *index))
+                        .unwrap_or(*x);
+                    let end_y = y2_column
+                        .and_then(|column| coordinate(&column.values[*index], *index))
+                        .unwrap_or(*y);
+                    x_mapper.validate(end_x)?;
+                    y_mapper.validate(end_y)?;
+                    let end = map(end_x, end_y);
+                    triangles.extend(stroke_polyline(&[start, end], 1.5));
+                    let left = start.x.min(end.x);
+                    let top = start.y.min(end.y);
+                    self.push_hit(
+                        dataset,
+                        *index,
+                        series_column,
+                        Rect::new(
+                            left - 4.0,
+                            top - 4.0,
+                            (start.x - end.x).abs() + 8.0,
+                            (start.y - end.y).abs() + 8.0,
+                        ),
+                        hits,
+                    );
+                }
+                if !triangles.is_empty() {
+                    output.paint.push(path_command(
+                        triangles,
+                        plot,
+                        color,
+                        values.len().saturating_mul(2),
+                    )?);
+                }
+            }
+            Mark::Text => {
+                let text_column = channel(&layer.encodings, Channel::Text)
+                    .and_then(|encoding| dataset.column(&encoding.field.column))
+                    .ok_or_else(|| {
+                        ChartError::invalid(
+                            crate::ChartStage::Geometry,
+                            "text mark requires a text encoding",
+                        )
+                    })?;
+                for (index, x, y) in &values {
+                    let point = map(*x, *y);
+                    let width = plot.size.width.min(160.0);
+                    let height = plot.size.height.min(20.0);
+                    let bounds = Rect::new(
+                        point
+                            .x
+                            .clamp(plot.origin.x, plot.origin.x + plot.size.width - width),
+                        point
+                            .y
+                            .clamp(plot.origin.y, plot.origin.y + plot.size.height - height),
+                        width,
+                        height,
+                    );
+                    output.paint.push(PaintCommand::Text {
+                        bounds,
+                        text: format_data_value(&text_column.values[*index]),
+                        scale: 0.8,
+                        color,
+                        align: twinkle_ui::TextAlign::Start,
+                        bold: false,
+                        wrap: false,
                     });
                     self.push_hit(dataset, *index, series_column, bounds, hits);
                 }
@@ -2270,6 +2333,93 @@ fn fill_path_command(
     })
 }
 
+fn paint_symbol(
+    output: &mut RetainedSurfaceOutput,
+    _plot: Rect,
+    center: Point,
+    radius: f32,
+    symbol: crate::Symbol,
+    color: u32,
+) -> Result<(), ChartError> {
+    let bounds = Rect::new(
+        center.x - radius,
+        center.y - radius,
+        radius * 2.0,
+        radius * 2.0,
+    );
+    match symbol {
+        crate::Symbol::Circle => output.paint.push(PaintCommand::RoundedFill {
+            rect: bounds,
+            color,
+            radius,
+        }),
+        crate::Symbol::Square => output.paint.push(PaintCommand::Fill {
+            rect: bounds,
+            color,
+        }),
+        crate::Symbol::Triangle => output.paint.push(fill_path_command(
+            vec![
+                Point {
+                    x: center.x,
+                    y: center.y - radius,
+                },
+                Point {
+                    x: center.x + radius,
+                    y: center.y + radius,
+                },
+                Point {
+                    x: center.x - radius,
+                    y: center.y + radius,
+                },
+            ],
+            color,
+            3,
+        )?),
+        crate::Symbol::Diamond => output.paint.push(fill_path_command(
+            vec![
+                Point {
+                    x: center.x,
+                    y: center.y - radius,
+                },
+                Point {
+                    x: center.x + radius,
+                    y: center.y,
+                },
+                Point {
+                    x: center.x,
+                    y: center.y + radius,
+                },
+                Point {
+                    x: center.x,
+                    y: center.y - radius,
+                },
+                Point {
+                    x: center.x,
+                    y: center.y + radius,
+                },
+                Point {
+                    x: center.x - radius,
+                    y: center.y,
+                },
+            ],
+            color,
+            4,
+        )?),
+        crate::Symbol::Cross => {
+            let arm = (radius * 0.7).max(1.0);
+            output.paint.push(PaintCommand::Fill {
+                rect: Rect::new(center.x - arm / 2.0, center.y - radius, arm, radius * 2.0),
+                color,
+            });
+            output.paint.push(PaintCommand::Fill {
+                rect: Rect::new(center.x - radius, center.y - arm / 2.0, radius * 2.0, arm),
+                color,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3279,6 +3429,96 @@ mod tests {
             view.snapshot().output.paint.iter().any(
                 |command| matches!(command, PaintCommand::Text { text, .. } if text == "Target")
             )
+        );
+    }
+
+    #[test]
+    fn custom_rule_text_and_symbol_marks_lower_to_native_primitives() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            [RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new("x", vec![DataValue::Number(0.0), DataValue::Number(1.0)]),
+                Column::new("y", vec![DataValue::Number(0.0), DataValue::Number(1.0)]),
+                Column::new("x2", vec![DataValue::Number(1.0), DataValue::Number(0.0)]),
+                Column::new("y2", vec![DataValue::Number(1.0), DataValue::Number(0.0)]),
+                Column::new(
+                    "label",
+                    vec![
+                        DataValue::Category(Arc::from("first")),
+                        DataValue::Category(Arc::from("second")),
+                    ],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(22, vec![dataset], &limits).unwrap());
+        let position = |channel, column| crate::Encoding {
+            channel,
+            field: FieldRef::new("d", column),
+            scale: match channel {
+                Channel::X | Channel::X2 => Some(Arc::from("x")),
+                Channel::Y | Channel::Y2 => Some(Arc::from("y")),
+                _ => None,
+            },
+        };
+        let base = Recipes::line(
+            "Primitives",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "y"),
+        );
+        let mut spec = crate::ChartSpec::new("Primitives", "Custom primitive chart");
+        spec.scales = base.scales;
+        spec.layers.push(
+            crate::Layer::new(Mark::Rule)
+                .encode(position(Channel::X, "x"))
+                .encode(position(Channel::Y, "y"))
+                .encode(position(Channel::X2, "x2"))
+                .encode(position(Channel::Y2, "y2")),
+        );
+        spec.layers.push(
+            crate::Layer::new(Mark::Text)
+                .encode(position(Channel::X, "x"))
+                .encode(position(Channel::Y, "y"))
+                .encode(crate::Encoding {
+                    channel: Channel::Text,
+                    field: FieldRef::new("d", "label"),
+                    scale: None,
+                }),
+        );
+        spec.layers.push(
+            crate::Layer::new(Mark::Point {
+                symbol: crate::Symbol::Triangle,
+            })
+            .encode(position(Channel::X, "x"))
+            .encode(position(Channel::Y, "y")),
+        );
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        view.update(RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 22,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        assert_eq!(view.hits().len(), 6);
+        assert!(
+            view.snapshot().output.paint.iter().any(
+                |command| matches!(command, PaintCommand::Text { text, .. } if text == "first")
+            )
+        );
+        assert!(
+            view.snapshot()
+                .output
+                .paint
+                .iter()
+                .filter(|command| matches!(command, PaintCommand::Path { .. }))
+                .count()
+                >= 3
         );
     }
 }
