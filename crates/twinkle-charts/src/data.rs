@@ -227,8 +227,23 @@ impl ChartData {
         }
         let mut ids = HashSet::with_capacity(datasets.len());
         for dataset in datasets.iter() {
+            check_label(&dataset.id.0, limits)?;
             if !ids.insert(dataset.id.clone()) {
                 return Err(ChartError::DuplicateKey(dataset.id.0.to_string()));
+            }
+            for key in dataset.keys() {
+                check_label(&key.0, limits)?;
+            }
+            for column in dataset.columns() {
+                check_label(&column.name, limits)?;
+                if let Some(unit) = &column.unit {
+                    check_label(unit, limits)?;
+                }
+                for value in column.values.iter() {
+                    if let DataValue::Category(label) = value {
+                        check_label(label, limits)?;
+                    }
+                }
             }
         }
         Ok(Self { revision, datasets })
@@ -244,5 +259,74 @@ impl ChartData {
     }
     pub fn row_count(&self) -> usize {
         self.datasets.iter().map(Dataset::len).sum()
+    }
+}
+
+fn check_label(label: &str, limits: &ChartLimits) -> Result<(), ChartError> {
+    if label.len() > limits.max_label_bytes {
+        Err(ChartError::Limit {
+            resource: "label bytes per item",
+            actual: label.len(),
+            limit: limits.max_label_bytes,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_and_column_caps_reject_before_snapshot_publication() {
+        let dataset = Dataset::new(
+            "d",
+            vec![RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new("x", vec![DataValue::Number(1.0), DataValue::Number(2.0)]),
+                Column::new("y", vec![DataValue::Number(3.0), DataValue::Number(4.0)]),
+            ],
+        )
+        .unwrap();
+
+        let mut row_limits = ChartLimits::default();
+        row_limits.max_rows = 1;
+        assert_eq!(
+            ChartData::new(1, vec![dataset.clone()], &row_limits),
+            Err(ChartError::Limit {
+                resource: "input rows",
+                actual: 2,
+                limit: 1,
+            })
+        );
+
+        let mut column_limits = ChartLimits::default();
+        column_limits.max_columns = 1;
+        assert_eq!(
+            ChartData::new(1, vec![dataset], &column_limits),
+            Err(ChartError::Limit {
+                resource: "columns",
+                actual: 2,
+                limit: 1,
+            })
+        );
+
+        let labeled = Dataset::new(
+            "dataset-name",
+            vec![RowKey::from("a")],
+            vec![Column::new("x", vec![DataValue::Number(1.0)])],
+        )
+        .unwrap();
+        let mut label_limits = ChartLimits::default();
+        label_limits.max_label_bytes = 4;
+        assert_eq!(
+            ChartData::new(1, vec![labeled], &label_limits),
+            Err(ChartError::Limit {
+                resource: "label bytes per item",
+                actual: 12,
+                limit: 4,
+            })
+        );
     }
 }

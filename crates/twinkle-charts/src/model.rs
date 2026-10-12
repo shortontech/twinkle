@@ -3968,6 +3968,35 @@ mod tests {
             view.snapshot().input.is_some(),
             "bounded fallback is visible"
         );
+
+        let base = model();
+        let mut geometry_limits = ChartLimits::default();
+        geometry_limits.max_geometry_vertices = 1;
+        let geometry = ChartModel::new(base.spec.clone(), base.data.clone(), geometry_limits)
+            .unwrap()
+            .prepare(input)
+            .unwrap_err();
+        assert!(matches!(
+            geometry,
+            ChartError::Limit {
+                resource: "prepared geometry vertices",
+                ..
+            }
+        ));
+
+        let mut steady_limits = ChartLimits::default();
+        steady_limits.max_steady_bytes = 1;
+        let steady = ChartModel::new(base.spec.clone(), base.data.clone(), steady_limits)
+            .unwrap()
+            .prepare(input)
+            .unwrap_err();
+        assert!(matches!(
+            steady,
+            ChartError::Limit {
+                resource: "chart steady bytes",
+                ..
+            }
+        ));
     }
 
     #[test]

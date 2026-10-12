@@ -294,6 +294,19 @@ impl ChartSpec {
         self
     }
     pub fn validate(&self, data: &ChartData, limits: &ChartLimits) -> Result<(), ChartError> {
+        let check_label = |label: &str| {
+            if label.len() > limits.max_label_bytes {
+                Err(ChartError::Limit {
+                    resource: "label bytes per item",
+                    actual: label.len(),
+                    limit: limits.max_label_bytes,
+                })
+            } else {
+                Ok(())
+            }
+        };
+        check_label(&self.title)?;
+        check_label(&self.summary)?;
         for (name, actual, limit) in [
             ("layers", self.layers.len(), limits.max_layers),
             (
@@ -324,6 +337,10 @@ impl ChartSpec {
         }
         let mut scale_names = BTreeSet::new();
         for scale in &self.scales {
+            check_label(&scale.name)?;
+            if let Some(unit) = &scale.unit {
+                check_label(unit)?;
+            }
             if !scale_names.insert(scale.name.as_ref()) {
                 return Err(ChartError::DuplicateKey(scale.name.to_string()));
             }
@@ -390,6 +407,12 @@ impl ChartSpec {
             }
         }
         for axis in &self.axes {
+            if let Some(title) = &axis.title {
+                check_label(title)?;
+            }
+            if let Some(unit) = &axis.unit {
+                check_label(unit)?;
+            }
             if !scale_names.contains(axis.scale.as_ref()) {
                 return Err(ChartError::invalid(
                     crate::ChartStage::Validate,
@@ -405,11 +428,24 @@ impl ChartSpec {
             }
         }
         for legend in &self.legends {
+            if let Some(title) = &legend.title {
+                check_label(title)?;
+            }
             if !scale_names.contains(legend.scale.as_ref()) {
                 return Err(ChartError::invalid(
                     crate::ChartStage::Validate,
                     format!("legend references unknown scale `{}`", legend.scale),
                 ));
+            }
+        }
+        for annotation in &self.annotations {
+            match annotation {
+                Annotation::Rule { label, .. } | Annotation::Band { label, .. } => {
+                    if let Some(label) = label {
+                        check_label(label)?;
+                    }
+                }
+                Annotation::Text { text, .. } => check_label(text)?,
             }
         }
         if let Some(facet) = &self.facet {
@@ -959,5 +995,105 @@ impl Recipes {
                 reversed: true,
                 unit: None,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ChartData, Column, DataValue, Dataset, RowKey};
+
+    fn data(limits: &ChartLimits) -> ChartData {
+        ChartData::new(
+            1,
+            vec![
+                Dataset::new(
+                    "d",
+                    vec![RowKey::from("a")],
+                    vec![
+                        Column::new("x", vec![DataValue::Number(1.0)]),
+                        Column::new("y", vec![DataValue::Number(2.0)]),
+                    ],
+                )
+                .unwrap(),
+            ],
+            limits,
+        )
+        .unwrap()
+    }
+
+    fn assert_limit(error: ChartError, resource: &'static str) {
+        assert!(matches!(
+            error,
+            ChartError::Limit {
+                resource: actual,
+                ..
+            } if actual == resource
+        ));
+    }
+
+    #[test]
+    fn grammar_count_and_label_caps_fail_with_structured_resources() {
+        let base_limits = ChartLimits::default();
+        let data = data(&base_limits);
+        let base = Recipes::line("line", FieldRef::new("d", "x"), FieldRef::new("d", "y"));
+
+        let mut limits = base_limits.clone();
+        limits.max_layers = 0;
+        assert_limit(base.validate(&data, &limits).unwrap_err(), "layers");
+
+        let mut transformed = base.clone();
+        transformed.layers[0].transforms.push(Transform::Sort {
+            field: "x".into(),
+            descending: false,
+        });
+        let mut limits = base_limits.clone();
+        limits.max_transforms = 0;
+        assert_limit(
+            transformed.validate(&data, &limits).unwrap_err(),
+            "transform steps",
+        );
+
+        let mut guided = base.clone();
+        guided.axes.push(Axis {
+            scale: "x".into(),
+            title: None,
+            unit: None,
+            tick_count: Some(2),
+            grid: true,
+        });
+        let mut limits = base_limits.clone();
+        limits.max_ticks_per_axis = 1;
+        assert_limit(guided.validate(&data, &limits).unwrap_err(), "axis ticks");
+
+        let mut annotated = base.clone();
+        annotated.annotations.push(Annotation::Text {
+            text: "note".into(),
+            x: 1.0,
+            y: 2.0,
+        });
+        let mut limits = base_limits.clone();
+        limits.max_annotations = 0;
+        assert_limit(
+            annotated.validate(&data, &limits).unwrap_err(),
+            "annotations",
+        );
+
+        let long = ChartSpec::new("too long", "summary");
+        let mut limits = base_limits;
+        limits.max_label_bytes = 3;
+        assert_limit(
+            long.validate(&data, &limits).unwrap_err(),
+            "label bytes per item",
+        );
+
+        let mut limits = ChartLimits::default();
+        limits.max_total_label_bytes = 5;
+        assert_limit(
+            ChartSpec::new("title", "summary")
+                .validate(&data, &limits)
+                .unwrap_err(),
+            "label bytes",
+        );
     }
 }

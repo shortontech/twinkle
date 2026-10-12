@@ -120,6 +120,9 @@ does not claim a tested Linux screen-reader bridge yet.
 
 `ChartLimits` bounds input rows, columns, series, facets, layers, transforms,
 geometry, ticks, annotations, table pages, label bytes, and steady/peak ownership.
+The per-label byte cap is enforced for data/schema identity, categorical values,
+units, titles, summaries, scales, guides, and annotations before publication;
+chart-owned presentation labels additionally share the total-label budget.
 The retained-surface host independently bounds paint, interaction, semantic, and
 damage records. Raise limits deliberately; their Cartesian product is not an
 admission promise.
