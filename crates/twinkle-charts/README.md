@@ -116,12 +116,15 @@ controlled `ViewportChanged` event.
 The `twinkle-testkit` integration scenarios exercise the public application
 boundary rather than model internals: pointer inspection and passive tooltip
 semantics, keyboard activation, accessibility and controller adjustment parity,
-wheel-controlled zoom, focus-loss drag cancellation, and nested-scroll ownership
-when no chart wheel binding is declared. They also replace accepted data through
-public controls and prove selection keeps stable identity across reorder, then
-uses the documented surviving neighbor after removal. A separate exact-table
-scenario pages by pointer and controller, then activates a stable unit-bearing
-row by keyboard.
+wheel-controlled zoom and reset, clipped pointer routing, focus-loss drag
+cancellation, and nested-scroll ownership when no chart wheel binding is declared.
+They toggle a controlled legend, transactionally reproject a dark chart theme,
+and replace accepted data through public controls to prove selection keeps stable
+identity across reorder before using the documented surviving neighbor after
+removal. A separate exact-table scenario pages by pointer and controller, then
+activates a stable unit-bearing row by keyboard. `ChartView::update_theme` is the
+transactional native theme boundary; a rejected theme preserves accepted paint
+and active navigation.
 
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,

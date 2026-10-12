@@ -2424,6 +2424,28 @@ impl ChartView {
         self.navigation.reconcile(self.host.model().hits());
         Ok(self.snapshot())
     }
+    /// Transactionally replace semantic chart tokens and prepare the affected
+    /// presentation while preserving accepted data, state, and navigation.
+    pub fn update_theme(
+        &mut self,
+        theme: ChartTheme,
+        input: RetainedSurfaceInput,
+    ) -> Result<&RetainedSurfaceSnapshot, ChartError> {
+        theme.validate()?;
+        let mut candidate = self.host.begin_candidate();
+        candidate.model_mut().theme = theme;
+        if let Err(message) = candidate.update(input) {
+            let error = ChartError::invalid(crate::ChartStage::Geometry, message);
+            self.record_error(input, &error);
+            return Err(error);
+        }
+        let old = self.host.finalize_candidate(candidate);
+        drop(old);
+        self.fallback = RetainedSurfaceSnapshot::default();
+        self.last_error = None;
+        self.navigation.reconcile(self.host.model().hits());
+        Ok(self.snapshot())
+    }
     pub fn element<Message: Clone>(
         &self,
         id: impl Into<UiId>,
@@ -4215,6 +4237,44 @@ mod tests {
         assert_eq!(view.hits(), hits);
         assert_eq!(view.inspection(&hits[0]), Some(accepted_inspection));
         assert_eq!(view.snapshot().input.unwrap().revisions.content, 7);
+    }
+
+    #[test]
+    fn theme_updates_are_transactional_and_preserve_active_identity() {
+        let mut view = ChartView::new(model()).unwrap();
+        let input = RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 300.0, 180.0),
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 1,
+                ..Default::default()
+            },
+        );
+        view.update(input).unwrap();
+        view.navigate(crate::NavigationCommand::Next);
+        let active = view.active_hit().unwrap().row.clone();
+
+        let dark_input = RetainedSurfaceInput::new(
+            input.bounds,
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 1,
+                theme: 1,
+                ..Default::default()
+            },
+        );
+        view.update_theme(ChartTheme::dark(), dark_input).unwrap();
+        assert_eq!(view.active_hit().unwrap().row, active);
+        assert!(view.snapshot().output.paint.iter().any(
+            |command| matches!(command, PaintCommand::Fill { color, .. } if *color == ChartTheme::dark().background)
+        ));
+
+        let accepted = view.snapshot().clone();
+        let mut invalid = ChartTheme::default();
+        invalid.categorical = Arc::from([]);
+        assert!(view.update_theme(invalid, dark_input).is_err());
+        assert_eq!(view.snapshot(), &accepted);
+        assert_eq!(view.active_hit().unwrap().row, active);
     }
 
     #[test]

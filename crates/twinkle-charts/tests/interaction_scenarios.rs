@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use twinkle_charts::{
-    ChartData, ChartEvent, ChartInputBindings, ChartLimits, ChartModel, ChartState, ChartTable,
-    ChartTableEvent, ChartView, Column, DataValue, Dataset, DatasetId, FieldRef, PanZoomPolicy,
-    Recipes, RowKey, ViewportCommand,
+    Channel, ChartData, ChartEvent, ChartInputBindings, ChartLimits, ChartModel, ChartState,
+    ChartTable, ChartTableEvent, ChartTheme, ChartView, Column, DataValue, Dataset, DatasetId,
+    Encoding, FieldRef, Legend, PanZoomPolicy, Recipes, RowKey, Scale, ScaleKind, ViewportCommand,
 };
 use twinkle_testkit::{Scenario, Selector};
 use twinkle_ui::{
     ActionKind, Application, Button, Column as UiColumn, Component, ComponentBuilderExt,
     DragGesture, DragPhase, Point, Rect, SemanticRole, Spacer, VerticalScroll, ViewContext,
     WheelGesture,
+    backend::PaintCommand,
     retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions},
 };
 
@@ -25,6 +26,7 @@ enum Message {
     Table(ChartTableEvent),
     Reorder,
     RemoveActive,
+    DarkTheme,
 }
 
 fn pointer(point: Point) -> Message {
@@ -52,11 +54,30 @@ impl ChartScenarioApp {
     fn new() -> Self {
         let limits = ChartLimits::default();
         let data = scenario_data(1, &["a", "b", "c"], &limits);
-        let spec = Arc::new(Recipes::line(
+        let mut spec = Recipes::line(
             "Scenario chart",
             FieldRef::new("scenario", "x"),
             FieldRef::new("scenario", "y"),
-        ));
+        );
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: FieldRef::new("scenario", "series"),
+            scale: Some(Arc::from("series")),
+        });
+        spec.scales.push(Scale {
+            name: Arc::from("series"),
+            kind: ScaleKind::Color,
+            domain: None,
+            clamp: false,
+            reversed: false,
+            unit: None,
+        });
+        spec.legends.push(Legend {
+            scale: Arc::from("series"),
+            title: Some(Arc::from("Series")),
+            toggleable: true,
+        });
+        let spec = Arc::new(spec);
         let mut chart =
             ChartView::new(ChartModel::new(Arc::clone(&spec), data, limits.clone()).unwrap())
                 .unwrap();
@@ -136,6 +157,18 @@ fn scenario_data(revision: u64, rows: &[&str], limits: &ChartLimits) -> Arc<Char
                                 .map(|row| DataValue::Number(values(row).1))
                                 .collect::<Vec<_>>(),
                         ),
+                        Column::new(
+                            "series",
+                            rows.iter()
+                                .map(|row| {
+                                    DataValue::Category(Arc::from(if *row == "b" {
+                                        "B"
+                                    } else {
+                                        "A"
+                                    }))
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
                     ],
                 )
                 .unwrap(),
@@ -160,6 +193,21 @@ impl Application for ChartScenarioApp {
                 }
             }
             Message::Chart(ChartEvent::Viewport(command)) => self.publish_viewport(command),
+            Message::Chart(ChartEvent::ToggleSeries { series, visible }) => {
+                let visible_series = self
+                    .state
+                    .visible_series
+                    .get_or_insert_with(|| [Arc::from("A"), Arc::from("B")].into_iter().collect());
+                if visible {
+                    visible_series.insert(series);
+                } else {
+                    visible_series.remove(&series);
+                }
+                self.revision += 1;
+                self.chart
+                    .update_state(self.state.clone(), input(self.revision))
+                    .unwrap();
+            }
             Message::Chart(event) => self.events.push(event),
             Message::Drag(gesture) => self.drag_phases.push(gesture.phase),
             Message::Wheel(gesture) => {
@@ -174,6 +222,12 @@ impl Application for ChartScenarioApp {
             Message::Table(_) => {}
             Message::Reorder => self.replace_rows(&["c", "a", "b"]),
             Message::RemoveActive => self.replace_rows(&["c", "a"]),
+            Message::DarkTheme => {
+                self.revision += 1;
+                self.chart
+                    .update_theme(ChartTheme::dark(), input(self.revision))
+                    .unwrap();
+            }
         }
     }
 
@@ -194,6 +248,7 @@ impl Application for ChartScenarioApp {
             )
             .child(Button::new(Message::Reorder, "Reorder data"))
             .child(Button::new(Message::RemoveActive, "Remove active row"))
+            .child(Button::new(Message::DarkTheme, "Use dark chart theme"))
             .into_element()
     }
 }
@@ -337,6 +392,29 @@ fn testkit_routes_pointer_accessibility_controller_wheel_and_drag_capture() {
         node.role == Some(SemanticRole::Tooltip)
             && node.name.as_deref().is_some_and(|name| name.contains("x:"))
     }));
+    let inspected = scenario
+        .host()
+        .application()
+        .chart
+        .active_inspection()
+        .unwrap()
+        .row;
+    scenario
+        .host_mut()
+        .handle_event(twinkle_ui::UiEvent::PointerMoved(Point {
+            x: BOUNDS.size.width + 50.0,
+            y: BOUNDS.size.height + 50.0,
+        }));
+    assert_eq!(
+        scenario
+            .host()
+            .application()
+            .chart
+            .active_inspection()
+            .unwrap()
+            .row,
+        inspected
+    );
 
     scenario.keyboard_activate(&selector).unwrap();
     scenario
@@ -350,6 +428,13 @@ fn testkit_routes_pointer_accessibility_controller_wheel_and_drag_capture() {
     scenario.pointer_scroll(&selector, 0.0, -12.0).unwrap();
     assert_eq!(scenario.host().application().wheel_events, 1);
     assert!(scenario.host().application().state.viewport.is_some());
+    scenario
+        .pointer_activate(&Selector::role_name(SemanticRole::Button, "Reset zoom"))
+        .unwrap();
+    assert_eq!(
+        scenario.host().application().state.viewport,
+        Some(ChartScenarioApp::policy().reset())
+    );
 
     let point = scenario.pointer_move(&selector).unwrap();
     scenario
@@ -363,6 +448,48 @@ fn testkit_routes_pointer_accessibility_controller_wheel_and_drag_capture() {
             .drag_phases
             .contains(&DragPhase::Cancelled)
     );
+}
+
+#[test]
+fn testkit_toggles_legends_and_reprojects_theme_changes() {
+    let mut scenario = Scenario::new(ChartScenarioApp::new(), 400, 360);
+    let series = Selector::role_name(SemanticRole::Button, "A series");
+    scenario.pointer_activate(&series).unwrap();
+    assert!(
+        !scenario
+            .host()
+            .application()
+            .state
+            .visible_series
+            .as_ref()
+            .unwrap()
+            .contains("A")
+    );
+    assert!(
+        scenario
+            .host()
+            .application()
+            .chart
+            .hits()
+            .iter()
+            .all(|hit| hit.series.as_deref() != Some("A"))
+    );
+
+    scenario
+        .pointer_activate(&Selector::role_name(
+            SemanticRole::Button,
+            "Use dark chart theme",
+        ))
+        .unwrap();
+    assert!(scenario
+        .host()
+        .application()
+        .chart
+        .snapshot()
+        .output
+        .paint
+        .iter()
+        .any(|command| matches!(command, PaintCommand::Fill { color, .. } if *color == ChartTheme::dark().background)));
 }
 
 #[test]
