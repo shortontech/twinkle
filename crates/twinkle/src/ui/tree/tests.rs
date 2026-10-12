@@ -86,6 +86,50 @@ fn seeded_pointer_motion_preserves_target_authority() {
 }
 
 #[test]
+fn seeded_wheel_preserves_target_authority() {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Message {
+        target: u32,
+        delta_y: f32,
+    }
+    fn wheel(mut seed: Message, gesture: WheelGesture) -> Message {
+        seed.delta_y = gesture.delta_y;
+        seed
+    }
+
+    let frame = UiFrame::layout(
+        Layer::new()
+            .id("seeded-surface")
+            .width(120.0)
+            .height(80.0)
+            .into_element()
+            .on_wheel_seeded(
+                Message {
+                    target: 17,
+                    delta_y: 0.0,
+                },
+                wheel,
+            ),
+        Rect::new(0.0, 0.0, 120.0, 80.0),
+    );
+    let outcome = frame.handle_event(
+        &mut UiStateStore::default(),
+        UiEvent::Scroll {
+            point: Point { x: 45.0, y: 55.0 },
+            delta_y: -12.0,
+        },
+    );
+    assert_eq!(
+        outcome.messages,
+        vec![Message {
+            target: 17,
+            delta_y: -12.0
+        }]
+    );
+    assert_eq!(outcome.disposition, EventDisposition::Handled);
+}
+
+#[test]
 #[ignore = "release-profile stationary sparse paint-output reuse workload"]
 fn stationary_sparse_paint_output_reuse_release_workload() {
     const NODES: usize = 4_096;

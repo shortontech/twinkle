@@ -30,6 +30,8 @@ pub struct ChartDeclaration {
     pub(crate) inspect_action: Option<usize>,
     pub(crate) viewport_action: Option<usize>,
     pub(crate) viewport_command_action: Option<usize>,
+    pub(crate) pan_action: Option<usize>,
+    pub(crate) zoom_action: Option<usize>,
     pub(crate) retained_bytes: usize,
 }
 
@@ -83,6 +85,8 @@ impl ChartDeclaration {
             inspect_action: action(value, "chartInspectAction")?,
             viewport_action: action(value, "chartViewportAction")?,
             viewport_command_action: action(value, "chartViewportCommandAction")?,
+            pan_action: action(value, "chartPanAction")?,
+            zoom_action: action(value, "chartZoomAction")?,
             retained_bytes,
         })
     }
@@ -566,7 +570,8 @@ mod tests {
             "kind":"chart","id":"sales","width":420,"height":240,
             "tableAction":7,"toggleAction":8,"chartNavigateAction":9,
             "chartSelectAction":10,"chartInspectAction":11,
-            "chartViewportAction":12,"chartViewportCommandAction":13,"children":[],
+            "chartViewportAction":12,"chartViewportCommandAction":13,
+            "chartPanAction":14,"chartZoomAction":15,"children":[],
             "data":{"revision":3,"datasets":[{
                 "id":"sales","keys":["north-jan","south-jan","north-feb","south-feb"],
                 "columns":[
@@ -653,7 +658,9 @@ mod tests {
         .on_pointer_move_seeded(
             PluginMessage::ChartInspect(11, chart.inspector.clone()),
             PluginMessage::pointer,
-        );
+        )
+        .on_drag(PluginMessage::ChartDrag(14), PluginMessage::drag)
+        .on_wheel_seeded(PluginMessage::ChartWheel(15), PluginMessage::wheel);
         let frame = twinkle::UiFrame::layout(element, Rect::new(0.0, 0.0, 420.0, 240.0));
         let pointer = frame.handle_event(
             &mut twinkle::UiStateStore::default(),
@@ -667,6 +674,41 @@ mod tests {
         assert_eq!(payload["kind"], "inspect");
         assert_eq!(payload["revision"], 3);
         assert_eq!(payload["cells"].as_array().unwrap().len(), 3);
+
+        let point = twinkle::Point { x: 210.0, y: 120.0 };
+        let wheel = frame.handle_event(
+            &mut twinkle::UiStateStore::default(),
+            twinkle::UiEvent::Scroll {
+                point,
+                delta_y: -12.0,
+            },
+        );
+        assert_eq!(
+            wheel.messages,
+            vec![PluginMessage::Chart(
+                15,
+                json!({"kind":"zoom","x":210.0,"y":120.0,"deltaX":0.0,"deltaY":-12.0})
+            )]
+        );
+
+        let mut state = twinkle::UiStateStore::default();
+        frame.handle_event(&mut state, twinkle::UiEvent::PointerPressed(point));
+        let dragged = frame.handle_event(
+            &mut state,
+            twinkle::UiEvent::PointerMoved(twinkle::Point { x: 220.0, y: 125.0 }),
+        );
+        let PluginMessage::Chart(action, payload) = dragged
+            .messages
+            .iter()
+            .find(|message| matches!(message, PluginMessage::Chart(14, _)))
+            .expect("expected chart pan message")
+        else {
+            unreachable!()
+        };
+        assert_eq!(*action, 14);
+        assert_eq!(payload["kind"], "pan");
+        assert_eq!(payload["phase"], "move");
+        assert_eq!(payload["x"], 220.0);
     }
 
     #[test]

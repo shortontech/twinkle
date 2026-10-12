@@ -1583,13 +1583,18 @@ function h(kind, props, ...children) {
         ? __twinkleHandlerBinding(props.onViewportChange) : null;
     const chartViewportCommandAction = typeof props?.onViewportCommand === 'function'
         ? __twinkleHandlerBinding(props.onViewportCommand) : null;
+    const chartPanAction = typeof props?.onPan === 'function'
+        ? __twinkleHandlerBinding(props.onPan) : null;
+    const chartZoomAction = typeof props?.onZoom === 'function'
+        ? __twinkleHandlerBinding(props.onZoom) : null;
     const node = {kind};
     if (props?.key !== undefined) node.key = props.key;
     for (const [name, value] of Object.entries(props || {}))
         if (value !== undefined && __twinkleNativeProps.has(name)) node[name] = value;
     for (const [name, value] of Object.entries({action,contextAction,dragAction,dropAction,focusAction,blurAction,
         selectAction,moveAction,fileAction,closeAction,escapeAction,submitAction,tableAction,toggleAction,
-        chartNavigateAction,chartSelectAction,chartInspectAction,chartViewportAction,chartViewportCommandAction}))
+        chartNavigateAction,chartSelectAction,chartInspectAction,chartViewportAction,chartViewportCommandAction,
+        chartPanAction,chartZoomAction}))
         if (value !== null) node[name] = value;
     node.children = children.flat(Infinity).filter(child => child !== null && child !== false);
     return __twinkleVirtualNativeNode(node);

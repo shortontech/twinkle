@@ -1612,6 +1612,8 @@ struct ElementEvents<Message> {
     pointer_move_seed: Option<Message>,
     seeded_pointer_move_mapper: Option<fn(Message, Point) -> Message>,
     wheel_mapper: Option<fn(WheelGesture) -> Message>,
+    wheel_seed: Option<Message>,
+    seeded_wheel_mapper: Option<fn(Message, WheelGesture) -> Message>,
     drag_seed: Option<Message>,
     drop_message: Option<Message>,
 }
@@ -1633,6 +1635,8 @@ impl<Message> Default for ElementEvents<Message> {
             pointer_move_seed: None,
             seeded_pointer_move_mapper: None,
             wheel_mapper: None,
+            wheel_seed: None,
+            seeded_wheel_mapper: None,
             drag_seed: None,
             drop_message: None,
         }
@@ -1729,6 +1733,20 @@ impl<Message> Element<Message> {
         self.events.as_ref().and_then(|events| events.wheel_mapper)
     }
 
+    pub(crate) fn declared_wheel_seed(&self) -> Option<&Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.wheel_seed.as_ref())
+    }
+
+    pub(crate) fn declared_seeded_wheel_mapper(
+        &self,
+    ) -> Option<fn(Message, WheelGesture) -> Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.seeded_wheel_mapper)
+    }
+
     pub(crate) fn declared_drag_seed(&self) -> Option<&Message> {
         self.events
             .as_ref()
@@ -1756,6 +1774,7 @@ impl<Message> Element<Message> {
                 || events.pointer_move_mapper.is_some()
                 || events.pointer_move_seed.is_some()
                 || events.wheel_mapper.is_some()
+                || events.wheel_seed.is_some()
                 || events.drag_seed.is_some()
                 || events.drop_message.is_some()
         })
@@ -2167,6 +2186,18 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Opt into wheel delivery with target-specific typed seed data.
+    pub fn on_wheel_seeded(
+        mut self,
+        seed: Message,
+        map: fn(Message, WheelGesture) -> Message,
+    ) -> Self {
+        let events = self.events_mut();
+        events.wheel_seed = Some(seed);
+        events.seeded_wheel_mapper = Some(map);
+        self
+    }
+
     /// Turns this element into a declarative pointer-drag target.
     ///
     /// The seed message supplies target-specific typed data. Twinkle owns
@@ -2295,6 +2326,7 @@ impl<Message> Element<Message> {
                 && self.declared_pointer_move_mapper().is_none()
                 && self.declared_seeded_pointer_move_mapper().is_none()
                 && self.declared_wheel_mapper().is_none()
+                && self.declared_seeded_wheel_mapper().is_none()
                 && self.drag_mapper.is_none()
                 && self.drop_mapper.is_none()
                 && self.text_mapper.is_none(),
@@ -2317,6 +2349,8 @@ impl<Message> Element<Message> {
                 pointer_move_seed: None,
                 seeded_pointer_move_mapper: None,
                 wheel_mapper: None,
+                wheel_seed: None,
+                seeded_wheel_mapper: None,
                 drag_seed: None,
                 drop_message: None,
             };

@@ -233,7 +233,9 @@ mod tests {
                     onSelectDatum: event => twinkle.request({type:'select',...event}),
                     onInspectDatum: event => twinkle.request({type:'inspect',...event}),
                     onViewportChange: event => twinkle.request({type:'viewport',...event}),
-                    onViewportCommand: event => twinkle.request({type:'viewport-command',...event})
+                    onViewportCommand: event => twinkle.request({type:'viewport-command',...event}),
+                    onPan: event => twinkle.request({type:'pan',...event}),
+                    onZoom: event => twinkle.request({type:'zoom',...event})
                 });
             }
         "#;
@@ -249,6 +251,8 @@ mod tests {
         let inspect_action = chart.inspect_action.unwrap();
         let viewport_action = chart.viewport_action.unwrap();
         let viewport_command_action = chart.viewport_command_action.unwrap();
+        let pan_action = chart.pan_action.unwrap();
+        let zoom_action = chart.zoom_action.unwrap();
         assert_eq!(chart.snapshot.input.unwrap().revisions.content, 5);
         let effect = page
             .dispatch(table_action, &json!(true), &data, Ok::<_, String>)
@@ -291,6 +295,16 @@ mod tests {
                 viewport_command_action,
                 json!({"kind":"viewportCommand","command":"Reset"}),
                 json!({"type":"viewport-command","kind":"viewportCommand","command":"Reset"}),
+            ),
+            (
+                pan_action,
+                json!({"kind":"pan","phase":"move","x":10,"y":20}),
+                json!({"type":"pan","kind":"pan","phase":"move","x":10,"y":20}),
+            ),
+            (
+                zoom_action,
+                json!({"kind":"zoom","x":10,"y":20,"deltaY":-12}),
+                json!({"type":"zoom","kind":"zoom","x":10,"y":20,"deltaY":-12}),
             ),
         ] {
             assert_eq!(

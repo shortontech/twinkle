@@ -162,8 +162,11 @@ acquire the chart dependency.
 
 With `twinkle-presentation/charts`, JSX `Chart` declarations use this same native
 engine. `onTableMode`, `onToggleSeries`, `onNavigate`, `onSelectDatum`,
-`onInspectDatum`, `onViewportChange`, and `onViewportCommand` are independent
-generation-scoped callbacks. Optional event-specific callbacks fall back to
+`onInspectDatum`, `onViewportChange`, `onViewportCommand`, `onPan`, and `onZoom`
+are independent generation-scoped callbacks. `onPan` opts into captured native
+drag phases and `onZoom` opts into wheel/trackpad delivery; omitting `onZoom`
+leaves the gesture with an enclosing scroll container. Applications translate
+these gestures into their controlled viewport state. Optional event-specific callbacks fall back to
 `onTableMode` for source compatibility; new applications should handle them on
 their typed channels. When `onInspectDatum` is present, pointer motion uses an
 immutable accepted-generation `ChartInspector` and the native bounded hit index;

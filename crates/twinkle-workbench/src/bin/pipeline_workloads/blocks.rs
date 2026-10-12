@@ -548,7 +548,9 @@ impl Application for Blocks {
             | PluginMessage::Value(a, _)
             | PluginMessage::Chart(a, _) => Some(a),
             #[cfg(feature = "charts")]
-            PluginMessage::ChartInspect(..) => None,
+            PluginMessage::ChartInspect(..)
+            | PluginMessage::ChartDrag(..)
+            | PluginMessage::ChartWheel(..) => None,
             PluginMessage::Button { click, .. } => Some(click),
             PluginMessage::Scroll | PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
         };

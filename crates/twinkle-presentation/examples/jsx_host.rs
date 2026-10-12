@@ -121,7 +121,9 @@ impl Application for JsxApp {
             PluginMessage::Scroll | PluginMessage::Drag(..) | PluginMessage::Drop(..) => None,
             PluginMessage::Chart(action, _) => Some(action),
             #[cfg(feature = "charts")]
-            PluginMessage::ChartInspect(..) => None,
+            PluginMessage::ChartInspect(..)
+            | PluginMessage::ChartDrag(..)
+            | PluginMessage::ChartWheel(..) => None,
         };
         if let Some(action) = action {
             match self.dispatch(action) {

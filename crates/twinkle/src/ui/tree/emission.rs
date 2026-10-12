@@ -455,6 +455,8 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
 
                 wheel_mapper: element.declared_wheel_mapper(),
+                wheel_seed: element.declared_wheel_seed().cloned(),
+                seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
 
                 drag_mapper: element.drag_mapper,
                 drop_message: element.declared_drop_message().cloned(),
@@ -486,6 +488,8 @@ pub(super) fn emit_element<Message: Clone>(
             pointer_move_seed: element.declared_pointer_move_seed().cloned(),
             seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
             wheel_mapper: element.declared_wheel_mapper(),
+            wheel_seed: element.declared_wheel_seed().cloned(),
+            seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
             drag_mapper: None,
             drop_message: element.declared_drop_message().cloned(),
             drop_mapper: element.drop_mapper,
@@ -530,6 +534,8 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
 
                 wheel_mapper: element.declared_wheel_mapper(),
+                wheel_seed: element.declared_wheel_seed().cloned(),
+                seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
 
                 drag_mapper: element.drag_mapper,
                 drop_message: element.declared_drop_message().cloned(),
@@ -561,6 +567,8 @@ pub(super) fn emit_element<Message: Clone>(
             seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
 
             wheel_mapper: element.declared_wheel_mapper(),
+            wheel_seed: element.declared_wheel_seed().cloned(),
+            seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
 
             drag_mapper: element.drag_mapper,
             drop_message: element.declared_drop_message().cloned(),
@@ -574,7 +582,8 @@ pub(super) fn emit_element<Message: Clone>(
         && element.drop_mapper.is_none()
         && (element.declared_pointer_move_mapper().is_some()
             || element.declared_seeded_pointer_move_mapper().is_some()
-            || element.declared_wheel_mapper().is_some())
+            || element.declared_wheel_mapper().is_some()
+            || element.declared_seeded_wheel_mapper().is_some())
         && !is_scroll_container(element)
         && let Some(hit_rect) = node
             .clip
@@ -595,6 +604,8 @@ pub(super) fn emit_element<Message: Clone>(
             pointer_move_seed: element.declared_pointer_move_seed().cloned(),
             seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
             wheel_mapper: element.declared_wheel_mapper(),
+            wheel_seed: element.declared_wheel_seed().cloned(),
+            seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
             drag_mapper: None,
             drop_message: None,
             drop_mapper: None,
@@ -676,6 +687,8 @@ pub(super) fn emit_element<Message: Clone>(
                 seeded_pointer_move_mapper: None,
 
                 wheel_mapper: None,
+                wheel_seed: None,
+                seeded_wheel_mapper: None,
 
                 drag_mapper: None,
                 drop_message: None,
@@ -936,6 +949,8 @@ pub(super) fn emit_element<Message: Clone>(
                             seeded_pointer_move_mapper: None,
 
                             wheel_mapper: None,
+                            wheel_seed: None,
+                            seeded_wheel_mapper: None,
 
                             drag_mapper: None,
                             drop_message: None,
@@ -1453,6 +1468,8 @@ pub(super) fn emit_element<Message: Clone>(
                             seeded_pointer_move_mapper: None,
 
                             wheel_mapper: None,
+                            wheel_seed: None,
+                            seeded_wheel_mapper: None,
 
                             drag_mapper: None,
                             drop_message: None,

@@ -35,6 +35,8 @@ function ChartGallery() {
     }),
     onViewportChange: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => twinkle.request({type:"chart-event", ...event}),
     onViewportCommand: (event: Readonly<{kind:"viewportCommand";command:string}>) => twinkle.request({type:"chart-event", ...event}),
+    onPan: (event: Readonly<TwinkleChartPanGesture>) => twinkle.request({type:"chart-event", ...event}),
+    onZoom: (event: Readonly<TwinkleChartZoomGesture>) => twinkle.request({type:"chart-event", ...event}),
   };
   return <Column>
     <Chart {...common} id="trend" spec={{family:"line",title:"Revenue trend",dataset:"sales",x:"month",y:"revenue",series:"region"}} onToggleSeries={toggle} />

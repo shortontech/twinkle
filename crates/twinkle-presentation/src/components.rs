@@ -76,6 +76,12 @@ pub enum PluginMessage {
     #[doc(hidden)]
     #[cfg(feature = "charts")]
     ChartInspect(usize, twinkle_charts::ChartInspector),
+    #[doc(hidden)]
+    #[cfg(feature = "charts")]
+    ChartDrag(usize),
+    #[doc(hidden)]
+    #[cfg(feature = "charts")]
+    ChartWheel(usize),
 }
 
 /// Convert plugin control events at construction time, including controls
@@ -91,6 +97,9 @@ pub trait PluginUiMessage: Clone + 'static {
     fn pointer(seed: Self, _point: Point) -> Self {
         seed
     }
+    fn wheel(seed: Self, _gesture: twinkle::WheelGesture) -> Self {
+        seed
+    }
 }
 
 impl PluginUiMessage for PluginMessage {
@@ -99,10 +108,31 @@ impl PluginUiMessage for PluginMessage {
     }
 
     fn drag(seed: Self, gesture: DragGesture) -> Self {
-        let Self::Button { drag, .. } = seed else {
-            unreachable!("plugin drag seed retains its handler")
-        };
-        Self::Drag(drag, gesture)
+        match seed {
+            Self::Button { drag, .. } => Self::Drag(drag, gesture),
+            #[cfg(feature = "charts")]
+            Self::ChartDrag(action) => Self::Chart(
+                action,
+                serde_json::json!({
+                    "kind": "pan",
+                    "phase": match gesture.phase {
+                        twinkle::DragPhase::Started => "start",
+                        twinkle::DragPhase::Moved => "move",
+                        twinkle::DragPhase::Ended => "end",
+                        twinkle::DragPhase::Cancelled => "cancel",
+                    },
+                    "x": gesture.position.x,
+                    "y": gesture.position.y,
+                    "bounds": {
+                        "x": gesture.bounds.origin.x,
+                        "y": gesture.bounds.origin.y,
+                        "width": gesture.bounds.size.width,
+                        "height": gesture.bounds.size.height,
+                    },
+                }),
+            ),
+            _ => unreachable!("plugin drag seed retains its handler"),
+        }
     }
 
     fn value(seed: Self, value: f32) -> Self {
@@ -119,6 +149,23 @@ impl PluginUiMessage for PluginMessage {
                 .inspect_nearest(point)
                 .expect("non-empty accepted inspector resolves a nearest datum");
             return Self::Chart(action, crate::chart::inspection_payload(&inspection));
+        }
+        seed
+    }
+
+    fn wheel(seed: Self, gesture: twinkle::WheelGesture) -> Self {
+        #[cfg(feature = "charts")]
+        if let Self::ChartWheel(action) = seed {
+            return Self::Chart(
+                action,
+                serde_json::json!({
+                    "kind": "zoom",
+                    "x": gesture.position.x,
+                    "y": gesture.position.y,
+                    "deltaX": gesture.delta_x,
+                    "deltaY": gesture.delta_y,
+                }),
+            );
         }
         seed
     }
@@ -4069,6 +4116,24 @@ impl PanelNode {
                         Message::pointer,
                     );
                 }
+                if let Some(action) = chart.pan_action {
+                    element = element.on_drag(
+                        Message::from_plugin_scoped(
+                            PluginMessage::ChartDrag(action),
+                            scope.as_deref(),
+                        ),
+                        Message::drag,
+                    );
+                }
+                if let Some(action) = chart.zoom_action {
+                    element = element.on_wheel_seeded(
+                        Message::from_plugin_scoped(
+                            PluginMessage::ChartWheel(action),
+                            scope.as_deref(),
+                        ),
+                        Message::wheel,
+                    );
+                }
                 with_margin(
                     AnyView::new(apply_container_style(
                         Container::new().id(chart.id.clone()).child(element),
@@ -6054,6 +6119,10 @@ fn set_typed_handler(
         (PanelNode::Chart(chart), "chartViewportCommandAction") => {
             chart.viewport_command_action = optional
         }
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartPanAction") => chart.pan_action = optional,
+        #[cfg(feature = "charts")]
+        (PanelNode::Chart(chart), "chartZoomAction") => chart.zoom_action = optional,
         (PanelNode::Div { action: field, .. }, "action")
         | (PanelNode::Image { action: field, .. }, "action")
         | (PanelNode::Switch { action: field, .. }, "action")

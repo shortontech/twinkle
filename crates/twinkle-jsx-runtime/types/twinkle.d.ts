@@ -232,6 +232,14 @@ interface TwinkleChartInspectionCell {
     readonly formatted: string;
     readonly value: number | string | boolean | null;
 }
+interface TwinkleChartPanGesture extends TwinkleDragGesture { readonly kind: "pan" }
+interface TwinkleChartZoomGesture {
+    readonly kind: "zoom";
+    readonly x: number;
+    readonly y: number;
+    readonly deltaX: number;
+    readonly deltaY: number;
+}
 interface TwinkleChartProps extends TwinkleProps {
     id: string;
     width: number;
@@ -246,6 +254,10 @@ interface TwinkleChartProps extends TwinkleProps {
     onInspectDatum?: (event: Readonly<{kind:"inspect";dataset:string;row:string;series?:string;revision:number;cells:ReadonlyArray<TwinkleChartInspectionCell>}>) => void;
     onViewportChange?: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => void;
     onViewportCommand?: (event: Readonly<{kind:"viewportCommand";command:string}>) => void;
+    /** Opts into captured native drag delivery; update the controlled viewport in application state. */
+    onPan?: (event: Readonly<TwinkleChartPanGesture>) => void;
+    /** Opts into wheel/trackpad delivery; omit this callback to preserve enclosing scroll ownership. */
+    onZoom?: (event: Readonly<TwinkleChartZoomGesture>) => void;
 }
 declare function Fragment(props:TwinkleProps):JSX.Element;
 declare function h(kind: unknown, props?: object | null, ...children: TwinkleChild[]): JSX.Element;
