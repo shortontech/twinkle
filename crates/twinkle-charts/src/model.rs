@@ -332,7 +332,7 @@ impl ChartModel {
         if values.is_empty() {
             return Ok(());
         }
-        let x_domain = extent(values.iter().map(|(_, x, _)| *x));
+        let mut x_domain = extent(values.iter().map(|(_, x, _)| *x));
         let mut y_domain = extent(values.iter().map(|(_, _, y)| *y).chain(
             y2_column.into_iter().flat_map(|column| {
                 column
@@ -350,6 +350,34 @@ impl ChartModel {
         if let Some(baseline) = baseline {
             y_domain[0] = y_domain[0].min(baseline);
             y_domain[1] = y_domain[1].max(baseline);
+        }
+        let x_scale = x.scale.as_deref();
+        let y_scale = y.scale.as_deref();
+        for annotation in &self.spec.annotations {
+            match annotation {
+                crate::Annotation::Rule {
+                    scale,
+                    value,
+                    include_in_domain: true,
+                    ..
+                } => {
+                    include_domain_value(&mut x_domain, x_scale, scale, *value);
+                    include_domain_value(&mut y_domain, y_scale, scale, *value);
+                }
+                crate::Annotation::Band {
+                    scale,
+                    start,
+                    end,
+                    include_in_domain: true,
+                    ..
+                } => {
+                    include_domain_value(&mut x_domain, x_scale, scale, *start);
+                    include_domain_value(&mut x_domain, x_scale, scale, *end);
+                    include_domain_value(&mut y_domain, y_scale, scale, *start);
+                    include_domain_value(&mut y_domain, y_scale, scale, *end);
+                }
+                _ => {}
+            }
         }
         let categorical_x_count = x_column
             .values
@@ -377,6 +405,9 @@ impl ChartModel {
                 [plot.origin.y + plot.size.height, plot.origin.y],
             ),
         };
+        if layer_index == 0 {
+            self.prepare_guides(plot, x_domain, y_domain, x_scale, y_scale, output);
+        }
         let series_groups = series_groups(dataset, &layer.encodings);
         let color = self.theme.series_cue(layer_index).color;
         match &layer.mark {
@@ -595,6 +626,216 @@ impl ChartModel {
         Ok(())
     }
 
+    fn prepare_guides(
+        &self,
+        plot: Rect,
+        x_domain: [f64; 2],
+        y_domain: [f64; 2],
+        x_scale: Option<&str>,
+        y_scale: Option<&str>,
+        output: &mut RetainedSurfaceOutput,
+    ) {
+        for axis in &self.spec.axes {
+            let count = axis
+                .tick_count
+                .unwrap_or(5)
+                .clamp(2, self.limits.max_ticks_per_axis);
+            let is_x = x_scale == Some(axis.scale.as_ref());
+            let domain = if is_x {
+                x_domain
+            } else if y_scale == Some(axis.scale.as_ref()) {
+                y_domain
+            } else {
+                continue;
+            };
+            for index in 0..count {
+                let t = index as f32 / (count - 1) as f32;
+                let value = domain[0] + (domain[1] - domain[0]) * f64::from(t);
+                if is_x {
+                    let x = plot.origin.x + plot.size.width * t;
+                    if axis.grid {
+                        output.paint.push(PaintCommand::Fill {
+                            rect: Rect::new(x, plot.origin.y, 1.0, plot.size.height),
+                            color: self.theme.grid,
+                        });
+                    }
+                    let width = plot.size.width.min(60.0);
+                    let origin = (x - width / 2.0).clamp(
+                        plot.origin.x,
+                        (plot.origin.x + plot.size.width - width).max(plot.origin.x),
+                    );
+                    output.paint.push(PaintCommand::Text {
+                        bounds: Rect::new(
+                            origin,
+                            plot.origin.y + plot.size.height + 3.0,
+                            width,
+                            18.0,
+                        ),
+                        text: format_tick(value, axis.unit.as_deref()),
+                        scale: 0.75,
+                        color: self.theme.muted,
+                        align: twinkle_ui::TextAlign::Center,
+                        bold: false,
+                        wrap: false,
+                    });
+                } else {
+                    let y = plot.origin.y + plot.size.height * (1.0 - t);
+                    if axis.grid {
+                        output.paint.push(PaintCommand::Fill {
+                            rect: Rect::new(plot.origin.x, y, plot.size.width, 1.0),
+                            color: self.theme.grid,
+                        });
+                    }
+                    output.paint.push(PaintCommand::Text {
+                        bounds: Rect::new((plot.origin.x - 34.0).max(0.0), y - 9.0, 30.0, 18.0),
+                        text: format_tick(value, axis.unit.as_deref()),
+                        scale: 0.7,
+                        color: self.theme.muted,
+                        align: twinkle_ui::TextAlign::End,
+                        bold: false,
+                        wrap: false,
+                    });
+                }
+            }
+        }
+        for annotation in &self.spec.annotations {
+            match annotation {
+                crate::Annotation::Rule {
+                    scale,
+                    value,
+                    label,
+                    ..
+                } => {
+                    if x_scale == Some(scale.as_ref()) {
+                        let x = map_value(
+                            *value,
+                            x_domain,
+                            [plot.origin.x, plot.origin.x + plot.size.width],
+                        );
+                        output.paint.push(PaintCommand::Fill {
+                            rect: Rect::new(x, plot.origin.y, 1.5, plot.size.height),
+                            color: self.theme.selection,
+                        });
+                        if let Some(label) = label {
+                            annotation_label(
+                                output,
+                                plot,
+                                label,
+                                x,
+                                plot.origin.y,
+                                self.theme.foreground,
+                            );
+                        }
+                    } else if y_scale == Some(scale.as_ref()) {
+                        let y = map_value(
+                            *value,
+                            y_domain,
+                            [plot.origin.y + plot.size.height, plot.origin.y],
+                        );
+                        output.paint.push(PaintCommand::Fill {
+                            rect: Rect::new(plot.origin.x, y, plot.size.width, 1.5),
+                            color: self.theme.selection,
+                        });
+                        if let Some(label) = label {
+                            annotation_label(
+                                output,
+                                plot,
+                                label,
+                                plot.origin.x,
+                                y,
+                                self.theme.foreground,
+                            );
+                        }
+                    }
+                }
+                crate::Annotation::Band {
+                    scale,
+                    start,
+                    end,
+                    label,
+                    ..
+                } => {
+                    if x_scale == Some(scale.as_ref()) {
+                        let a = map_value(
+                            *start,
+                            x_domain,
+                            [plot.origin.x, plot.origin.x + plot.size.width],
+                        );
+                        let b = map_value(
+                            *end,
+                            x_domain,
+                            [plot.origin.x, plot.origin.x + plot.size.width],
+                        );
+                        output.paint.push(PaintCommand::Fill {
+                            rect: Rect::new(
+                                a.min(b),
+                                plot.origin.y,
+                                (b - a).abs(),
+                                plot.size.height,
+                            ),
+                            color: 0x303975D8,
+                        });
+                        if let Some(label) = label {
+                            annotation_label(
+                                output,
+                                plot,
+                                label,
+                                a.min(b),
+                                plot.origin.y,
+                                self.theme.foreground,
+                            );
+                        }
+                    } else if y_scale == Some(scale.as_ref()) {
+                        let a = map_value(
+                            *start,
+                            y_domain,
+                            [plot.origin.y + plot.size.height, plot.origin.y],
+                        );
+                        let b = map_value(
+                            *end,
+                            y_domain,
+                            [plot.origin.y + plot.size.height, plot.origin.y],
+                        );
+                        output.paint.push(PaintCommand::Fill {
+                            rect: Rect::new(
+                                plot.origin.x,
+                                a.min(b),
+                                plot.size.width,
+                                (b - a).abs(),
+                            ),
+                            color: 0x303975D8,
+                        });
+                        if let Some(label) = label {
+                            annotation_label(
+                                output,
+                                plot,
+                                label,
+                                plot.origin.x,
+                                a.min(b),
+                                self.theme.foreground,
+                            );
+                        }
+                    }
+                }
+                crate::Annotation::Text { text, x, y } => {
+                    let point = Point {
+                        x: map_value(
+                            *x,
+                            x_domain,
+                            [plot.origin.x, plot.origin.x + plot.size.width],
+                        ),
+                        y: map_value(
+                            *y,
+                            y_domain,
+                            [plot.origin.y + plot.size.height, plot.origin.y],
+                        ),
+                    };
+                    annotation_label(output, plot, text, point.x, point.y, self.theme.foreground);
+                }
+            }
+        }
+    }
+
     fn prepare_arc(
         &self,
         layer_index: usize,
@@ -801,6 +1042,59 @@ fn coordinate(value: &DataValue, category_index: usize) -> Option<f64> {
         DataValue::Category(_) => Some(category_index as f64),
         _ => None,
     }
+}
+fn include_domain_value(
+    domain: &mut [f64; 2],
+    channel_scale: Option<&str>,
+    annotation_scale: &str,
+    value: f64,
+) {
+    if channel_scale == Some(annotation_scale) && value.is_finite() {
+        domain[0] = domain[0].min(value);
+        domain[1] = domain[1].max(value);
+    }
+}
+
+fn format_tick(value: f64, unit: Option<&str>) -> String {
+    let value = if value.abs() >= 1_000_000.0 || (value != 0.0 && value.abs() < 0.001) {
+        format!("{value:.2e}")
+    } else {
+        let text = format!("{value:.3}");
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    };
+    unit.map_or(value.clone(), |unit| format!("{value} {unit}"))
+}
+
+fn annotation_label(
+    output: &mut RetainedSurfaceOutput,
+    plot: Rect,
+    label: &str,
+    x: f32,
+    y: f32,
+    color: u32,
+) {
+    let width = plot.size.width.min(140.0);
+    let height = plot.size.height.min(20.0);
+    if width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let origin_x = x.clamp(
+        plot.origin.x,
+        (plot.origin.x + plot.size.width - width).max(plot.origin.x),
+    );
+    let origin_y = y.clamp(
+        plot.origin.y,
+        (plot.origin.y + plot.size.height - height).max(plot.origin.y),
+    );
+    output.paint.push(PaintCommand::Text {
+        bounds: Rect::new(origin_x, origin_y, width, height),
+        text: label.to_owned(),
+        scale: 0.75,
+        color,
+        align: twinkle_ui::TextAlign::Start,
+        bold: false,
+        wrap: false,
+    });
 }
 fn column_coordinates(column: &crate::Column) -> Vec<Option<f64>> {
     let mut categories: BTreeMap<Arc<str>, usize> = BTreeMap::new();
@@ -1374,5 +1668,49 @@ mod tests {
             vec![points[0], Point { x: 2.0, y: 1.0 }, points[1]]
         );
         assert!(interpolate_points(&[], crate::Interpolation::StepAfter).is_empty());
+    }
+
+    #[test]
+    fn axes_grids_and_domain_including_annotations_remain_bounded() {
+        let mut model = model();
+        let mut spec = (*model.spec).clone();
+        spec.axes.push(crate::Axis {
+            scale: Arc::from("x"),
+            title: Some(Arc::from("Time")),
+            unit: Some(Arc::from("s")),
+            tick_count: Some(4),
+            grid: true,
+        });
+        spec.axes.push(crate::Axis {
+            scale: Arc::from("y"),
+            title: Some(Arc::from("Value")),
+            unit: None,
+            tick_count: Some(3),
+            grid: true,
+        });
+        spec.annotations.push(crate::Annotation::Rule {
+            scale: Arc::from("y"),
+            value: 10.0,
+            label: Some(Arc::from("Target")),
+            include_in_domain: true,
+        });
+        model.replace(Arc::new(spec), model.data.clone()).unwrap();
+        let mut view = ChartView::new(model).unwrap();
+        let snapshot = view
+            .update(RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 180.0, 100.0),
+                1.25,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content: 12,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert!(
+            snapshot.output.paint.iter().any(
+                |command| matches!(command, PaintCommand::Text { text, .. } if text == "Target")
+            )
+        );
+        assert!(snapshot.output.paint.len() >= 12);
     }
 }
