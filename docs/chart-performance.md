@@ -119,10 +119,16 @@ source rows. Warm inspection, viewport update, and native-frame construction
 are below the specification's 16.7 ms p95 interaction target on this machine.
 Cold costs are reported separately and are not represented as interactive work.
 
-## Scope still requiring evidence
+## Renderer evidence boundary
 
 The renderer trace now captures the required 16-chart upload and CPU submission
-accounting. Software/GPU raster agreement is still outstanding. GPU execution
-completion and compositor display timestamps are unavailable on the current
-presenter boundary. The results above therefore remain incomplete evidence for
-the full specification-0025 performance gate.
+accounting. Software/GPU raster agreement is independently verified by the
+production-path `GpuOffscreenRenderer`: the explicit admission test reads actual
+GPU RGBA bytes for every chart family over the pinned theme/size/scale matrix and
+applies the documented 9% boundary-pixel and 8.25/255 mean-channel tolerances.
+Per-family software RGBA digests pin the corresponding full raster matrix.
+
+GPU execution-completion and compositor display timestamps remain unavailable on
+the current window-presenter boundary and are not inferred from submission time.
+This limits claims about physical display latency, but no longer leaves raster
+agreement or the specified CPU-side warm-frame budget unmeasured.
