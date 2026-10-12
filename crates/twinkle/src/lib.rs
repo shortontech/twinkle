@@ -154,7 +154,7 @@ pub use ui::{
     StartMenuShell, StyledText, StyledTextSpan, Surface, SurfaceRole, Switch, SwitchState, TabList,
     Text, TextAlign, TextField, TextLayoutCacheDiagnostics, TextMeasureCacheMode,
     TextUnderlineStyle, Tone, UiEvent, UiFrame, VerticalScroll, VirtualColumn, VirtualHeightIndex,
-    VirtualNavigation, VirtualWindow, intrinsic_text_width, search_settings,
+    VirtualNavigation, VirtualWindow, WheelGesture, intrinsic_text_width, search_settings,
     text_layout_cache_diagnostics, with_text_measure_cache_mode,
 };
 

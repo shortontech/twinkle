@@ -15,7 +15,11 @@ fn pointer_motion_mapper_uses_one_hit_tested_surface_message() {
                 .message(Point { x: 0.0, y: 0.0 }),
         )
         .into_element()
-        .on_pointer_move(|point| point);
+        .on_pointer_move(|point| point)
+        .on_wheel(|gesture| Point {
+            x: gesture.delta_x,
+            y: gesture.delta_y,
+        });
     let frame = UiFrame::layout(element, Rect::new(10.0, 20.0, 120.0, 80.0));
     let mut state = UiStateStore::default();
     let point = Point { x: 45.0, y: 55.0 };
@@ -34,6 +38,15 @@ fn pointer_motion_mapper_uses_one_hit_tested_surface_message() {
             .messages
             .is_empty()
     );
+    let wheel = frame.handle_event(
+        &mut state,
+        UiEvent::Scroll {
+            point,
+            delta_y: -12.0,
+        },
+    );
+    assert_eq!(wheel.messages, vec![Point { x: 0.0, y: -12.0 }]);
+    assert_eq!(wheel.disposition, EventDisposition::Handled);
 }
 
 #[test]

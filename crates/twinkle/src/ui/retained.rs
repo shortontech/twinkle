@@ -724,6 +724,7 @@ fn signatures_with_work<Message, const COLLECT: bool>(
         || element.declared_focus_message().is_some()
         || element.declared_blur_message().is_some()
         || element.declared_pointer_move_mapper().is_some()
+        || element.declared_wheel_mapper().is_some()
         || element.declared_drag_seed().is_some()
         || element.declared_drop_message().is_some()
         || element.text_mapper.is_some()
@@ -935,6 +936,11 @@ fn signatures_with_work<Message, const COLLECT: bool>(
     interaction.add(
         &element
             .declared_pointer_move_mapper()
+            .map(|callback| callback as usize),
+    );
+    interaction.add(
+        &element
+            .declared_wheel_mapper()
             .map(|callback| callback as usize),
     );
     interaction.add(&element.drag_mapper.map(|callback| callback as usize));
@@ -1483,6 +1489,12 @@ fn exact_phase_matches<Message>(
                 .map(|mapper| mapper as usize)
                 == previous
                     .declared_pointer_move_mapper()
+                    .map(|mapper| mapper as usize)
+            && current
+                .declared_wheel_mapper()
+                .map(|mapper| mapper as usize)
+                == previous
+                    .declared_wheel_mapper()
                     .map(|mapper| mapper as usize)
             && current.drag_mapper.map(|mapper| mapper as usize)
                 == previous.drag_mapper.map(|mapper| mapper as usize)

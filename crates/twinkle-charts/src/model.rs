@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use twinkle_ui::{
-    ActionKind, Point, Rect, SemanticRole, UiId,
+    ActionKind, DragGesture, Point, Rect, SemanticRole, UiId, WheelGesture,
     backend::{PaintCommand, PathGeometry, PathGeometryKind, PathLineCap, PathLineJoin},
     retained_surface::{
         RetainedSurfaceChanges, RetainedSurfaceHost, RetainedSurfaceInput,
@@ -1978,6 +1978,24 @@ pub struct ChartView {
     last_error: Option<ChartError>,
 }
 
+/// Optional native input bindings for one bounded chart surface.
+#[derive(Clone)]
+pub struct ChartInputBindings<Message> {
+    pub pointer_move: Option<fn(Point) -> Message>,
+    pub drag: Option<(Message, fn(Message, DragGesture) -> Message)>,
+    pub wheel: Option<fn(WheelGesture) -> Message>,
+}
+
+impl<Message> Default for ChartInputBindings<Message> {
+    fn default() -> Self {
+        Self {
+            pointer_move: None,
+            drag: None,
+            wheel: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 enum ChartProjectionAction {
     Event(ChartEvent),
@@ -2128,7 +2146,7 @@ impl ChartView {
         id: impl Into<UiId>,
         message: impl FnMut(ChartEvent) -> Message,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
-        self.element_inner(id, message, None)
+        self.element_inner(id, message, ChartInputBindings::default())
     }
 
     /// Native projection with one bounded pointer-motion target. The supplied
@@ -2141,14 +2159,33 @@ impl ChartView {
         message: impl FnMut(ChartEvent) -> Message,
         pointer_message: fn(Point) -> Message,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
-        self.element_inner(id, message, Some(pointer_message))
+        self.element_with_input(
+            id,
+            message,
+            ChartInputBindings {
+                pointer_move: Some(pointer_message),
+                ..ChartInputBindings::default()
+            },
+        )
+    }
+
+    /// Native projection with explicitly opted-in hover, captured drag, and
+    /// wheel bindings. Without a wheel binding, surrounding native scrolling
+    /// retains authority.
+    pub fn element_with_input<Message: Clone>(
+        &self,
+        id: impl Into<UiId>,
+        message: impl FnMut(ChartEvent) -> Message,
+        bindings: ChartInputBindings<Message>,
+    ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
+        self.element_inner(id, message, bindings)
     }
 
     fn element_inner<Message: Clone>(
         &self,
         id: impl Into<UiId>,
         mut message: impl FnMut(ChartEvent) -> Message,
-        pointer_message: Option<fn(Point) -> Message>,
+        bindings: ChartInputBindings<Message>,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
         let visible = self.host.model().state.visible_series.clone();
         let mut snapshot = self.snapshot().clone();
@@ -2247,8 +2284,14 @@ impl ChartView {
         let mut element = element.map_message(move |action| match action {
             ChartProjectionAction::Event(event) => message(event),
         });
-        if let Some(pointer_message) = pointer_message {
+        if let Some(pointer_message) = bindings.pointer_move {
             element = element.on_pointer_move(pointer_message);
+        }
+        if let Some(wheel_message) = bindings.wheel {
+            element = element.on_wheel(wheel_message);
+        }
+        if let Some((seed, mapper)) = bindings.drag {
+            element = element.on_drag(seed, mapper);
         }
         Ok(element)
     }
@@ -3174,9 +3217,17 @@ mod tests {
         enum Message {
             Chart(ChartEvent),
             Pointer(Point),
+            Drag(DragGesture),
+            Wheel(WheelGesture),
         }
         fn pointer(point: Point) -> Message {
             Message::Pointer(point)
+        }
+        fn drag(_: Message, gesture: DragGesture) -> Message {
+            Message::Drag(gesture)
+        }
+        fn wheel(gesture: WheelGesture) -> Message {
+            Message::Wheel(gesture)
         }
 
         let mut view = ChartView::new(model()).unwrap();
@@ -3191,8 +3242,16 @@ mod tests {
         ))
         .unwrap();
         let frame = twinkle_ui::UiFrame::layout(
-            view.element_with_pointer("chart", Message::Chart, pointer)
-                .unwrap(),
+            view.element_with_input(
+                "chart",
+                Message::Chart,
+                ChartInputBindings {
+                    pointer_move: Some(pointer),
+                    drag: Some((Message::Pointer(Point { x: 0.0, y: 0.0 }), drag)),
+                    wheel: Some(wheel),
+                },
+            )
+            .unwrap(),
             bounds,
         );
         let point = Point { x: 200.0, y: 100.0 };
@@ -3205,6 +3264,40 @@ mod tests {
                 .messages,
             vec![Message::Pointer(point)]
         );
+        let wheel_gesture = WheelGesture {
+            position: point,
+            delta_x: 0.0,
+            delta_y: -8.0,
+        };
+        let wheel_outcome = frame.handle_event(
+            &mut twinkle_ui::UiStateStore::default(),
+            twinkle_ui::UiEvent::Scroll {
+                point,
+                delta_y: -8.0,
+            },
+        );
+        assert_eq!(wheel_outcome.messages, vec![Message::Wheel(wheel_gesture)]);
+        assert_eq!(
+            wheel_outcome.disposition,
+            twinkle_ui::EventDisposition::Handled
+        );
+
+        let mut drag_state = twinkle_ui::UiStateStore::default();
+        let started =
+            frame.handle_event(&mut drag_state, twinkle_ui::UiEvent::PointerPressed(point));
+        assert!(matches!(
+            started.messages.as_slice(),
+            [Message::Drag(DragGesture {
+                phase: twinkle_ui::DragPhase::Started,
+                ..
+            })]
+        ));
+        let outside = Point { x: 500.0, y: 500.0 };
+        let moved = frame.handle_event(&mut drag_state, twinkle_ui::UiEvent::PointerMoved(outside));
+        assert!(moved.messages.iter().any(|message| matches!(
+            message,
+            Message::Drag(DragGesture { phase: twinkle_ui::DragPhase::Moved, position, .. }) if *position == outside
+        )));
     }
 
     #[test]

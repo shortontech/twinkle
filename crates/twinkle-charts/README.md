@@ -90,6 +90,11 @@ does not take focus, and is never the sole exact-value surface.
 the whole chart. Its coordinate-bearing application message should call
 `inspect_nearest` during update; it does not allocate an interaction node for
 each datum and does not consume wheel input from an enclosing scroll view.
+`element_with_input` additionally accepts a captured-drag mapper and an explicit
+wheel mapper through `ChartInputBindings`. Drag phases continue outside chart
+bounds and cancel through Twinkle's native capture lifecycle. A wheel binding is
+opt-in and consumes the gesture for application-owned zoom; without one, wheel
+input continues to the enclosing scroll container.
 
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,

@@ -97,6 +97,7 @@ struct HitRegion<Message> {
     message_mapper: Option<fn(f32) -> Message>,
     seeded_value_mapper: Option<fn(Message, f32) -> Message>,
     pointer_move_mapper: Option<fn(Point) -> Message>,
+    wheel_mapper: Option<fn(WheelGesture) -> Message>,
     drag_seed: Option<Message>,
     drag_mapper: Option<fn(Message, DragGesture) -> Message>,
     drop_message: Option<Message>,
@@ -1143,7 +1144,16 @@ impl<Message: Clone> UiFrame<Message> {
     }
 
     fn drag_message(&self, id: &UiId, phase: DragPhase, position: Point) -> Option<Message> {
-        let hit = self.hits.iter().rev().find(|hit| &hit.id == id)?;
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| &hit.id == id && hit.drag_mapper.is_some())
+            .or_else(|| {
+                self.hits.iter().rev().find(|hit| {
+                    hit.drag_mapper.is_some() && self.is_descendant_or_self(&hit.id, id)
+                })
+            })?;
         Some((hit.drag_mapper?)(
             hit.drag_seed.clone()?,
             DragGesture {
@@ -1174,6 +1184,20 @@ impl<Message: Clone> UiFrame<Message> {
                 })
             })?;
         Some((hit.pointer_move_mapper?)(position))
+    }
+
+    fn wheel_message(&self, id: &UiId, gesture: WheelGesture) -> Option<Message> {
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| &hit.id == id && hit.wheel_mapper.is_some())
+            .or_else(|| {
+                self.hits.iter().rev().find(|hit| {
+                    hit.wheel_mapper.is_some() && self.is_descendant_or_self(&hit.id, id)
+                })
+            })?;
+        Some((hit.wheel_mapper?)(gesture))
     }
 
     fn drop_message(&self, source: &UiId, position: Point) -> Option<Message> {
@@ -1722,6 +1746,8 @@ impl<Message: Clone> UiFrame<Message> {
                 seeded_value_mapper: None,
                 drag_seed: None,
                 pointer_move_mapper: None,
+
+                wheel_mapper: None,
 
                 drag_mapper: None,
                 drop_message: None,
@@ -5643,6 +5669,20 @@ impl<Message: Clone> UiFrame<Message> {
                     .merge(Invalidation::Paint)
             }
             UiEvent::Scroll { point, delta_y } => {
+                if let Some(message) = self.id_at(point).and_then(|id| {
+                    self.wheel_message(
+                        id,
+                        WheelGesture {
+                            position: point,
+                            delta_x: 0.0,
+                            delta_y,
+                        },
+                    )
+                }) {
+                    outcome.messages.push(message);
+                    outcome.disposition = crate::EventDisposition::Handled;
+                    return outcome;
+                }
                 let Some(scroll) = self.scrolls.iter().rev().find(|scroll| {
                     if !contains(scroll.rect, point) {
                         return false;
@@ -5673,33 +5713,48 @@ impl<Message: Clone> UiFrame<Message> {
                 }
                 invalidation
             }
-            UiEvent::ScrollHorizontal { point, delta_x } => self
-                .scrolls
-                .iter()
-                .rev()
-                .find(|scroll| {
-                    if !contains(scroll.rect, point) {
-                        return false;
-                    }
-                    let maximum =
-                        (scroll.extent.content.width - scroll.extent.viewport.width).max(0.0);
-                    maximum > 0.0
-                        && if delta_x > 0.0 {
-                            scroll.extent.offset_x < maximum
-                        } else if delta_x < 0.0 {
-                            scroll.extent.offset_x > 0.0
-                        } else {
-                            false
-                        }
-                })
-                .map(|scroll| {
-                    state.scroll_by_x(
-                        scroll.id.clone(),
-                        delta_x,
-                        (scroll.extent.content.width - scroll.extent.viewport.width).max(0.0),
+            UiEvent::ScrollHorizontal { point, delta_x } => {
+                if let Some(message) = self.id_at(point).and_then(|id| {
+                    self.wheel_message(
+                        id,
+                        WheelGesture {
+                            position: point,
+                            delta_x,
+                            delta_y: 0.0,
+                        },
                     )
-                })
-                .unwrap_or(Invalidation::None),
+                }) {
+                    outcome.messages.push(message);
+                    outcome.disposition = crate::EventDisposition::Handled;
+                    return outcome;
+                }
+                self.scrolls
+                    .iter()
+                    .rev()
+                    .find(|scroll| {
+                        if !contains(scroll.rect, point) {
+                            return false;
+                        }
+                        let maximum =
+                            (scroll.extent.content.width - scroll.extent.viewport.width).max(0.0);
+                        maximum > 0.0
+                            && if delta_x > 0.0 {
+                                scroll.extent.offset_x < maximum
+                            } else if delta_x < 0.0 {
+                                scroll.extent.offset_x > 0.0
+                            } else {
+                                false
+                            }
+                    })
+                    .map(|scroll| {
+                        state.scroll_by_x(
+                            scroll.id.clone(),
+                            delta_x,
+                            (scroll.extent.content.width - scroll.extent.viewport.width).max(0.0),
+                        )
+                    })
+                    .unwrap_or(Invalidation::None)
+            }
             UiEvent::FocusNext => self.move_focus(state, 1),
             UiEvent::FocusPrevious => self.move_focus(state, -1),
             UiEvent::ControllerUp | UiEvent::KeyboardNavigateUp => {
