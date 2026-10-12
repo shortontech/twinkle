@@ -25,6 +25,7 @@ pub use export::{
 pub use interaction::{ChartNavigation, NavigationCommand, PanZoomPolicy, ViewportCommand};
 pub use model::{
     ChartHit, ChartInputBindings, ChartInspection, ChartInspector, ChartModel, ChartView,
+    project_inspection_overlay,
 };
 pub use scale::{BandScale, ContinuousScale, LinearScale, LogScale, ScaleValue};
 pub use spec::*;

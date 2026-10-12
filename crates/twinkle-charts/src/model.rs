@@ -121,6 +121,23 @@ impl ChartInspector {
         self.model.inspection(hit)
     }
 
+    /// Resolve a caller-controlled exact datum for passive inspection UI.
+    ///
+    /// This lookup occurs while admitting a new controlled chart declaration;
+    /// pointer motion on an accepted chart continues to use the ordered index.
+    pub fn inspect_identity(
+        &self,
+        dataset: &str,
+        row: &crate::RowKey,
+    ) -> Option<(ChartHit, ChartInspection)> {
+        let hit = self
+            .model
+            .hits
+            .iter()
+            .find(|hit| hit.dataset.as_ref() == dataset && &hit.row == row)?;
+        Some((hit.clone(), self.model.inspection(hit)?))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.model.hits.is_empty()
     }
@@ -2250,48 +2267,9 @@ impl ChartView {
         let visible = self.host.model().state.visible_series.clone();
         let pan_zoom_controls = bindings.wheel.is_some() || bindings.drag.is_some();
         let mut snapshot = self.snapshot().clone();
-        if let (Some(hit), Some(detail), Some(input)) =
-            (self.active_hit(), self.active_inspection(), snapshot.input)
-        {
-            let text = inspection_label(&detail);
-            let width = input.bounds.size.width.min(300.0).max(0.0);
-            let height = input.bounds.size.height.min(52.0).max(0.0);
-            let x = (hit.bounds.origin.x + hit.bounds.size.width + 8.0)
-                .min(input.bounds.origin.x + input.bounds.size.width - width)
-                .max(input.bounds.origin.x);
-            let y = (hit.bounds.origin.y - height - 8.0)
-                .min(input.bounds.origin.y + input.bounds.size.height - height)
-                .max(input.bounds.origin.y);
-            let bounds = Rect::new(x, y, width, height);
-            snapshot.output.paint.push(PaintCommand::Fill {
-                rect: bounds,
-                color: self.host.model().theme.background,
-            });
-            snapshot.output.paint.push(PaintCommand::Stroke {
-                rect: bounds,
-                color: self.host.model().theme.selection,
-                width: 1.0,
-            });
-            snapshot.output.paint.push(PaintCommand::Text {
-                bounds: inset(bounds, 6.0, 6.0, 6.0, 6.0),
-                text: text.clone(),
-                scale: 1.0,
-                color: self.host.model().theme.foreground,
-                align: twinkle_ui::TextAlign::Start,
-                bold: false,
-                wrap: true,
-            });
-            snapshot
-                .output
-                .semantics
-                .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
-                    id: UiId::from("chart/inspection"),
-                    bounds,
-                    role: SemanticRole::Tooltip,
-                    label: Some(text),
-                    state: Some(format!("row {}; exact accepted values", detail.row.0)),
-                    protected: false,
-                });
+        if let (Some(hit), Some(detail)) = (self.active_hit(), self.active_inspection()) {
+            let _ =
+                project_inspection_overlay(&mut snapshot, hit, &detail, &self.host.model().theme);
         }
         if pan_zoom_controls {
             add_viewport_controls(&mut snapshot, &self.host.model().theme);
@@ -2491,6 +2469,65 @@ fn inspection_label(inspection: &ChartInspection) -> String {
         ));
     }
     parts.join(" · ").chars().take(512).collect()
+}
+
+/// Project one passive, plot-bounded exact-value inspector into an accepted snapshot.
+#[doc(hidden)]
+pub fn project_inspection_overlay(
+    snapshot: &mut RetainedSurfaceSnapshot,
+    hit: &ChartHit,
+    detail: &ChartInspection,
+    theme: &ChartTheme,
+) -> bool {
+    let limits = RetainedSurfaceLimits::default();
+    if snapshot.output.paint.len().saturating_add(3) > limits.max_paint_commands
+        || snapshot.output.semantics.len().saturating_add(1) > limits.max_semantics
+    {
+        return false;
+    }
+    let Some(input) = snapshot.input else {
+        return false;
+    };
+    let text = inspection_label(detail);
+    let width = input.bounds.size.width.min(300.0).max(0.0);
+    let height = input.bounds.size.height.min(52.0).max(0.0);
+    let x = (hit.bounds.origin.x + hit.bounds.size.width + 8.0)
+        .min(input.bounds.origin.x + input.bounds.size.width - width)
+        .max(input.bounds.origin.x);
+    let y = (hit.bounds.origin.y - height - 8.0)
+        .min(input.bounds.origin.y + input.bounds.size.height - height)
+        .max(input.bounds.origin.y);
+    let bounds = Rect::new(x, y, width, height);
+    snapshot.output.paint.push(PaintCommand::Fill {
+        rect: bounds,
+        color: theme.background,
+    });
+    snapshot.output.paint.push(PaintCommand::Stroke {
+        rect: bounds,
+        color: theme.selection,
+        width: 1.0,
+    });
+    snapshot.output.paint.push(PaintCommand::Text {
+        bounds: inset(bounds, 6.0, 6.0, 6.0, 6.0),
+        text: text.clone(),
+        scale: 1.0,
+        color: theme.foreground,
+        align: twinkle_ui::TextAlign::Start,
+        bold: false,
+        wrap: true,
+    });
+    snapshot
+        .output
+        .semantics
+        .push(twinkle_ui::retained_surface::RetainedSurfaceSemantic {
+            id: UiId::from("chart/inspection"),
+            bounds,
+            role: SemanticRole::Tooltip,
+            label: Some(text),
+            state: Some(format!("row {}; exact accepted values", detail.row.0)),
+            protected: false,
+        });
+    true
 }
 
 fn chart_error_snapshot(

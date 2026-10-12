@@ -7,8 +7,8 @@ use twinkle::retained_surface::{
 use twinkle::{Rect, SemanticRole, UiId};
 use twinkle_charts::{
     BinOptions, Channel, ChartData, ChartEvent, ChartInspector, ChartLimits, ChartModel,
-    ChartState, ChartView, Column, DataValue, Dataset, DatasetId, Encoding, FieldRef, Legend,
-    Recipes, RowKey, Scale, ScaleKind, Viewport,
+    ChartState, ChartTheme, ChartView, Column, DataValue, Dataset, DatasetId, Encoding, FieldRef,
+    Legend, Recipes, RowKey, Scale, ScaleKind, Viewport, project_inspection_overlay,
 };
 
 #[derive(Clone)]
@@ -51,7 +51,9 @@ impl ChartDeclaration {
         if needs_toggle && toggle_action.is_none() {
             return Err("toggleable chart legend needs an onToggleSeries callback".into());
         }
-        let state = parse_state(value.get("state"))?;
+        let state_value = value.get("state");
+        let state = parse_state(state_value)?;
+        let controlled_inspection = parse_controlled_inspection(state_value)?;
         let mut view = ChartView::new(
             ChartModel::new(spec, data.clone(), limits)
                 .map_err(|error| error.to_string())?
@@ -68,14 +70,21 @@ impl ChartDeclaration {
         ))
         .map_err(|error| error.to_string())?;
         let inspector = view.inspector();
+        let mut snapshot = view.snapshot().clone();
+        let has_overlay = controlled_inspection
+            .and_then(|(dataset, row)| inspector.inspect_identity(&dataset, &row))
+            .is_some_and(|(hit, detail)| {
+                project_inspection_overlay(&mut snapshot, &hit, &detail, &ChartTheme::default())
+            });
         let retained_bytes = view
             .diagnostics()
             .steady_bytes
-            .saturating_add(inspector.retained_bytes());
+            .saturating_add(inspector.retained_bytes())
+            .saturating_add(if has_overlay { 2 * 1024 } else { 0 });
         Ok(Self {
             id,
             class_name,
-            snapshot: view.snapshot().clone(),
+            snapshot,
             inspector,
             table_action: action(value, "tableAction")?
                 .ok_or("chart needs an onTableMode callback")?,
@@ -508,6 +517,15 @@ fn parse_state(value: Option<&Value>) -> Result<ChartState, String> {
     })
 }
 
+fn parse_controlled_inspection(value: Option<&Value>) -> Result<Option<(String, RowKey)>, String> {
+    let Some(value) = value.and_then(|value| value.get("inspection")) else {
+        return Ok(None);
+    };
+    let dataset = bounded_string(value, "dataset", 256)?;
+    let row = bounded_string(value, "row", 4096)?;
+    Ok(Some((dataset, RowKey::from(row))))
+}
+
 fn optional_domain(value: Option<&Value>) -> Result<Option<[f64; 2]>, String> {
     let Some(value) = value else { return Ok(None) };
     let values = value
@@ -582,7 +600,8 @@ mod tests {
             }]},
             "spec":{"family":"line","title":"Revenue","summary":"Monthly revenue by region",
                 "dataset":"sales","x":"month","y":"revenue","series":"region"},
-            "state":{"visibleSeries":["North","South"]}
+            "state":{"visibleSeries":["North","South"],
+                "inspection":{"dataset":"sales","row":"north-jan"}}
         })
     }
 
@@ -601,6 +620,14 @@ mod tests {
                 .any(|command| matches!(command, twinkle::backend::PaintCommand::Path { .. }))
         );
         assert_eq!(chart.snapshot.output.interactions.len(), 4);
+        assert!(chart.snapshot.output.semantics.iter().any(|semantic| {
+            semantic.id.as_str() == "chart/inspection"
+                && semantic.role == SemanticRole::Tooltip
+                && semantic
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("10 USD"))
+        }));
         let (action, payload) = chart.event(ChartEvent::ToggleSeries {
             series: Arc::from("North"),
             visible: false,
@@ -722,5 +749,20 @@ mod tests {
         let mut invalid_viewport = declaration();
         invalid_viewport["state"]["viewport"] = json!({"x":[10,1]});
         assert!(ChartDeclaration::parse(&invalid_viewport, None).is_err());
+        let mut invalid_inspection = declaration();
+        invalid_inspection["state"]["inspection"] = json!({"dataset":"sales","row":4});
+        assert!(ChartDeclaration::parse(&invalid_inspection, None).is_err());
+
+        let mut removed_inspection = declaration();
+        removed_inspection["state"]["inspection"] = json!({"dataset":"sales","row":"removed"});
+        let chart = ChartDeclaration::parse(&removed_inspection, None).unwrap();
+        assert!(
+            chart
+                .snapshot
+                .output
+                .semantics
+                .iter()
+                .all(|semantic| semantic.id.as_str() != "chart/inspection")
+        );
     }
 }

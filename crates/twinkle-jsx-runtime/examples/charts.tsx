@@ -14,6 +14,7 @@ const chartData: TwinkleChartData = {
 
 function ChartGallery() {
   const [visibleSeries, setVisibleSeries] = useState<ReadonlyArray<string>>(["North", "South"]);
+  const [inspection, setInspection] = useState<Readonly<{dataset:string;row:string}> | undefined>(undefined);
   const toggle = ({series, visible}: Readonly<{series:string;visible:boolean}>) => {
     setVisibleSeries(previous => visible
       ? [...previous, series]
@@ -24,15 +25,18 @@ function ChartGallery() {
     data: chartData,
     width: 480,
     height: 260,
-    state: {visibleSeries},
+    state: {visibleSeries, inspection},
     onTableMode: table,
     onNavigate: (event: Readonly<{kind:"navigate";command:string}>) => twinkle.request({type:"chart-event", ...event}),
     onSelectDatum: (event: Readonly<{kind:"select";dataset:string;row:string;series?:string;revision:number}>) => twinkle.request({type:"chart-event", ...event}),
-    onInspectDatum: (event: Readonly<{kind:"inspect";dataset:string;row:string;series?:string;revision:number;cells:ReadonlyArray<TwinkleChartInspectionCell>}>) => twinkle.request({
-      type:"chart-event", kind:event.kind, dataset:event.dataset, row:event.row,
-      series:event.series ?? null, revision:event.revision,
-      cells:event.cells.map(cell => ({column:cell.column, unit:cell.unit ?? null, formatted:cell.formatted, value:cell.value})),
-    }),
+    onInspectDatum: (event: Readonly<{kind:"inspect";dataset:string;row:string;series?:string;revision:number;cells:ReadonlyArray<TwinkleChartInspectionCell>}>) => {
+      setInspection({dataset:event.dataset, row:event.row});
+      twinkle.request({
+        type:"chart-event", kind:event.kind, dataset:event.dataset, row:event.row,
+        series:event.series ?? null, revision:event.revision,
+        cells:event.cells.map(cell => ({column:cell.column, unit:cell.unit ?? null, formatted:cell.formatted, value:cell.value})),
+      });
+    },
     onViewportChange: (event: Readonly<{kind:"viewport";x?:readonly [number,number];y?:readonly [number,number]}>) => twinkle.request({type:"chart-event", ...event}),
     onViewportCommand: (event: Readonly<{kind:"viewportCommand";command:string}>) => twinkle.request({type:"chart-event", ...event}),
     onPan: (event: Readonly<TwinkleChartPanGesture>) => twinkle.request({type:"chart-event", ...event}),

@@ -225,6 +225,8 @@ interface TwinkleChartState {
     readonly selectedRows?: ReadonlyArray<string>;
     readonly visibleSeries?: ReadonlyArray<string>;
     readonly viewport?: { readonly x?: readonly [number, number]; readonly y?: readonly [number, number] };
+    /** Exact accepted datum rendered as a passive, plot-bounded inspector. */
+    readonly inspection?: { readonly dataset: string; readonly row: string };
 }
 interface TwinkleChartInspectionCell {
     readonly column: string;

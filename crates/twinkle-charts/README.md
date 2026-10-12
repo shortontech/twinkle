@@ -171,6 +171,9 @@ these gestures into their controlled viewport state. Optional event-specific cal
 their typed channels. When `onInspectDatum` is present, pointer motion uses an
 immutable accepted-generation `ChartInspector` and the native bounded hit index;
 the callback receives exact typed cells, units, formatted values, row identity,
-and revision without a JavaScript-side scan. The compiling gallery is
+and revision without a JavaScript-side scan. Feeding that stable dataset/row
+identity back through `state.inspection` renders the same bounded exact-value
+inspector as passive plot-local paint and tooltip semantics; a removed identity
+clears it without reviving stale data. The compiling gallery is
 `crates/twinkle-jsx-runtime/examples/charts.tsx`.
 
