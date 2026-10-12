@@ -2,7 +2,10 @@
 #![warn(missing_docs)]
 
 mod controller_host;
+mod pipeline_trace;
 pub use controller_host::{ControllerSource, HostedControllerDelivery, HostedControllerSource};
+#[doc(hidden)]
+pub use pipeline_trace::install_allocator_counter as install_pipeline_allocator_counter;
 
 extern crate self as twinkle_ui;
 

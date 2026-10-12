@@ -1,0 +1,3176 @@
+{
+  "schema": 1,
+  "name": "blocks-lifecycle",
+  "clock": "explicit frozen application polls; natural native/GPU/browser presentation",
+  "viewport": [
+    800,
+    720
+  ],
+  "scale": 1,
+  "warmupMs": 3000,
+  "durationMs": 23000,
+  "collectionPolicy": "natural; no forced GC",
+  "steps": [
+    {
+      "atMs": 0,
+      "kind": "observe",
+      "label": "initial-idle"
+    },
+    {
+      "atMs": 100,
+      "kind": "button",
+      "label": "held-left-immediate",
+      "button": "left",
+      "pressed": true
+    },
+    {
+      "atMs": 150,
+      "kind": "poll",
+      "label": "held-left-pre-repeat"
+    },
+    {
+      "atMs": 200,
+      "kind": "poll",
+      "label": "held-left-pre-repeat"
+    },
+    {
+      "atMs": 250,
+      "kind": "poll",
+      "label": "held-left-pre-repeat"
+    },
+    {
+      "atMs": 300,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 350,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 400,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 450,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 500,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 550,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 600,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 650,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 700,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 750,
+      "kind": "button",
+      "label": "release-left",
+      "button": "left",
+      "pressed": false
+    },
+    {
+      "atMs": 1450,
+      "kind": "poll",
+      "label": "gravity"
+    },
+    {
+      "atMs": 2150,
+      "kind": "poll",
+      "label": "gravity"
+    },
+    {
+      "atMs": 2200,
+      "kind": "button",
+      "label": "rotate",
+      "button": "rotate",
+      "pressed": true
+    },
+    {
+      "atMs": 2210,
+      "kind": "button",
+      "label": "release-rotate",
+      "button": "rotate",
+      "pressed": false
+    },
+    {
+      "atMs": 2250,
+      "kind": "button",
+      "label": "rotate-again",
+      "button": "rotate",
+      "pressed": true
+    },
+    {
+      "atMs": 2260,
+      "kind": "button",
+      "label": "release-rotate",
+      "button": "rotate",
+      "pressed": false
+    },
+    {
+      "atMs": 2300,
+      "kind": "button",
+      "label": "soft-drop-immediate",
+      "button": "down",
+      "pressed": true
+    },
+    {
+      "atMs": 2358,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2416,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2474,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2532,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2590,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2648,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2706,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2720,
+      "kind": "button",
+      "label": "release-soft-drop",
+      "button": "down",
+      "pressed": false
+    },
+    {
+      "atMs": 2800,
+      "kind": "menu",
+      "label": "open-menu"
+    },
+    {
+      "atMs": 2850,
+      "kind": "poll",
+      "label": "paused-menu-no-op"
+    },
+    {
+      "atMs": 3000,
+      "kind": "click",
+      "label": "resume-menu",
+      "target": "continue"
+    },
+    {
+      "atMs": 3100,
+      "kind": "focus",
+      "label": "blur",
+      "value": false
+    },
+    {
+      "atMs": 3150,
+      "kind": "poll",
+      "label": "blur-no-op"
+    },
+    {
+      "atMs": 3200,
+      "kind": "visibility",
+      "label": "hidden",
+      "value": false
+    },
+    {
+      "atMs": 3250,
+      "kind": "poll",
+      "label": "hidden-no-op"
+    },
+    {
+      "atMs": 3300,
+      "kind": "visibility",
+      "label": "visible",
+      "value": true
+    },
+    {
+      "atMs": 3400,
+      "kind": "focus",
+      "label": "focus-return",
+      "value": true
+    },
+    {
+      "atMs": 4100,
+      "kind": "poll",
+      "label": "gravity-after-focus"
+    },
+    {
+      "atMs": 4200,
+      "kind": "button",
+      "label": "hard-drop",
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 4210,
+      "kind": "button",
+      "label": "release-drop",
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 4400,
+      "kind": "menu",
+      "label": "menu-before-restart"
+    },
+    {
+      "atMs": 4600,
+      "kind": "click",
+      "label": "restart",
+      "target": "restart"
+    },
+    {
+      "atMs": 5300,
+      "kind": "poll",
+      "label": "gravity-after-restart"
+    },
+    {
+      "atMs": 6000,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 0,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6002,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 0,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6020,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 0
+    },
+    {
+      "atMs": 6040,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 0,
+      "target": "restart"
+    },
+    {
+      "atMs": 6120,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 1,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6122,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 1,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6140,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 1
+    },
+    {
+      "atMs": 6160,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 1,
+      "target": "restart"
+    },
+    {
+      "atMs": 6240,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 2,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6242,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 2,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6260,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 2
+    },
+    {
+      "atMs": 6280,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 2,
+      "target": "restart"
+    },
+    {
+      "atMs": 6360,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 3,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6362,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 3,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6380,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 3
+    },
+    {
+      "atMs": 6400,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 3,
+      "target": "restart"
+    },
+    {
+      "atMs": 6480,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 4,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6482,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 4,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6500,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 4
+    },
+    {
+      "atMs": 6520,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 4,
+      "target": "restart"
+    },
+    {
+      "atMs": 6600,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 5,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6602,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 5,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6620,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 5
+    },
+    {
+      "atMs": 6640,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 5,
+      "target": "restart"
+    },
+    {
+      "atMs": 6720,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 6,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6722,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 6,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6740,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 6
+    },
+    {
+      "atMs": 6760,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 6,
+      "target": "restart"
+    },
+    {
+      "atMs": 6840,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 7,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6842,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 7,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6860,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 7
+    },
+    {
+      "atMs": 6880,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 7,
+      "target": "restart"
+    },
+    {
+      "atMs": 6960,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 8,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 6962,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 8,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 6980,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 8
+    },
+    {
+      "atMs": 7000,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 8,
+      "target": "restart"
+    },
+    {
+      "atMs": 7080,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 9,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7082,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 9,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7100,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 9
+    },
+    {
+      "atMs": 7120,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 9,
+      "target": "restart"
+    },
+    {
+      "atMs": 7200,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 10,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7202,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 10,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7220,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 10
+    },
+    {
+      "atMs": 7240,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 10,
+      "target": "restart"
+    },
+    {
+      "atMs": 7320,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 11,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7322,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 11,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7340,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 11
+    },
+    {
+      "atMs": 7360,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 11,
+      "target": "restart"
+    },
+    {
+      "atMs": 7440,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 12,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7442,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 12,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7460,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 12
+    },
+    {
+      "atMs": 7480,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 12,
+      "target": "restart"
+    },
+    {
+      "atMs": 7560,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 13,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7562,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 13,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7580,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 13
+    },
+    {
+      "atMs": 7600,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 13,
+      "target": "restart"
+    },
+    {
+      "atMs": 7680,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 14,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7682,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 14,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7700,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 14
+    },
+    {
+      "atMs": 7720,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 14,
+      "target": "restart"
+    },
+    {
+      "atMs": 7800,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 15,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7802,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 15,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7820,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 15
+    },
+    {
+      "atMs": 7840,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 15,
+      "target": "restart"
+    },
+    {
+      "atMs": 7920,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 16,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 7922,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 16,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 7940,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 16
+    },
+    {
+      "atMs": 7960,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 16,
+      "target": "restart"
+    },
+    {
+      "atMs": 8040,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 17,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8042,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 17,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8060,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 17
+    },
+    {
+      "atMs": 8080,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 17,
+      "target": "restart"
+    },
+    {
+      "atMs": 8160,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 18,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8162,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 18,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8180,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 18
+    },
+    {
+      "atMs": 8200,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 18,
+      "target": "restart"
+    },
+    {
+      "atMs": 8280,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 19,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8282,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 19,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8300,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 19
+    },
+    {
+      "atMs": 8320,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 19,
+      "target": "restart"
+    },
+    {
+      "atMs": 8400,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 20,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8402,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 20,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8420,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 20
+    },
+    {
+      "atMs": 8440,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 20,
+      "target": "restart"
+    },
+    {
+      "atMs": 8520,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 21,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8522,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 21,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8540,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 21
+    },
+    {
+      "atMs": 8560,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 21,
+      "target": "restart"
+    },
+    {
+      "atMs": 8640,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 22,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8642,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 22,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8660,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 22
+    },
+    {
+      "atMs": 8680,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 22,
+      "target": "restart"
+    },
+    {
+      "atMs": 8760,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 23,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8762,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 23,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8780,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 23
+    },
+    {
+      "atMs": 8800,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 23,
+      "target": "restart"
+    },
+    {
+      "atMs": 8880,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 24,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 8882,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 24,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 8900,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 24
+    },
+    {
+      "atMs": 8920,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 24,
+      "target": "restart"
+    },
+    {
+      "atMs": 9000,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 25,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9002,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 25,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9020,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 25
+    },
+    {
+      "atMs": 9040,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 25,
+      "target": "restart"
+    },
+    {
+      "atMs": 9120,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 26,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9122,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 26,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9140,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 26
+    },
+    {
+      "atMs": 9160,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 26,
+      "target": "restart"
+    },
+    {
+      "atMs": 9240,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 27,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9242,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 27,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9260,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 27
+    },
+    {
+      "atMs": 9280,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 27,
+      "target": "restart"
+    },
+    {
+      "atMs": 9360,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 28,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9362,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 28,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9380,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 28
+    },
+    {
+      "atMs": 9400,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 28,
+      "target": "restart"
+    },
+    {
+      "atMs": 9480,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 29,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9482,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 29,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9500,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 29
+    },
+    {
+      "atMs": 9520,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 29,
+      "target": "restart"
+    },
+    {
+      "atMs": 9600,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 30,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9602,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 30,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9620,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 30
+    },
+    {
+      "atMs": 9640,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 30,
+      "target": "restart"
+    },
+    {
+      "atMs": 9720,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 31,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9722,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 31,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9740,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 31
+    },
+    {
+      "atMs": 9760,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 31,
+      "target": "restart"
+    },
+    {
+      "atMs": 9840,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 32,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9842,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 32,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9860,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 32
+    },
+    {
+      "atMs": 9880,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 32,
+      "target": "restart"
+    },
+    {
+      "atMs": 9960,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 33,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 9962,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 33,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 9980,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 33
+    },
+    {
+      "atMs": 10000,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 33,
+      "target": "restart"
+    },
+    {
+      "atMs": 10080,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 34,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10082,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 34,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10100,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 34
+    },
+    {
+      "atMs": 10120,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 34,
+      "target": "restart"
+    },
+    {
+      "atMs": 10200,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 35,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10202,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 35,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10220,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 35
+    },
+    {
+      "atMs": 10240,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 35,
+      "target": "restart"
+    },
+    {
+      "atMs": 10320,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 36,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10322,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 36,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10340,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 36
+    },
+    {
+      "atMs": 10360,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 36,
+      "target": "restart"
+    },
+    {
+      "atMs": 10440,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 37,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10442,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 37,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10460,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 37
+    },
+    {
+      "atMs": 10480,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 37,
+      "target": "restart"
+    },
+    {
+      "atMs": 10560,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 38,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10562,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 38,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10580,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 38
+    },
+    {
+      "atMs": 10600,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 38,
+      "target": "restart"
+    },
+    {
+      "atMs": 10680,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 39,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10682,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 39,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10700,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 39
+    },
+    {
+      "atMs": 10720,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 39,
+      "target": "restart"
+    },
+    {
+      "atMs": 10800,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 40,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10802,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 40,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10820,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 40
+    },
+    {
+      "atMs": 10840,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 40,
+      "target": "restart"
+    },
+    {
+      "atMs": 10920,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 41,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 10922,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 41,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 10940,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 41
+    },
+    {
+      "atMs": 10960,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 41,
+      "target": "restart"
+    },
+    {
+      "atMs": 11040,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 42,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11042,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 42,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11060,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 42
+    },
+    {
+      "atMs": 11080,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 42,
+      "target": "restart"
+    },
+    {
+      "atMs": 11160,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 43,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11162,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 43,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11180,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 43
+    },
+    {
+      "atMs": 11200,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 43,
+      "target": "restart"
+    },
+    {
+      "atMs": 11280,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 44,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11282,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 44,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11300,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 44
+    },
+    {
+      "atMs": 11320,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 44,
+      "target": "restart"
+    },
+    {
+      "atMs": 11400,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 45,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11402,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 45,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11420,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 45
+    },
+    {
+      "atMs": 11440,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 45,
+      "target": "restart"
+    },
+    {
+      "atMs": 11520,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 46,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11522,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 46,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11540,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 46
+    },
+    {
+      "atMs": 11560,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 46,
+      "target": "restart"
+    },
+    {
+      "atMs": 11640,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 47,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11642,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 47,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11660,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 47
+    },
+    {
+      "atMs": 11680,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 47,
+      "target": "restart"
+    },
+    {
+      "atMs": 11760,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 48,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11762,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 48,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11780,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 48
+    },
+    {
+      "atMs": 11800,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 48,
+      "target": "restart"
+    },
+    {
+      "atMs": 11880,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 49,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 11882,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 49,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 11900,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 49
+    },
+    {
+      "atMs": 11920,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 49,
+      "target": "restart"
+    },
+    {
+      "atMs": 12000,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 50,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12002,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 50,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12020,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 50
+    },
+    {
+      "atMs": 12040,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 50,
+      "target": "restart"
+    },
+    {
+      "atMs": 12120,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 51,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12122,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 51,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12140,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 51
+    },
+    {
+      "atMs": 12160,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 51,
+      "target": "restart"
+    },
+    {
+      "atMs": 12240,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 52,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12242,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 52,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12260,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 52
+    },
+    {
+      "atMs": 12280,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 52,
+      "target": "restart"
+    },
+    {
+      "atMs": 12360,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 53,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12362,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 53,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12380,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 53
+    },
+    {
+      "atMs": 12400,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 53,
+      "target": "restart"
+    },
+    {
+      "atMs": 12480,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 54,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12482,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 54,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12500,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 54
+    },
+    {
+      "atMs": 12520,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 54,
+      "target": "restart"
+    },
+    {
+      "atMs": 12600,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 55,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12602,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 55,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12620,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 55
+    },
+    {
+      "atMs": 12640,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 55,
+      "target": "restart"
+    },
+    {
+      "atMs": 12720,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 56,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12722,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 56,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12740,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 56
+    },
+    {
+      "atMs": 12760,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 56,
+      "target": "restart"
+    },
+    {
+      "atMs": 12840,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 57,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12842,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 57,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12860,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 57
+    },
+    {
+      "atMs": 12880,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 57,
+      "target": "restart"
+    },
+    {
+      "atMs": 12960,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 58,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 12962,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 58,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 12980,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 58
+    },
+    {
+      "atMs": 13000,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 58,
+      "target": "restart"
+    },
+    {
+      "atMs": 13080,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 59,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13082,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 59,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13100,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 59
+    },
+    {
+      "atMs": 13120,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 59,
+      "target": "restart"
+    },
+    {
+      "atMs": 13200,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 60,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13202,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 60,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13220,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 60
+    },
+    {
+      "atMs": 13240,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 60,
+      "target": "restart"
+    },
+    {
+      "atMs": 13320,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 61,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13322,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 61,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13340,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 61
+    },
+    {
+      "atMs": 13360,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 61,
+      "target": "restart"
+    },
+    {
+      "atMs": 13440,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 62,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13442,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 62,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13460,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 62
+    },
+    {
+      "atMs": 13480,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 62,
+      "target": "restart"
+    },
+    {
+      "atMs": 13560,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 63,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13562,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 63,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13580,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 63
+    },
+    {
+      "atMs": 13600,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 63,
+      "target": "restart"
+    },
+    {
+      "atMs": 13680,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 64,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13682,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 64,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13700,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 64
+    },
+    {
+      "atMs": 13720,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 64,
+      "target": "restart"
+    },
+    {
+      "atMs": 13800,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 65,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13802,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 65,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13820,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 65
+    },
+    {
+      "atMs": 13840,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 65,
+      "target": "restart"
+    },
+    {
+      "atMs": 13920,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 66,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 13922,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 66,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 13940,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 66
+    },
+    {
+      "atMs": 13960,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 66,
+      "target": "restart"
+    },
+    {
+      "atMs": 14040,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 67,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14042,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 67,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14060,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 67
+    },
+    {
+      "atMs": 14080,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 67,
+      "target": "restart"
+    },
+    {
+      "atMs": 14160,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 68,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14162,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 68,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14180,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 68
+    },
+    {
+      "atMs": 14200,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 68,
+      "target": "restart"
+    },
+    {
+      "atMs": 14280,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 69,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14282,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 69,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14300,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 69
+    },
+    {
+      "atMs": 14320,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 69,
+      "target": "restart"
+    },
+    {
+      "atMs": 14400,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 70,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14402,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 70,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14420,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 70
+    },
+    {
+      "atMs": 14440,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 70,
+      "target": "restart"
+    },
+    {
+      "atMs": 14520,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 71,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14522,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 71,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14540,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 71
+    },
+    {
+      "atMs": 14560,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 71,
+      "target": "restart"
+    },
+    {
+      "atMs": 14640,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 72,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14642,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 72,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14660,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 72
+    },
+    {
+      "atMs": 14680,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 72,
+      "target": "restart"
+    },
+    {
+      "atMs": 14760,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 73,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14762,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 73,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14780,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 73
+    },
+    {
+      "atMs": 14800,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 73,
+      "target": "restart"
+    },
+    {
+      "atMs": 14880,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 74,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 14882,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 74,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 14900,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 74
+    },
+    {
+      "atMs": 14920,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 74,
+      "target": "restart"
+    },
+    {
+      "atMs": 15000,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 75,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15002,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 75,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15020,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 75
+    },
+    {
+      "atMs": 15040,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 75,
+      "target": "restart"
+    },
+    {
+      "atMs": 15120,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 76,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15122,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 76,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15140,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 76
+    },
+    {
+      "atMs": 15160,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 76,
+      "target": "restart"
+    },
+    {
+      "atMs": 15240,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 77,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15242,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 77,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15260,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 77
+    },
+    {
+      "atMs": 15280,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 77,
+      "target": "restart"
+    },
+    {
+      "atMs": 15360,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 78,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15362,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 78,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15380,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 78
+    },
+    {
+      "atMs": 15400,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 78,
+      "target": "restart"
+    },
+    {
+      "atMs": 15480,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 79,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15482,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 79,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15500,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 79
+    },
+    {
+      "atMs": 15520,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 79,
+      "target": "restart"
+    },
+    {
+      "atMs": 15600,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 80,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15602,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 80,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15620,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 80
+    },
+    {
+      "atMs": 15640,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 80,
+      "target": "restart"
+    },
+    {
+      "atMs": 15720,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 81,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15722,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 81,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15740,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 81
+    },
+    {
+      "atMs": 15760,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 81,
+      "target": "restart"
+    },
+    {
+      "atMs": 15840,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 82,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15842,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 82,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15860,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 82
+    },
+    {
+      "atMs": 15880,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 82,
+      "target": "restart"
+    },
+    {
+      "atMs": 15960,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 83,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 15962,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 83,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 15980,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 83
+    },
+    {
+      "atMs": 16000,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 83,
+      "target": "restart"
+    },
+    {
+      "atMs": 16080,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 84,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16082,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 84,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16100,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 84
+    },
+    {
+      "atMs": 16120,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 84,
+      "target": "restart"
+    },
+    {
+      "atMs": 16200,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 85,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16202,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 85,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16220,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 85
+    },
+    {
+      "atMs": 16240,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 85,
+      "target": "restart"
+    },
+    {
+      "atMs": 16320,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 86,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16322,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 86,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16340,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 86
+    },
+    {
+      "atMs": 16360,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 86,
+      "target": "restart"
+    },
+    {
+      "atMs": 16440,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 87,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16442,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 87,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16460,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 87
+    },
+    {
+      "atMs": 16480,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 87,
+      "target": "restart"
+    },
+    {
+      "atMs": 16560,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 88,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16562,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 88,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16580,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 88
+    },
+    {
+      "atMs": 16600,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 88,
+      "target": "restart"
+    },
+    {
+      "atMs": 16680,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 89,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16682,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 89,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16700,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 89
+    },
+    {
+      "atMs": 16720,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 89,
+      "target": "restart"
+    },
+    {
+      "atMs": 16800,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 90,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16802,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 90,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16820,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 90
+    },
+    {
+      "atMs": 16840,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 90,
+      "target": "restart"
+    },
+    {
+      "atMs": 16920,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 91,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 16922,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 91,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 16940,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 91
+    },
+    {
+      "atMs": 16960,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 91,
+      "target": "restart"
+    },
+    {
+      "atMs": 17040,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 92,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17042,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 92,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17060,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 92
+    },
+    {
+      "atMs": 17080,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 92,
+      "target": "restart"
+    },
+    {
+      "atMs": 17160,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 93,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17162,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 93,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17180,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 93
+    },
+    {
+      "atMs": 17200,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 93,
+      "target": "restart"
+    },
+    {
+      "atMs": 17280,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 94,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17282,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 94,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17300,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 94
+    },
+    {
+      "atMs": 17320,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 94,
+      "target": "restart"
+    },
+    {
+      "atMs": 17400,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 95,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17402,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 95,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17420,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 95
+    },
+    {
+      "atMs": 17440,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 95,
+      "target": "restart"
+    },
+    {
+      "atMs": 17520,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 96,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17522,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 96,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17540,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 96
+    },
+    {
+      "atMs": 17560,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 96,
+      "target": "restart"
+    },
+    {
+      "atMs": 17640,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 97,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17642,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 97,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17660,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 97
+    },
+    {
+      "atMs": 17680,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 97,
+      "target": "restart"
+    },
+    {
+      "atMs": 17760,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 98,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17762,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 98,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17780,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 98
+    },
+    {
+      "atMs": 17800,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 98,
+      "target": "restart"
+    },
+    {
+      "atMs": 17880,
+      "kind": "button",
+      "label": "cycle-hard-drop",
+      "cycle": 99,
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 17882,
+      "kind": "button",
+      "label": "cycle-drop-release",
+      "cycle": 99,
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 17900,
+      "kind": "menu",
+      "label": "cycle-menu",
+      "cycle": 99
+    },
+    {
+      "atMs": 17920,
+      "kind": "click",
+      "label": "cycle-restart",
+      "cycle": 99,
+      "target": "restart"
+    },
+    {
+      "atMs": 18500,
+      "kind": "menu",
+      "label": "post-cycle-idle-menu"
+    },
+    {
+      "atMs": 22000,
+      "kind": "observe",
+      "label": "post-cycle-return-to-idle"
+    }
+  ]
+}

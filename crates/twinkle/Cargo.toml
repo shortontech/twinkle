@@ -13,11 +13,13 @@ keywords = ["gui", "ui", "desktop", "declarative"]
 categories = ["gui"]
 
 [features]
+pipeline-attribution = ["dep:serde_json"]
 default = ["native-controller", "gpu-presenter"]
 native-controller = ["dep:gilrs", "twinkle-input/gilrs"]
 gpu-presenter = ["dep:bytemuck", "dep:pollster", "dep:raw-window-handle", "dep:wgpu"]
 
 [dependencies]
+serde_json = { workspace = true, optional = true }
 cosmic-text.workspace = true
 gilrs = { workspace = true, optional = true }
 image.workspace = true

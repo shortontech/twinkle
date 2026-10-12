@@ -195,6 +195,9 @@ pub(super) fn emit_element<Message: Clone>(
     previous: Option<&UiFrame<Message>>,
     phases: EmissionPhases,
 ) {
+    #[cfg(feature = "pipeline-attribution")]
+    let _emission = crate::pipeline_trace::EmissionScope::new("emit_element");
+    crate::pipeline_trace::count_work!(2, 1);
     // Emission mutates output vectors and may recurse into `tree`, so holding a
     // borrow of the resolved record is not possible across the whole function.
     // Snapshot only the fields emission consumes instead of deep-cloning the

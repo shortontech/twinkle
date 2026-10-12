@@ -18,6 +18,7 @@ use std::time::Instant;
 
 mod bindings;
 pub use bindings::{DataPublisher, HostBindings};
+mod attribution;
 pub mod composition;
 mod engine;
 pub mod modules;
@@ -362,6 +363,13 @@ impl JsxRuntime {
             maintenance_checkpoint: 0,
             maintenance_drain_pending: false,
         };
+        #[cfg(feature = "pipeline-attribution")]
+        if attribution::configured() {
+            runtime.eval(&attribution::bootstrap(BOOTSTRAP))?;
+        } else {
+            runtime.eval(BOOTSTRAP)?;
+        }
+        #[cfg(not(feature = "pipeline-attribution"))]
         runtime.eval(BOOTSTRAP)?;
         if !bindings.bootstrap.is_empty() {
             runtime.eval(&bindings.bootstrap)?;

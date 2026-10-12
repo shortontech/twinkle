@@ -1,0 +1,17 @@
+{
+  "native_git_revision": "63e1c6c89b9deb20748f8757a23b5280fab0335f",
+  "native_git_status": "",
+  "source_sha256": {
+    "src/main.rs": "54a9b24aa9e34c11cda308e4375311621d6f0332b021c67b5ce2ca0b41e90219",
+    "app.tsx": "8ee080f3654511e88729a6b82496731db2f09ba54478d07dc79a264e0df2a88a",
+    "app.css": "9ed77c6f69880af5d9e983092589da3352d215a90e82c7f709aa60c5faafab8c"
+  },
+  "changes": [
+    "module import aliases and visibility",
+    "module-local TSX/CSS include paths",
+    "explicit 800x720 initial native content request",
+    "benchmark-only state/publication counters and end-of-run diagnostic accessors",
+    "ReplayBlocks wrapper uses frozen explicit poll cadence and synthetic focus/visibility flags; autonomous polling disabled"
+  ],
+  "scope": "Frozen game/model/controller and JSX preserved; controlled-clock harness and diagnostic observers are explicit benchmark adaptations. Natural cadence and OS input delivery require separate evidence."
+}

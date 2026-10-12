@@ -1,0 +1,276 @@
+{
+  "schema": 1,
+  "name": "blocks-behavior",
+  "clock": "explicit frozen application polls; natural native/GPU/browser presentation",
+  "viewport": [
+    800,
+    720
+  ],
+  "scale": 1,
+  "warmupMs": 3000,
+  "durationMs": 10000,
+  "collectionPolicy": "natural; no forced GC",
+  "steps": [
+    {
+      "atMs": 0,
+      "kind": "observe",
+      "label": "initial-idle"
+    },
+    {
+      "atMs": 100,
+      "kind": "button",
+      "label": "held-left-immediate",
+      "button": "left",
+      "pressed": true
+    },
+    {
+      "atMs": 150,
+      "kind": "poll",
+      "label": "held-left-pre-repeat"
+    },
+    {
+      "atMs": 200,
+      "kind": "poll",
+      "label": "held-left-pre-repeat"
+    },
+    {
+      "atMs": 250,
+      "kind": "poll",
+      "label": "held-left-pre-repeat"
+    },
+    {
+      "atMs": 300,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 350,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 400,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 450,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 500,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 550,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 600,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 650,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 700,
+      "kind": "poll",
+      "label": "held-left-wall-repeat"
+    },
+    {
+      "atMs": 750,
+      "kind": "button",
+      "label": "release-left",
+      "button": "left",
+      "pressed": false
+    },
+    {
+      "atMs": 1450,
+      "kind": "poll",
+      "label": "gravity"
+    },
+    {
+      "atMs": 2150,
+      "kind": "poll",
+      "label": "gravity"
+    },
+    {
+      "atMs": 2200,
+      "kind": "button",
+      "label": "rotate",
+      "button": "rotate",
+      "pressed": true
+    },
+    {
+      "atMs": 2210,
+      "kind": "button",
+      "label": "release-rotate",
+      "button": "rotate",
+      "pressed": false
+    },
+    {
+      "atMs": 2250,
+      "kind": "button",
+      "label": "rotate-again",
+      "button": "rotate",
+      "pressed": true
+    },
+    {
+      "atMs": 2260,
+      "kind": "button",
+      "label": "release-rotate",
+      "button": "rotate",
+      "pressed": false
+    },
+    {
+      "atMs": 2300,
+      "kind": "button",
+      "label": "soft-drop-immediate",
+      "button": "down",
+      "pressed": true
+    },
+    {
+      "atMs": 2358,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2416,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2474,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2532,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2590,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2648,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2706,
+      "kind": "poll",
+      "label": "held-soft-drop"
+    },
+    {
+      "atMs": 2720,
+      "kind": "button",
+      "label": "release-soft-drop",
+      "button": "down",
+      "pressed": false
+    },
+    {
+      "atMs": 2800,
+      "kind": "menu",
+      "label": "open-menu"
+    },
+    {
+      "atMs": 2850,
+      "kind": "poll",
+      "label": "paused-menu-no-op"
+    },
+    {
+      "atMs": 3000,
+      "kind": "click",
+      "label": "resume-menu",
+      "target": "continue"
+    },
+    {
+      "atMs": 3100,
+      "kind": "focus",
+      "label": "blur",
+      "value": false
+    },
+    {
+      "atMs": 3150,
+      "kind": "poll",
+      "label": "blur-no-op"
+    },
+    {
+      "atMs": 3200,
+      "kind": "visibility",
+      "label": "hidden",
+      "value": false
+    },
+    {
+      "atMs": 3250,
+      "kind": "poll",
+      "label": "hidden-no-op"
+    },
+    {
+      "atMs": 3300,
+      "kind": "visibility",
+      "label": "visible",
+      "value": true
+    },
+    {
+      "atMs": 3400,
+      "kind": "focus",
+      "label": "focus-return",
+      "value": true
+    },
+    {
+      "atMs": 4100,
+      "kind": "poll",
+      "label": "gravity-after-focus"
+    },
+    {
+      "atMs": 4200,
+      "kind": "button",
+      "label": "hard-drop",
+      "button": "drop",
+      "pressed": true
+    },
+    {
+      "atMs": 4210,
+      "kind": "button",
+      "label": "release-drop",
+      "button": "drop",
+      "pressed": false
+    },
+    {
+      "atMs": 4400,
+      "kind": "menu",
+      "label": "menu-before-restart"
+    },
+    {
+      "atMs": 4600,
+      "kind": "click",
+      "label": "restart",
+      "target": "restart"
+    },
+    {
+      "atMs": 5300,
+      "kind": "poll",
+      "label": "gravity-after-restart"
+    },
+    {
+      "atMs": 5500,
+      "kind": "menu",
+      "label": "idle-menu"
+    },
+    {
+      "atMs": 9000,
+      "kind": "observe",
+      "label": "return-to-idle"
+    }
+  ]
+}

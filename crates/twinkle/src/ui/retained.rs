@@ -2,8 +2,9 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{Rect, Size, UiId};
+use crate::{Rect, Size, UiId, state::MountedUiToken};
 
 use super::{
     BoxShadow, DropdownPartStyle, Element, GridColumnSpec, InteractionPaint, Kind, Length,
@@ -369,8 +370,10 @@ impl RetainedNode {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct RetainedNodeArena {
+    mount: u32,
+    next_identity: u32,
     root: Option<RetainedNodeId>,
     nodes: RetainedNodeStorage,
     // Identity lookup is on every retained layout/emission query. Ordering is
@@ -383,11 +386,53 @@ pub(crate) struct RetainedNodeArena {
     lookup_diagnostics: Cell<RetainedLookupDiagnostics>,
 }
 
+static NEXT_RETAINED_MOUNT: AtomicU32 = AtomicU32::new(1);
+
+impl Default for RetainedNodeArena {
+    fn default() -> Self {
+        #[allow(deprecated)] // fetch_update supports the workspace minimum Rust version.
+        let mount = NEXT_RETAINED_MOUNT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .expect("retained mount identity space exhausted");
+        Self {
+            mount,
+            next_identity: 1,
+            root: None,
+            nodes: RetainedNodeStorage::default(),
+            by_ui_id: HashMap::new(),
+            last: ReconcileStats::default(),
+            pending_commit: Vec::new(),
+            diagnostics_enabled: false,
+            lookup_diagnostics: Cell::new(RetainedLookupDiagnostics::default()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum ChildIdentity {
     Root,
     Key(UiId),
     Position(usize),
+}
+
+fn declared_root_matches<Message>(element: &Element<Message>, id: &UiId) -> bool {
+    element.id.as_ref().map_or_else(
+        || id.as_str() == "root",
+        |declared| {
+            id.as_str()
+                .strip_prefix("root/")
+                .is_some_and(|suffix| suffix == declared.as_str())
+        },
+    )
+}
+
+fn declared_root_id<Message>(element: &Element<Message>) -> UiId {
+    element.id.as_ref().map_or_else(
+        || UiId::from("root"),
+        |id| UiId::from("root").scoped(id.as_str()),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1597,6 +1642,31 @@ impl RetainedNodeArena {
         self.by_ui_id.get(id)
     }
 
+    fn admit_ui_id(&mut self, id: UiId) -> UiId {
+        if id
+            .mounted_token()
+            .is_some_and(|token| token.mount() == self.mount)
+        {
+            return id;
+        }
+        if let Some((canonical, _)) = self.by_ui_id.get_key_value(&id) {
+            return canonical.clone();
+        }
+        let identity = self.next_identity;
+        self.next_identity = self
+            .next_identity
+            .checked_add(1)
+            .expect("retained mount UI identity space exhausted");
+        id.with_mounted_token(MountedUiToken::new(self.mount, identity))
+    }
+
+    pub(super) fn root_ui_id<Message>(&self, root: &Element<Message>) -> Option<UiId> {
+        self.root
+            .and_then(|id| self.nodes.get(&id))
+            .filter(|node| declared_root_matches(root, &node.ui_id))
+            .map(|node| node.ui_id.clone())
+    }
+
     pub(crate) fn lookup_diagnostics(&self) -> RetainedLookupDiagnostics {
         self.lookup_diagnostics.get()
     }
@@ -1763,10 +1833,11 @@ impl RetainedNodeArena {
         let Some(root_id) = self.root else {
             return self.reconcile_against(root, previous);
         };
-        let root_ui_id = root.id.as_ref().map_or_else(
-            || UiId::from("root"),
-            |id| UiId::from("root").scoped(id.as_str()),
-        );
+        let root_ui_id = self
+            .nodes
+            .get(&root_id)
+            .filter(|node| declared_root_matches(root, &node.ui_id))
+            .map_or_else(|| declared_root_id(root), |node| node.ui_id.clone());
         if !self.changed_shape_matches(root, root_id, &root_ui_id, &affected_children) {
             return self.reconcile_against(root, previous);
         }
@@ -1815,10 +1886,11 @@ impl RetainedNodeArena {
         let Some(root_id) = self.root else {
             return self.reconcile(root);
         };
-        let root_ui_id = root.id.as_ref().map_or_else(
-            || UiId::from("root"),
-            |id| UiId::from("root").scoped(id.as_str()),
-        );
+        let root_ui_id = self
+            .nodes
+            .get(&root_id)
+            .filter(|node| declared_root_matches(root, &node.ui_id))
+            .map_or_else(|| declared_root_id(root), |node| node.ui_id.clone());
         if !self.changed_shape_matches(root, root_id, &root_ui_id, &affected_children) {
             return self.reconcile(root);
         }
@@ -1863,18 +1935,13 @@ impl RetainedNodeArena {
                 .id
                 .clone()
                 .map_or(ChildIdentity::Position(index), ChildIdentity::Key);
-            let child_ui_id = child.id.as_ref().map_or_else(
-                || ui_id.scoped(format!("#{index}")),
-                |id| ui_id.scoped(id.as_str()),
-            );
             if retained.parent != Some(id)
                 || retained.identity != identity
-                || retained.ui_id != child_ui_id
                 || retained.kind != kind_tag(&child.kind)
             {
                 return false;
             }
-            if !self.changed_shape_matches(child, *child_id, &child_ui_id, affected_children) {
+            if !self.changed_shape_matches(child, *child_id, &retained.ui_id, affected_children) {
                 return false;
             }
         }
@@ -2005,15 +2072,16 @@ impl RetainedNodeArena {
             self.by_ui_id.clear();
         }
         let mut consumed = HashSet::new();
+        let root_ui_id = old_root
+            .and_then(|id| old_nodes.get(&id))
+            .filter(|node| declared_root_matches(root, &node.ui_id))
+            .map_or_else(|| declared_root_id(root), |node| node.ui_id.clone());
         let root_id = self.reconcile_node(
             root,
             previous_root,
             None,
             ChildIdentity::Root,
-            root.id.as_ref().map_or_else(
-                || UiId::from("root"),
-                |id| UiId::from("root").scoped(id.as_str()),
-            ),
+            root_ui_id,
             0,
             old_root,
             &mut old_nodes,
@@ -2047,6 +2115,16 @@ impl RetainedNodeArena {
     ) -> RetainedNodeId {
         self.last.visited += 1;
         let kind = kind_tag(&element.kind);
+        let ui_id = candidate
+            .and_then(|candidate| old_nodes.get(&candidate))
+            .filter(|node| {
+                node.kind == kind
+                    && node.identity == identity
+                    && node.parent == parent
+                    && node.ui_id == ui_id
+            })
+            .map(|node| node.ui_id.clone())
+            .unwrap_or_else(|| self.admit_ui_id(ui_id));
         if let (Some(changed_ancestry), Some(candidate)) = (changed_ancestry, candidate)
             && !changed_ancestry.contains(&candidate)
             && old_nodes.get(&candidate).is_some_and(|node| {
@@ -2126,10 +2204,6 @@ impl RetainedNodeArena {
                 .id
                 .clone()
                 .map_or(ChildIdentity::Position(index), ChildIdentity::Key);
-            let child_ui_id = child.id.as_ref().map_or_else(
-                || ui_id.scoped(format!("#{index}")),
-                |id| ui_id.scoped(id.as_str()),
-            );
             let aligned = old_children.get(index).copied().filter(|candidate| {
                 !consumed.contains(candidate)
                     && old_nodes
@@ -2157,6 +2231,16 @@ impl RetainedNodeArena {
             {
                 self.last.moved += 1;
             }
+            let child_ui_id = old_child
+                .and_then(|candidate| old_nodes.get(&candidate))
+                .filter(|node| node.parent == Some(id) && node.identity == child_identity)
+                .map(|node| node.ui_id.clone())
+                .unwrap_or_else(|| {
+                    child.id.as_ref().map_or_else(
+                        || ui_id.scoped(format!("#{index}")),
+                        |id| ui_id.scoped(id.as_str()),
+                    )
+                });
             children.push(self.reconcile_node(
                 child,
                 previous_element.and_then(|previous| {
@@ -2383,8 +2467,19 @@ impl RetainedNodeArena {
         self.last.clone()
     }
 
+    pub(crate) fn index_storage_bytes(&self) -> usize {
+        self.by_ui_id.capacity() * std::mem::size_of::<(UiId, RetainedNodeId)>()
+            + self.index_overhead_bytes()
+    }
+
+    pub(crate) fn index_overhead_bytes(&self) -> usize {
+        super::estimated_hash_table_overhead::<(UiId, RetainedNodeId)>(self.by_ui_id.capacity())
+    }
+
     pub(crate) fn estimated_bytes(&self) -> usize {
-        self.nodes.capacity() * std::mem::size_of::<RetainedSlot>()
+        self.index_storage_bytes()
+            + self.pending_commit.capacity() * std::mem::size_of::<RetainedNodeId>()
+            + self.nodes.capacity() * std::mem::size_of::<RetainedSlot>()
             + self.nodes.len() * std::mem::size_of::<RetainedNodeMetadata>()
             + self
                 .nodes
@@ -2736,6 +2831,117 @@ mod tests {
             .find(|node| node.ui_id.as_str().ends_with(id))
             .expect("retained node")
             .dirty()
+    }
+
+    fn identity_snapshot(arena: &RetainedNodeArena) -> HashMap<String, (usize, MountedUiToken)> {
+        arena
+            .nodes()
+            .map(|node| {
+                (
+                    node.ui_id.as_str().to_owned(),
+                    (
+                        node.ui_id.allocation_identity(),
+                        node.ui_id
+                            .mounted_token()
+                            .expect("mounted retained identity"),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stable_reconciliation_reuses_mounted_identity_allocations() {
+        let view = |middle: &str| {
+            Column::<()>::new()
+                .id("board")
+                .child(keyed_text("first", "one"))
+                .child(keyed_text("middle", middle))
+                .child(keyed_text("last", "three"))
+                .into_element()
+        };
+        let mut arena = RetainedNodeArena::default();
+        let first = view("two");
+        arena.reconcile(&first);
+        let before = identity_snapshot(&arena);
+
+        let unchanged = view("two");
+        arena.reconcile_against(&unchanged, Some(&first));
+        assert_eq!(identity_snapshot(&arena), before);
+
+        let changed = view("TWO");
+        arena.reconcile_against(&changed, Some(&unchanged));
+        assert_eq!(identity_snapshot(&arena), before);
+
+        let cloned = arena.clone();
+        assert_eq!(identity_snapshot(&cloned), before);
+
+        let mut independent = RetainedNodeArena::default();
+        independent.reconcile(&changed);
+        let independent_ids = identity_snapshot(&independent);
+        for (path, (_, token)) in &before {
+            assert_ne!(*token, independent_ids[path].1);
+            assert_eq!(
+                arena
+                    .nodes()
+                    .find(|node| node.ui_id.as_str() == path)
+                    .unwrap()
+                    .ui_id,
+                independent
+                    .nodes()
+                    .find(|node| node.ui_id.as_str() == path)
+                    .unwrap()
+                    .ui_id
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_paths_share_canonical_mounted_identity() {
+        let root = Column::<()>::new()
+            .child(keyed_text("duplicate", "first"))
+            .child(keyed_text("duplicate", "second"))
+            .into_element();
+        let mut arena = RetainedNodeArena::default();
+        arena.reconcile(&root);
+        let duplicates = arena
+            .nodes()
+            .filter(|node| node.ui_id.as_str() == "root/duplicate")
+            .map(|node| (node.ui_id.allocation_identity(), node.ui_id.mounted_token()))
+            .collect::<Vec<_>>();
+        assert_eq!(duplicates.len(), 2);
+        assert_eq!(duplicates[0], duplicates[1]);
+    }
+
+    #[test]
+    fn removed_and_readmitted_path_gets_a_fresh_token_but_stays_textually_equal() {
+        let populated = Column::<()>::new()
+            .child(keyed_text("cell", "value"))
+            .into_element();
+        let empty = Column::<()>::new().into_element();
+        let mut arena = RetainedNodeArena::default();
+        arena.reconcile(&populated);
+        let original = arena
+            .nodes()
+            .find(|node| node.ui_id.as_str() == "root/cell")
+            .unwrap()
+            .ui_id
+            .clone();
+
+        arena.reconcile_against(&empty, Some(&populated));
+        arena.reconcile_against(&populated, Some(&empty));
+        let readmitted = arena
+            .nodes()
+            .find(|node| node.ui_id.as_str() == "root/cell")
+            .unwrap()
+            .ui_id
+            .clone();
+        assert_ne!(original.mounted_token(), readmitted.mounted_token());
+        assert_eq!(original, readmitted);
+        assert_eq!(
+            arena.lookup_id(&UiId::from("root/cell")),
+            arena.lookup_id(&readmitted)
+        );
     }
 
     #[test]

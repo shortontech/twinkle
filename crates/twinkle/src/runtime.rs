@@ -1077,6 +1077,7 @@ pub struct UiHost<A: Application> {
     // Refreshed when the frame changes; accounting walks retained nodes and must
     // not run again for unchanged input batches.
     retained_frame_bytes: usize,
+    owned_frame_bytes: usize,
     tree_remote_access_protected: bool,
     bounds: Rect,
     scale_factor: f32,
@@ -1104,6 +1105,7 @@ pub struct UiHostViewport<Message> {
     state: UiStateStore,
     tree: UiFrame<Message>,
     retained_frame_bytes: usize,
+    owned_frame_bytes: usize,
     tree_remote_access_protected: bool,
     bounds: Rect,
     scale_factor: f32,
@@ -1475,6 +1477,10 @@ impl ShortcutOutcome {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AdapterOutcome {
     pub changed: bool,
+    /// Requests another presentation of the already accepted frame without an
+    /// application rebuild. The runtime supplies authoritative empty damage to
+    /// preserved-framebuffer presenters for this explicit path.
+    pub present: bool,
     pub disposition: crate::EventDisposition,
     pub exit: bool,
 }
@@ -1483,6 +1489,7 @@ impl AdapterOutcome {
     pub const fn changed() -> Self {
         Self {
             changed: true,
+            present: false,
             disposition: crate::EventDisposition::Unhandled,
             exit: false,
         }
@@ -1491,6 +1498,7 @@ impl AdapterOutcome {
     pub const fn consumed(changed: bool) -> Self {
         Self {
             changed,
+            present: false,
             disposition: crate::EventDisposition::Handled,
             exit: false,
         }
@@ -1499,8 +1507,18 @@ impl AdapterOutcome {
     pub const fn exit() -> Self {
         Self {
             changed: false,
+            present: false,
             disposition: crate::EventDisposition::Handled,
             exit: true,
+        }
+    }
+
+    pub const fn present() -> Self {
+        Self {
+            changed: false,
+            present: true,
+            disposition: crate::EventDisposition::Handled,
+            exit: false,
         }
     }
 }
@@ -1904,8 +1922,13 @@ pub struct HostTelemetry {
     pub paint_list_us: u64,
     /// Explicit host/application deadline wakeups processed by this step.
     pub scheduled_wakeups: usize,
-    /// Retained bytes owned by the resolved frame after this step.
+    /// Legacy vector/accessibility subtotal. This excludes declaration, arena,
+    /// indexes and other categories; it is neither total ownership nor RSS.
     pub retained_frame_bytes: usize,
+    /// Expanded frame ownership estimate cached when the frame changes. Shared
+    /// IDs are deduplicated within the frame; see FrameResourceDiagnostics for
+    /// exclusions. This overlaps the legacy subtotal and is not added to it.
+    pub owned_frame_bytes: usize,
     /// Allocation counting is not available in the shared runtime unless a
     /// concrete adapter installs an allocator-visible counter.
     pub allocation_count: Option<u64>,
@@ -2055,6 +2078,10 @@ impl HostEventOutcome {
             .telemetry
             .retained_frame_bytes
             .max(other.telemetry.retained_frame_bytes);
+        self.telemetry.owned_frame_bytes = self
+            .telemetry
+            .owned_frame_bytes
+            .max(other.telemetry.owned_frame_bytes);
         self.telemetry.allocation_count = match (
             self.telemetry.allocation_count,
             other.telemetry.allocation_count,
@@ -2096,10 +2123,12 @@ impl<A: Application> UiHost<A> {
             &mut state,
             self.application.frame_overlays(context),
         );
+        let resources = tree.resource_diagnostics();
         UiHostViewport {
             tree_remote_access_protected: self.application.remote_access_protected(),
             state,
-            retained_frame_bytes: tree.resource_diagnostics().estimated_retained_bytes,
+            retained_frame_bytes: resources.estimated_retained_bytes,
+            owned_frame_bytes: resources.estimated_owned_bytes,
             tree,
             bounds,
             scale_factor: 1.0,
@@ -2132,6 +2161,10 @@ impl<A: Application> UiHost<A> {
             retained_frame_bytes: std::mem::replace(
                 &mut self.retained_frame_bytes,
                 viewport.retained_frame_bytes,
+            ),
+            owned_frame_bytes: std::mem::replace(
+                &mut self.owned_frame_bytes,
+                viewport.owned_frame_bytes,
             ),
             tree_remote_access_protected: std::mem::replace(
                 &mut self.tree_remote_access_protected,
@@ -2238,11 +2271,13 @@ impl<A: Application> UiHost<A> {
         let next_application_deadline = application
             .poll_interval_controller(&crate::ControllerSnapshot::default())
             .map(|interval| now + interval);
+        let resources = tree.resource_diagnostics();
         Self {
             tree_remote_access_protected: application.remote_access_protected(),
             application,
             state,
-            retained_frame_bytes: tree.resource_diagnostics().estimated_retained_bytes,
+            retained_frame_bytes: resources.estimated_retained_bytes,
+            owned_frame_bytes: resources.estimated_owned_bytes,
             tree,
             bounds,
             scale_factor: 1.0,
@@ -2753,8 +2788,9 @@ impl<A: Application> UiHost<A> {
                     self.tree = prior_tree;
                     // Cloning can change vector capacities, so account the
                     // restored tree rather than reuse the original estimate.
-                    self.retained_frame_bytes =
-                        self.tree.resource_diagnostics().estimated_retained_bytes;
+                    let resources = self.tree.resource_diagnostics();
+                    self.retained_frame_bytes = resources.estimated_retained_bytes;
+                    self.owned_frame_bytes = resources.estimated_owned_bytes;
                     self.input_dispatcher = prior_dispatcher;
                     self.pending_long_press = prior_pending_long_press;
                     self.overlay_failures = prior_overlay_failures;
@@ -3548,8 +3584,9 @@ impl<A: Application> UiHost<A> {
                 // Accessibility adapter snapshots are materialized lazily. If
                 // this retained path is the first consumer, include that cache
                 // in the host's live frame accounting immediately.
-                self.retained_frame_bytes =
-                    self.tree.resource_diagnostics().estimated_retained_bytes;
+                let resources = self.tree.resource_diagnostics();
+                self.retained_frame_bytes = resources.estimated_retained_bytes;
+                self.owned_frame_bytes = resources.estimated_owned_bytes;
             } else {
                 let (paint_list_us, layout_us, rebuild_outcome) = self.rebuild_timed_retaining(
                     may_retain_view && view_context_unchanged && combined.messages.is_empty(),
@@ -3692,7 +3729,25 @@ impl<A: Application> UiHost<A> {
         .flatten()
         .min();
         combined.telemetry.retained_frame_bytes = self.retained_frame_bytes;
+        combined.telemetry.owned_frame_bytes = self.owned_frame_bytes;
         combined.telemetry.input_to_frame_us = elapsed_us(step_started);
+        crate::pipeline_trace::event!({
+            "event": "host_step", "frame_generation": self.frame_generation,
+            "changed": combined.changed, "events_processed": combined.telemetry.events_processed,
+            "scheduled_wakeups": combined.telemetry.scheduled_wakeups,
+            "host_service_us": combined.telemetry.input_to_frame_us,
+            "input_to_message_us": combined.telemetry.input_to_message_us,
+            "view_us": combined.telemetry.paint_list_us, "layout_us": combined.telemetry.layout_us,
+            "view_calls": combined.telemetry.view_calls,
+            "nodes_measured": combined.telemetry.nodes_measured,
+            "nodes_placed": combined.telemetry.nodes_placed,
+            "commands_emitted": combined.telemetry.paint_commands_emitted,
+            "legacy_frame_subtotal_bytes": self.retained_frame_bytes,
+            "expanded_frame_owned_bytes": self.owned_frame_bytes,
+            "logical_width": self.bounds.size.width, "logical_height": self.bounds.size.height,
+            "scale": self.scale_factor,
+            "timing_boundary": "host step through resolved frame; excludes trace write and native present"
+        });
         combined
     }
 
@@ -4195,6 +4250,7 @@ impl<A: Application> UiHost<A> {
         let layout_us = elapsed_us(layout_started);
         let resources = self.tree.resource_diagnostics();
         self.retained_frame_bytes = resources.estimated_retained_bytes;
+        self.owned_frame_bytes = resources.estimated_owned_bytes;
         cancellation.telemetry.view_calls =
             cancellation.telemetry.view_calls.saturating_add(view_calls);
         cancellation.telemetry.nodes_measured = cancellation
@@ -4467,6 +4523,7 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     next_caret_blink: Instant,
     next_adapter_poll: Option<Instant>,
     scheduler: PresentScheduler,
+    authoritative_unchanged_present: bool,
     pointer_icon: PointerIcon,
     scale: f32,
     transform_generation: u64,
@@ -4592,6 +4649,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             next_caret_blink: now + Duration::from_millis(500),
             next_adapter_poll,
             scheduler: PresentScheduler::default(),
+            authoritative_unchanged_present: false,
             pointer_icon: PointerIcon::Default,
             scale: 1.0,
             transform_generation: 1,
@@ -4649,7 +4707,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             let _ = clipboard.set_text(text);
         }
         if let Some(host) = &self.host {
-            let next_icon = host.inspect().pointer_icon;
+            let next_icon = host.pointer_icon;
             if next_icon != self.pointer_icon {
                 window.set_cursor(
                     match next_icon {
@@ -4663,6 +4721,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             }
         }
         if outcome.changed {
+            self.authoritative_unchanged_present = false;
             self.next_caret_blink = Instant::now() + Duration::from_millis(500);
             self.scheduler.invalidate();
         }
@@ -4954,7 +5013,12 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         if outcome.changed
             && let Some(host) = &mut self.host
         {
+            self.authoritative_unchanged_present = false;
             host.rebuild();
+            self.scheduler.invalidate();
+        }
+        if outcome.present && !outcome.changed {
+            self.authoritative_unchanged_present = true;
             self.scheduler.invalidate();
         }
         if outcome.exit {
@@ -4968,13 +5032,23 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         };
         let size = window.surface_size();
         self.raster_revision = self.raster_revision.wrapping_add(1).max(1);
+        let _snapshot_started = crate::pipeline_trace::clock();
+        let commands = host.commands().to_vec();
+        crate::pipeline_trace::event!({
+            "event": "software_submission", "surface": self.native_host_generation,
+            "revision": self.raster_revision, "frame_generation": host.frame_generation,
+            "commands_cloned": commands.len(),
+            "command_inline_capacity_bytes": commands.capacity() * std::mem::size_of::<crate::backend::PaintCommand>(),
+            "snapshot_us": crate::pipeline_trace::micros(_snapshot_started),
+            "nested_command_clone_bytes": null
+        });
         self.raster.submit(RasterRequest {
             surface: self.native_host_generation,
             revision: self.raster_revision,
             width: size.width.max(1),
             height: size.height.max(1),
             scale: self.scale,
-            commands: host.commands().to_vec(),
+            commands,
             damage: None,
         });
     }
@@ -5002,13 +5076,26 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         };
         let size = window.surface_size();
         let frame = host.render_frame();
-        presenter.present(
+        let _presenter_started = crate::pipeline_trace::clock();
+        crate::pipeline_trace::event!({"event": "gpu_present_start", "frame_generation": host.frame_generation});
+        let unchanged_damage = [];
+        let damage = if self.authoritative_unchanged_present {
+            Some(unchanged_damage.as_slice())
+        } else {
+            host.retained_paint_damage()
+        };
+        let result = presenter.present(
             frame.logical_size.0,
             size.width,
             size.height,
             frame.commands,
-            host.retained_paint_damage(),
-        )?;
+            damage,
+        );
+        self.authoritative_unchanged_present = false;
+        result?;
+        crate::pipeline_trace::event!({"event": "gpu_present_end", "frame_generation": host.frame_generation,
+            "presenter_call_us": crate::pipeline_trace::micros(_presenter_started),
+            "boundary": "CPU presenter call including nested attribution writes; excludes compositor display"});
         Ok(true)
     }
 
@@ -5025,6 +5112,9 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             || result.width != size.width.max(1)
             || result.height != size.height.max(1)
         {
+            crate::pipeline_trace::event!({"event": "software_result_discarded", "surface": self.native_host_generation,
+                "revision": result.revision, "current_revision": self.raster_revision,
+                "reason": "dirty, stale revision, or size mismatch"});
             return Ok(());
         }
         if result.damage.is_empty() {
@@ -5034,12 +5124,22 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         }
         let width = NonZeroU32::new(result.width).expect("clamped non-zero width");
         let height = NonZeroU32::new(result.height).expect("clamped non-zero height");
+        let _transfer_started = crate::pipeline_trace::clock();
         surface.resize(width, height)?;
         let mut buffer = surface.buffer_mut()?;
         for (target, pixel) in buffer.iter_mut().zip(&result.pixels) {
             *target = u32::from(pixel.r) << 16 | u32::from(pixel.g) << 8 | u32::from(pixel.b);
         }
+        let _conversion_us = crate::pipeline_trace::micros(_transfer_started);
+        let _present_started = crate::pipeline_trace::clock();
         buffer.present()?;
+        crate::pipeline_trace::event!({
+            "event": "software_present", "surface": self.native_host_generation,
+            "revision": result.revision, "physical_width": result.width, "physical_height": result.height,
+            "converted_pixels": result.pixels.len(), "conversion_and_buffer_acquire_us": _conversion_us,
+            "present_call_us": crate::pipeline_trace::micros(_present_started),
+            "compositor_presentation_timestamp": null
+        });
         self.raster
             .acknowledge(self.native_host_generation, result.revision);
         Ok(())
@@ -5089,13 +5189,21 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 .is_some_and(|deadline| now >= deadline);
         if adapter_due {
             let outcome = self.host.as_mut().map(|host| {
-                self.adapter.poll(
+                let prior_generation = host.resolved_frame_generation();
+                let outcome = self.adapter.poll(
                     host,
                     HostServices {
                         window: window.as_ref(),
                         transients: &self.transients,
                     },
-                )
+                );
+                // An adapter may dispatch canonical host events itself. That
+                // already resolves the frame; request presentation without a
+                // second application view/layout rebuild.
+                if host.resolved_frame_generation() != prior_generation {
+                    self.scheduler.invalidate();
+                }
+                outcome
             });
             match outcome {
                 Some(Ok(outcome)) => self.apply_adapter_outcome(event_loop, outcome),
@@ -5113,7 +5221,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             let focused = self
                 .host
                 .as_ref()
-                .is_some_and(|host| host.inspect().window_focused);
+                .is_some_and(|host| host.state.window_focused());
             let mut handled_physical_orders = HashSet::new();
             let actions = if local_controller_poll_lease(
                 self.controller_discovery,
@@ -5185,7 +5293,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 // The session oracle is independent of the delivery, while native focus is
                 // sampled again at the actual dispatch boundary. A queued action therefore
                 // cannot survive retirement between poll and execution.
-                if admission.is_some() && !host.inspect().window_focused {
+                if admission.is_some() && !host.state.window_focused() {
                     continue;
                 }
                 if host.set_controller_family(family) {
@@ -5559,9 +5667,17 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 Ok(presenter) => {
                     tracing::info!("standalone GPU presenter initialized");
                     self.gpu_presenter = Some(presenter);
+                    crate::pipeline_trace::backend_identity("backend_gpu", || {
+                        "fallback_reason=None".into()
+                    });
+                    crate::pipeline_trace::event!({"event": "backend", "backend": "gpu", "fallback_reason": null});
                 }
                 Err(error) => {
                     tracing::warn!(%error, "standalone GPU presenter unavailable; using software");
+                    crate::pipeline_trace::backend_identity("backend_software", || {
+                        format!("fallback_reason={error:?}")
+                    });
+                    crate::pipeline_trace::event!({"event": "backend", "backend": "software", "fallback_reason": error});
                 }
             }
         }
@@ -5569,6 +5685,16 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         let using_gpu = self.gpu_presenter.is_some();
         #[cfg(not(feature = "gpu-presenter"))]
         let using_gpu = false;
+        if !using_gpu {
+            crate::pipeline_trace::backend_identity("backend_software", || {
+                format!(
+                    "requested_renderer={:?} gpu_feature_compiled={}",
+                    std::env::var("TWINKLE_RENDERER").ok(),
+                    cfg!(feature = "gpu-presenter")
+                )
+            });
+            crate::pipeline_trace::event!({"event": "backend", "backend": "software", "requested_renderer": std::env::var("TWINKLE_RENDERER").ok(), "gpu_feature_compiled": cfg!(feature = "gpu-presenter")});
+        }
         if !using_gpu && let Err(error) = self.ensure_software_surface() {
             self.fail(event_loop, error);
             return;
@@ -5635,6 +5761,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                         Ok(false) => self.queue_raster(),
                         Err(error) => {
                             tracing::warn!(%error, "GPU presentation failed; switching to software");
+                            crate::pipeline_trace::backend_identity("backend_software", || {
+                                format!("fallback_reason={error:?}")
+                            });
+                            crate::pipeline_trace::event!({"event": "backend", "backend": "software", "fallback_reason": error});
                             self.gpu_presenter = None;
                             if let Err(error) = self.ensure_software_surface() {
                                 self.fail(event_loop, error);
@@ -7573,11 +7703,16 @@ mod tests {
         for nodes in [100, 1_000, 10_000] {
             let mut host = UiHost::new(RetainedPaintFixture::new(nodes), 640, 480);
             let assert_accounted = |host: &mut UiHost<RetainedPaintFixture>| {
-                let expected = host.tree.resource_diagnostics().estimated_retained_bytes;
+                let resources = host.tree.resource_diagnostics();
+                let expected = resources.estimated_retained_bytes;
+                let owned = resources.estimated_owned_bytes;
+                assert_eq!(host.owned_frame_bytes, owned);
                 assert_eq!(host.retained_frame_bytes, expected);
                 let outcome = host.step(HostBatch::default());
                 assert!(!outcome.changed);
                 assert_eq!(outcome.telemetry.retained_frame_bytes, expected);
+                assert_eq!(outcome.telemetry.owned_frame_bytes, owned);
+                assert!(owned > expected);
             };
             assert_accounted(&mut host);
             host.adopt_input_modality(crate::InputModality::Pointer);
@@ -7588,6 +7723,8 @@ mod tests {
             // stored estimate instead of traversing the frame to recompute it.
             let accounted = host.retained_frame_bytes;
             host.retained_frame_bytes = 123;
+            let owned = host.owned_frame_bytes;
+            host.owned_frame_bytes = 456;
             assert_eq!(
                 host.step(HostBatch::default())
                     .telemetry
@@ -7597,6 +7734,8 @@ mod tests {
             let motion = host.handle_event(UiEvent::PointerMoved(point));
             assert!(!motion.changed);
             assert_eq!(motion.telemetry.retained_frame_bytes, 123);
+            assert_eq!(motion.telemetry.owned_frame_bytes, 456);
+            host.owned_frame_bytes = owned;
             host.retained_frame_bytes = accounted;
             host.application_mut().label_revision += 1;
             host.step(HostBatch {
@@ -11423,7 +11562,7 @@ mod tests {
             assert_eq!(outcome.failures, [failure]);
             assert!(before.open_overlay.is_some());
             assert!(host.inspect().open_overlay.is_none());
-            assert_eq!(host.inspect().window_focused, before.window_focused);
+            assert_eq!(host.state.window_focused(), before.window_focused);
             assert!(
                 host.accessibility_nodes()
                     .iter()

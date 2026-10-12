@@ -27,6 +27,7 @@ pub(super) fn layout_element<Message: Clone>(
     tree: &mut UiFrame<Message>,
     previous: Option<&UiFrame<Message>>,
 ) -> usize {
+    crate::pipeline_trace::count_work!(0, 1);
     let style = overlay.map_or_else(
         || EffectiveStyle::canonical(&element.style),
         |overlay| overlay.style(id, element),
@@ -928,6 +929,17 @@ fn retained_child_id<Message>(
         .unwrap_or_else(|| resolved_child_id(parent, child, index))
 }
 
+fn retained_child_id_from<Message>(
+    retained: Option<&super::super::retained::RetainedNodeArena>,
+    parent: &UiId,
+    child: &Element<Message>,
+    index: usize,
+) -> UiId {
+    retained
+        .and_then(|retained| retained.child_ui_id(parent, index))
+        .unwrap_or_else(|| resolved_child_id(parent, child, index))
+}
+
 fn mask_text(value: &str, mask: char) -> String {
     value
         .chars()
@@ -1142,7 +1154,7 @@ pub(super) fn apply_transient_state<Message>(
     id: &UiId,
     state: &mut UiStateStore,
 ) {
-    apply_transient_state_with_parent(element, id, state, None, None);
+    apply_transient_state_with_parent(element, id, state, None, None, None);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1469,8 +1481,13 @@ impl TransientStateJournal {
         self.phases.iter().map(|(id, phases)| (id, *phases))
     }
 
-    pub(super) fn finalize<Message>(&mut self, element: &Element<Message>, id: &UiId) {
-        self.finalize_tree(element, id);
+    pub(super) fn finalize<Message>(
+        &mut self,
+        element: &Element<Message>,
+        id: &UiId,
+        retained: Option<&super::super::retained::RetainedNodeArena>,
+    ) {
+        self.finalize_tree(element, id, retained);
     }
 
     pub(super) fn clear_patches(&mut self) {
@@ -1484,10 +1501,15 @@ impl TransientStateJournal {
         self.phases.clear();
     }
 
-    fn finalize_tree<Message>(&mut self, element: &Element<Message>, id: &UiId) {
+    fn finalize_tree<Message>(
+        &mut self,
+        element: &Element<Message>,
+        id: &UiId,
+        retained: Option<&super::super::retained::RetainedNodeArena>,
+    ) {
         for (index, child) in element.children.iter().enumerate() {
-            let child_id = resolved_child_id(id, child, index);
-            self.finalize_tree(child, &child_id);
+            let child_id = retained_child_id_from(retained, id, child, index);
+            self.finalize_tree(child, &child_id, retained);
         }
         let mut dirty = super::super::retained::DirtyPhases::default();
         if let Some(patch) = self.style_patches.get(id) {
@@ -1689,8 +1711,9 @@ pub(super) fn apply_transient_state_staged<Message>(
     id: &UiId,
     state: &mut UiStateStore,
     overlay: &mut TransientStateJournal,
+    retained: Option<&super::super::retained::RetainedNodeArena>,
 ) {
-    capture_transient_state(element, id, state, None, None, 1.0, overlay);
+    capture_transient_state(element, id, state, None, None, 1.0, overlay, retained);
 }
 
 fn local_transient_style_patch<Message>(
@@ -1915,7 +1938,9 @@ fn capture_transient_state<Message>(
     inherited_text_paint: Option<InteractionPaint>,
     inherited_geometry_scale: f32,
     overlay: &mut TransientStateJournal,
+    retained: Option<&super::super::retained::RetainedNodeArena>,
 ) {
+    crate::pipeline_trace::count_work!(3, 1);
     synchronize_text_editor_state(element, id, state);
     let direct_interaction = if state.pressed() == Some(id) {
         Some(1)
@@ -2196,14 +2221,14 @@ fn capture_transient_state<Message>(
             .iter()
             .enumerate()
             .find_map(|(index, child)| {
-                let child_id = resolved_child_id(id, child, index);
+                let child_id = retained_child_id_from(retained, id, child, index);
                 (hovered == child_id.as_str()
                     || hovered.starts_with(&format!("{}/", child_id.as_str())))
                 .then_some(index)
             })
     });
     for (index, child) in element.children.iter().enumerate() {
-        let child_id = resolved_child_id(id, child, index);
+        let child_id = retained_child_id_from(retained, id, child, index);
         let local_scale = element
             .style
             .proximity_magnification
@@ -2228,10 +2253,11 @@ fn capture_transient_state<Message>(
             child,
             &child_id,
             state,
-            interaction_index,
+            direct_interaction.or(parent_interaction),
             child_text_paint,
             inherited_geometry_scale * local_scale,
             overlay,
+            retained,
         );
     }
 }
@@ -2242,6 +2268,7 @@ fn apply_transient_state_with_parent<Message>(
     state: &mut UiStateStore,
     parent_interaction: Option<usize>,
     compact_overlay: Option<&TransientStateJournal>,
+    retained: Option<&super::super::retained::RetainedNodeArena>,
 ) {
     let direct_style_patch =
         compact_overlay.is_some_and(|overlay| overlay.has_direct_style_patch(id));
@@ -2700,20 +2727,14 @@ fn apply_transient_state_with_parent<Message>(
             .iter()
             .enumerate()
             .find_map(|(index, child)| {
-                let child_id = child.id.as_ref().map_or_else(
-                    || id.scoped(format!("#{index}")),
-                    |child_id| id.scoped(child_id.as_str()),
-                );
+                let child_id = retained_child_id_from(retained, id, child, index);
                 (hovered == child_id.as_str()
                     || hovered.starts_with(&format!("{}/", child_id.as_str())))
                 .then_some(index)
             })
     });
     for (index, child) in element.children.iter_mut().enumerate() {
-        let child_id = child.id.as_ref().map_or_else(
-            || id.scoped(format!("#{index}")),
-            |child_id| id.scoped(child_id.as_str()),
-        );
+        let child_id = retained_child_id_from(retained, id, child, index);
         if compact_overlay.is_none()
             && let Some(magnification) = element.style.proximity_magnification
         {
@@ -2740,6 +2761,7 @@ fn apply_transient_state_with_parent<Message>(
             state,
             direct_interaction.or(parent_interaction),
             compact_overlay,
+            retained,
         );
     }
     // The application just built this declaration and relinquishes it after

@@ -587,8 +587,16 @@ pub struct FrameResourceDiagnostics {
     /// Inline payload bytes of resolved-node sidecars, excluding nested owned
     /// vectors and strings which are included in `resolved_storage_bytes`.
     pub resolved_sidecar_bytes: usize,
-    /// Retained reconciliation arena storage, including cached paint buffers.
+    /// Retained reconciliation arena storage, including the ID index and
+    /// pending commit vector. Index storage is a subtotal of this field.
     pub retained_arena_bytes: usize,
+    /// ID index entry/bucket/control estimate included in retained_arena_bytes.
+    pub retained_id_index_bytes: usize,
+    /// Estimated unused buckets and control groups across frame-owned hash
+    /// tables, including the retained ID index. Included in the arena, index
+    /// and scratch categories, not an additional category. Based on the current
+    /// std SwissTable layout; capacity after deletion may underestimate buckets.
+    pub hash_table_overhead_bytes: usize,
     /// Mandatory cold metadata records owned separately from the compact hot
     /// retained nodes.
     pub retained_metadata_sidecar_count: usize,
@@ -605,9 +613,8 @@ pub struct FrameResourceDiagnostics {
     pub paint_storage_bytes: usize,
     /// Hit, message, text-input, selection, and scroll-region vector storage.
     pub interaction_storage_bytes: usize,
-    /// Lower-bound inline entry storage for frame-owned maps and sets plus
-    /// directly owned value buffers. Hash-table control bytes and shared
-    /// `UiId` allocations are excluded.
+    /// Estimated bucket/control storage for frame-owned indexes plus directly
+    /// owned value buffers. Shared UiId allocations are counted separately.
     pub index_storage_bytes: usize,
     /// Expanded owned-storage estimate formed from the categorized fields.
     /// This retains explicit exclusions and is not allocator-exact RSS/PSS.
@@ -2218,17 +2225,30 @@ impl<Message: Clone> UiFrame<Message> {
         changed_view_ids: Option<&[UiId]>,
         overlap_previous_owned_bytes: usize,
     ) -> Self {
+        #[cfg(feature = "pipeline-attribution")]
+        let _work = crate::pipeline_trace::WorkScope::new("layout_with_state");
         let root = root.into_element();
-        let root_id = root.id.as_ref().map_or_else(
-            || UiId::from("root"),
-            |id| UiId::from("root").scoped(id.as_str()),
-        );
+        let retained_nodes = retained_nodes
+            .or_else(|| previous.map(|previous| previous.retained_nodes.clone()))
+            .unwrap_or_default();
+        let root_id = retained_nodes.root_ui_id(&root).unwrap_or_else(|| {
+            root.id.as_ref().map_or_else(
+                || UiId::from("root"),
+                |id| UiId::from("root").scoped(id.as_str()),
+            )
+        });
         let pointer_position_affects_geometry = pointer_position_affects_geometry(&root);
         state.begin_frame();
         state.begin_geometry_animation_frame();
         let mut transient_overlay = TransientStateJournal::default();
-        apply_transient_state_staged(&root, &root_id, state, &mut transient_overlay);
-        transient_overlay.finalize(&root, &root_id);
+        apply_transient_state_staged(
+            &root,
+            &root_id,
+            state,
+            &mut transient_overlay,
+            Some(&retained_nodes),
+        );
+        transient_overlay.finalize(&root, &root_id, Some(&retained_nodes));
         let mut tree = Self {
             // This property belongs to the immutable declaration, not the
             // pointer position. Re-evaluating it on motion walks offscreen and
@@ -2238,9 +2258,7 @@ impl<Message: Clone> UiFrame<Message> {
             declaration_root_id: Some(root_id.clone()),
             diagnostics_enabled: diagnostics,
             viewport: bounds,
-            retained_nodes: retained_nodes
-                .or_else(|| previous.map(|previous| previous.retained_nodes.clone()))
-                .unwrap_or_default(),
+            retained_nodes,
             retained_layout: retained_layout
                 .or_else(|| {
                     previous.map(|previous| {
@@ -2340,9 +2358,15 @@ impl<Message: Clone> UiFrame<Message> {
         {
             state.set_focus(Some(initial));
             transient_overlay.clear_patches();
-            apply_transient_state_staged(&root, &root_id, state, &mut transient_overlay);
+            apply_transient_state_staged(
+                &root,
+                &root_id,
+                state,
+                &mut transient_overlay,
+                Some(&tree.retained_nodes),
+            );
         }
-        transient_overlay.finalize(&root, &root_id);
+        transient_overlay.finalize(&root, &root_id, Some(&tree.retained_nodes));
         tree.selection_regions =
             collect_selection_regions(&root, &tree.resolved, Some(&transient_overlay));
         for region in &tree.selection_regions {
@@ -2534,6 +2558,8 @@ impl<Message: Clone> UiFrame<Message> {
         previous: Option<&Self>,
         requested: EmissionPhases,
     ) {
+        #[cfg(feature = "pipeline-attribution")]
+        let _emission = crate::pipeline_trace::EmissionScope::new("emit_incremental");
         if requested.is_empty() {
             return;
         }
@@ -2919,6 +2945,8 @@ impl<Message: Clone> UiFrame<Message> {
     }
 
     fn layout_internal(root: impl Component<Message>, bounds: Rect, diagnostics: bool) -> Self {
+        #[cfg(feature = "pipeline-attribution")]
+        let _work = crate::pipeline_trace::WorkScope::new("layout_internal");
         let mut tree = Self {
             diagnostics_enabled: diagnostics,
             ..Self::default()
@@ -4265,8 +4293,33 @@ impl<Message: Clone> UiFrame<Message> {
             + self.text_commands.capacity() * std::mem::size_of::<TextCommandRegion>()
             + self.selection_regions.capacity() * std::mem::size_of::<SelectionRegionLayout>()
             + self.scrolls.capacity() * std::mem::size_of::<ScrollRegion<Message>>();
-        let index_storage_bytes = self.retained_layout.capacity()
-            * std::mem::size_of::<(UiId, RetainedGeometry)>()
+        let index_overhead_bytes =
+            super::estimated_hash_table_overhead::<(UiId, RetainedGeometry)>(
+                self.retained_layout.capacity(),
+            ) + super::estimated_hash_table_overhead::<(UiId, usize)>(
+                self.paint_fragment_indices.capacity(),
+            ) + super::estimated_hash_table_overhead::<(UiId, Vec<usize>)>(
+                self.message_indices.capacity(),
+            ) + super::estimated_hash_table_overhead::<(UiId, usize)>(
+                self.accessibility_indices.capacity(),
+            ) + super::estimated_hash_table_overhead::<((SemanticRole, String), Vec<usize>)>(
+                self.semantic_role_name_index.capacity(),
+            ) + super::estimated_hash_table_overhead::<(UiId, usize)>(
+                self.resolved_indices.capacity(),
+            ) + super::estimated_hash_table_overhead::<(UiId, UiId)>(
+                self.navigation_owners.capacity(),
+            );
+        let scratch_overhead_bytes =
+            super::estimated_hash_table_overhead::<(usize, Vec<Rect>)>(
+                self.selection_paints.capacity(),
+            ) + super::estimated_hash_table_overhead::<(DiagnosticKind, UiId)>(
+                self.diagnostic_keys.capacity(),
+            ) + super::estimated_hash_table_overhead::<UiId>(self.seen_ids.capacity());
+        let hash_table_overhead_bytes = index_overhead_bytes
+            + scratch_overhead_bytes
+            + self.retained_nodes.index_overhead_bytes();
+        let index_storage_bytes = index_overhead_bytes
+            + self.retained_layout.capacity() * std::mem::size_of::<(UiId, RetainedGeometry)>()
             + self
                 .retained_layout
                 .values()
@@ -4292,8 +4345,8 @@ impl<Message: Clone> UiFrame<Message> {
             + self.resolved_indices.capacity() * std::mem::size_of::<(UiId, usize)>()
             + self.navigation_owners.capacity() * std::mem::size_of::<(UiId, UiId)>()
             + self.navigation_depths.capacity() * std::mem::size_of::<usize>();
-        let retained_build_scratch_bytes = self.overlay_commands.capacity()
-            * std::mem::size_of::<PaintCommand>()
+        let retained_build_scratch_bytes = scratch_overhead_bytes
+            + self.overlay_commands.capacity() * std::mem::size_of::<PaintCommand>()
             + self.overlay_hits.capacity() * std::mem::size_of::<HitRegion<Message>>()
             + self.selection_paints.capacity() * std::mem::size_of::<(usize, Vec<Rect>)>()
             + self.diagnostic_keys.capacity() * std::mem::size_of::<(DiagnosticKind, UiId)>()
@@ -4352,6 +4405,8 @@ impl<Message: Clone> UiFrame<Message> {
             resolved_sidecar_count,
             resolved_sidecar_bytes,
             retained_arena_bytes,
+            retained_id_index_bytes: self.retained_nodes.index_storage_bytes(),
+            hash_table_overhead_bytes,
             retained_metadata_sidecar_count,
             retained_metadata_sidecar_bytes,
             accessibility_storage_bytes,
@@ -7671,6 +7726,8 @@ impl<Message: Clone> UiFrame<Message> {
     }
 
     fn emit_accessibility_geometry(&mut self, previous: Option<&Self>) {
+        #[cfg(feature = "pipeline-attribution")]
+        let _emission = crate::pipeline_trace::EmissionScope::new("accessibility_geometry");
         self.semantic_parents.clear();
         self.semantic_parents
             .resize(self.resolved.nodes.len(), None);
@@ -8006,6 +8063,7 @@ fn measure_element_effective<Message>(
     context: Option<(&UiId, &TransientStateJournal)>,
     constraints: Constraints,
 ) -> Size {
+    crate::pipeline_trace::count_work!(1, 1);
     let style = context.map_or_else(
         || EffectiveStyle::canonical(&element.style),
         |(id, overlay)| overlay.style(id, element),

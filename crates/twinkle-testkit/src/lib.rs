@@ -3512,6 +3512,10 @@ fn merge_outcome(into: &mut HostEventOutcome, next: HostEventOutcome) {
         .telemetry
         .retained_frame_bytes
         .max(next.telemetry.retained_frame_bytes);
+    into.telemetry.owned_frame_bytes = into
+        .telemetry
+        .owned_frame_bytes
+        .max(next.telemetry.owned_frame_bytes);
     into.telemetry.allocation_count = match (
         into.telemetry.allocation_count,
         next.telemetry.allocation_count,

@@ -10,6 +10,9 @@ documentation = "https://docs.rs/twinkle-jsx-runtime"
 description = "JavaScript and JSX runtime integration for Twinkle applications"
 readme = "README.md"
 
+[features]
+pipeline-attribution = []
+
 [dependencies]
 twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol" }
 serde.workspace = true

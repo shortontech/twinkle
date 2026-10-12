@@ -4046,6 +4046,7 @@ dependencies = [
  "pollster",
  "proptest",
  "raw-window-handle",
+ "serde_json",
  "sha2",
  "smallvec",
  "softbuffer",

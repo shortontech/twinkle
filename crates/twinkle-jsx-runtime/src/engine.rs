@@ -228,6 +228,40 @@ mod implementation {
             let context = {
                 v8::scope!(let scope, &mut isolate);
                 let context = v8::Context::new(scope, Default::default());
+                #[cfg(feature = "pipeline-attribution")]
+                if crate::attribution::configured() {
+                    let scope = &mut v8::ContextScope::new(scope, context);
+                    let clock = v8::Function::new(
+                        scope,
+                        |scope: &mut v8::PinScope,
+                         _: v8::FunctionCallbackArguments,
+                         mut result: v8::ReturnValue<v8::Value>| {
+                            result.set(
+                                v8::Number::new(scope, crate::attribution::timestamp_us()).into(),
+                            );
+                        },
+                    )
+                    .expect("attribution clock function");
+                    let record = v8::Function::new(
+                        scope,
+                        |scope: &mut v8::PinScope,
+                         args: v8::FunctionCallbackArguments,
+                         _: v8::ReturnValue<v8::Value>| {
+                            if let (Some(micros), Some(units)) = (
+                                args.get(0).number_value(scope),
+                                args.get(1).number_value(scope),
+                            ) {
+                                crate::attribution::serialization(micros, units);
+                            }
+                        },
+                    )
+                    .expect("attribution serialization function");
+                    let global = context.global(scope);
+                    let key = v8::String::new(scope, "__twinkleAttributionClock").unwrap();
+                    assert_eq!(global.set(scope, key.into(), clock.into()), Some(true));
+                    let key = v8::String::new(scope, "__twinkleAttributionSerialization").unwrap();
+                    assert_eq!(global.set(scope, key.into(), record.into()), Some(true));
+                }
                 v8::Global::new(scope, context)
             };
             // SAFETY: each runtime owns its isolate and no handle scope is
@@ -497,10 +531,10 @@ mod implementation {
             };
             let started = Instant::now();
             let result = serde_json::from_str(&text).map_err(|error| error.to_string());
-            self.diagnostics.bridge_micros = self
-                .diagnostics
-                .bridge_micros
-                .saturating_add(elapsed_micros(started));
+            let parse_us = elapsed_micros(started);
+            self.diagnostics.bridge_micros =
+                self.diagnostics.bridge_micros.saturating_add(parse_us);
+            crate::attribution::parse(name, parse_us, text.len());
             result
         }
 
@@ -615,6 +649,12 @@ mod implementation {
             let invocation_started = Instant::now();
             let mut terminated = false;
             let mut bridge_values = 0u64;
+            let mut conversion_us = None;
+            let mut copy_us = None;
+            #[cfg(feature = "pipeline-attribution")]
+            let mut input_bytes = [0, 0];
+            #[cfg(not(feature = "pipeline-attribution"))]
+            let input_bytes = [0, 0];
             // SAFETY: calls are synchronous and exclusively borrow the owner.
             unsafe { self.isolate.enter() };
             let result = (|| {
@@ -632,6 +672,9 @@ mod implementation {
                 terminated = scope.has_terminated();
                 let function =
                     function.ok_or_else(|| format!("global function {name:?} is not callable"))?;
+                let conversion_started = crate::attribution::clock();
+                #[cfg(feature = "pipeline-attribution")]
+                let input_scope = crate::attribution::InputScope::new(conversion_started.is_some());
                 let arguments = arguments
                     .into_iter()
                     .map(|argument| match argument {
@@ -648,6 +691,12 @@ mod implementation {
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                conversion_us = crate::attribution::elapsed(conversion_started);
+                #[cfg(feature = "pipeline-attribution")]
+                {
+                    input_bytes = input_scope.counts();
+                    drop(input_scope);
+                }
                 let receiver = v8::undefined(&scope).into();
                 let javascript_started = Instant::now();
                 let result = match function.call(&scope, receiver, &arguments) {
@@ -675,6 +724,7 @@ mod implementation {
                 // Ordinary calls match eval_json: execute queued microtasks before
                 // converting the result. Do not retain engine values outside
                 // this entered isolate or compile a wrapper expression.
+                let copy_started = crate::attribution::clock();
                 let result = if json_result {
                     let text = result.to_string(&scope);
                     terminated |= scope.has_terminated();
@@ -685,6 +735,7 @@ mod implementation {
                 } else {
                     NativeCallResult::Boolean(result.boolean_value(&scope))
                 };
+                copy_us = crate::attribution::elapsed(copy_started);
                 Ok((result, javascript_micros, microtask_micros))
             })();
             // SAFETY: every handle/context scope created above has dropped.
@@ -716,6 +767,23 @@ mod implementation {
             self.diagnostics.bridge_values =
                 self.diagnostics.bridge_values.saturating_add(bridge_values);
             self.refresh_heap_diagnostics();
+            if let Ok((value, javascript, microtask)) = &result {
+                let bytes = match value {
+                    NativeCallResult::JsonText(text) => text.len(),
+                    NativeCallResult::Boolean(_) => 0,
+                };
+                crate::attribution::call(
+                    name,
+                    conversion_us,
+                    copy_us,
+                    *javascript,
+                    *microtask,
+                    checkpoint_microtasks,
+                    bridge_values,
+                    bytes,
+                    input_bytes,
+                );
+            }
             if terminated || self.isolate.is_execution_terminating() {
                 self.isolate.cancel_terminate_execution();
                 self.diagnostics.deadline_terminations =
@@ -777,6 +845,8 @@ mod implementation {
     ) -> Result<v8::Local<'scope, v8::Value>, String> {
         let object = v8::Object::new(scope);
         for (key, value) in fields {
+            #[cfg(feature = "pipeline-attribution")]
+            crate::attribution::input_string(key, true);
             let key = v8::String::new(scope, key).ok_or("JSON object key is too large for V8")?;
             let value = json_to_v8(scope, value, bridge_values)?;
             // Own data properties must not invoke guest prototype setters.
@@ -803,9 +873,13 @@ mod implementation {
                     .ok_or("JSON number cannot be represented by V8")?,
             )
             .into(),
-            Value::String(value) => v8::String::new(scope, value)
-                .ok_or("JSON string is too large for V8")?
-                .into(),
+            Value::String(value) => {
+                #[cfg(feature = "pipeline-attribution")]
+                crate::attribution::input_string(value, false);
+                v8::String::new(scope, value)
+                    .ok_or("JSON string is too large for V8")?
+                    .into()
+            }
             Value::Array(values) => {
                 let values = values
                     .iter()

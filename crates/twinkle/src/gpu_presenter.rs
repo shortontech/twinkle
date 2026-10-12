@@ -76,7 +76,7 @@ struct TextureCache {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
     uv: [f32; 2],
@@ -87,7 +87,7 @@ struct Vertex {
 
 struct GpuGraphics {
     instance: wgpu::Instance,
-    display: raw_window_handle::RawDisplayHandle,
+    display: Option<raw_window_handle::RawDisplayHandle>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -118,6 +118,18 @@ impl GpuGraphics {
             apply_limit_buckets: true,
         }))
         .map_err(|error| error.to_string())?;
+        crate::pipeline_trace::backend_identity("gpu_adapter", || {
+            format!("{:?}", adapter.get_info())
+        });
+        crate::pipeline_trace::event!({"event": "gpu_adapter", "adapter": format!("{:?}", adapter.get_info())});
+        Self::from_adapter(instance, Some(display.as_raw()), adapter)
+    }
+
+    fn from_adapter(
+        instance: wgpu::Instance,
+        display: Option<raw_window_handle::RawDisplayHandle>,
+        adapter: wgpu::Adapter,
+    ) -> Result<Self, String> {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Twinkle standalone GPU"),
             required_features: wgpu::Features::empty(),
@@ -159,7 +171,7 @@ impl GpuGraphics {
         let white = upload_texture(&device, &queue, &texture_layout, &sampler, 1, 1, &[255; 4]);
         Ok(Self {
             instance,
-            display: display.as_raw(),
+            display,
             adapter,
             device,
             queue,
@@ -170,6 +182,19 @@ impl GpuGraphics {
             textures: RefCell::new(TextureCache::default()),
             text_renderer: RefCell::new(SoftwareRenderer::new_pixel_buffer(1, 1, 1.0)),
         })
+    }
+
+    #[cfg(test)]
+    fn new_headless() -> Result<Self, String> {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+            apply_limit_buckets: true,
+        }))
+        .map_err(|error| error.to_string())?;
+        Self::from_adapter(instance, None, adapter)
     }
 
     fn texture(&self, key: String, width: u32, height: u32, pixels: &[u8]) -> Arc<wgpu::BindGroup> {
@@ -193,6 +218,8 @@ impl GpuGraphics {
         }
         let mut cache = self.textures.borrow_mut();
         if cache.bytes.saturating_add(texture_bytes) > MAX_TEXTURE_CACHE_BYTES {
+            crate::pipeline_trace::event!({"event": "texture_cache_reset", "cause": "capacity",
+                "removed_entries": cache.entries.len(), "removed_resident_bytes": cache.bytes});
             cache.entries.clear();
             cache.bytes = 0;
         }
@@ -208,6 +235,7 @@ impl GpuGraphics {
         bounds: Rect,
         scale: f32,
     ) -> Arc<wgpu::BindGroup> {
+        let _key_started = crate::pipeline_trace::clock();
         let mut local = command.clone();
         match &mut local {
             PaintCommand::Text { bounds, .. } | PaintCommand::StyledText { bounds, .. } => {
@@ -217,19 +245,31 @@ impl GpuGraphics {
             _ => unreachable!(),
         }
         let key = format!("text:{scale:?}:{local:?}");
+        let _key_build_us = crate::pipeline_trace::micros(_key_started);
         if let Some(texture) = self.textures.borrow().entries.get(&key) {
+            crate::pipeline_trace::event!({"event": "text_lookup", "hit": true,
+                "key_build_us": _key_build_us, "key_string_bytes": key.len(), "paint_command_clones": 1});
             return texture.clone();
         }
+        crate::pipeline_trace::event!({"event": "text_lookup", "hit": false,
+            "key_build_us": _key_build_us, "key_string_bytes": key.len(), "paint_command_clones": 1});
         let width = (bounds.size.width * scale).ceil().max(1.0) as u32;
         let height = (bounds.size.height * scale).ceil().max(1.0) as u32;
+        let _text_raster_started = crate::pipeline_trace::clock();
         let mut renderer = self.text_renderer.borrow_mut();
         renderer.resize(width, height, scale);
         renderer.invalidate();
         renderer.render(&[local]);
+        let _text_raster_us = crate::pipeline_trace::micros(_text_raster_started);
+        let _rgba_started = crate::pipeline_trace::clock();
         let mut bytes = Vec::with_capacity(renderer.pixels().len() * 4);
         for pixel in renderer.pixels() {
             bytes.extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
         }
+        crate::pipeline_trace::event!({"event": "text_raster",
+            "raster_us": _text_raster_us, "rgba_conversion_us": crate::pipeline_trace::micros(_rgba_started),
+            "rasterized_pixels": u64::from(width) * u64::from(height), "rgba_copy_bytes": bytes.len(),
+            "scratch_pixel_capacity_bytes": renderer.pixel_capacity_bytes()});
         if renderer.pixel_capacity_bytes() > 8 * 1024 * 1024 {
             renderer.suspend();
         }
@@ -247,6 +287,7 @@ fn upload_texture(
     height: u32,
     pixels: &[u8],
 ) -> Arc<wgpu::BindGroup> {
+    let _texture_upload_started = crate::pipeline_trace::clock();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Twinkle standalone cached texture"),
         size: wgpu::Extent3d {
@@ -280,6 +321,9 @@ fn upload_texture(
             depth_or_array_layers: 1,
         },
     );
+    crate::pipeline_trace::event!({"event": "texture_upload", "width": width, "height": height,
+        "uploaded_bytes": pixels.len(), "create_and_write_call_us": crate::pipeline_trace::micros(_texture_upload_started),
+        "gpu_completion_us": null});
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Twinkle standalone texture"),
@@ -356,6 +400,9 @@ struct GpuPresenter {
     retained_diagnostics: RetainedFramebufferDiagnostics,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_capacity: usize,
+    reuse_preparation_bypass: bool,
+    incremental_preparation_enabled: bool,
+    prepared_scene: Option<PreparedScene>,
 }
 
 struct RetainedFramebuffer {
@@ -378,6 +425,9 @@ pub struct RetainedFramebufferDiagnostics {
     pub partial_redraws: u64,
     pub full_redraws: u64,
     pub unchanged_reuses: u64,
+    pub prepared_scene_live_bytes: usize,
+    pub prepared_scene_peak_bytes: usize,
+    pub prepared_scene_budget_fallbacks: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -385,6 +435,13 @@ enum OffscreenRedraw {
     Full,
     Partial(Rect),
     Reuse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RedrawDecision {
+    redraw: OffscreenRedraw,
+    validation_visits: usize,
+    fallback_reason: &'static str,
 }
 
 fn union_rect(left: Rect, right: Rect) -> Rect {
@@ -399,22 +456,47 @@ fn offscreen_redraw(
     commands: &[PaintCommand],
     damage: Option<&[Rect]>,
     valid: bool,
-) -> OffscreenRedraw {
-    if !valid
-        || commands
-            .iter()
-            .any(|command| matches!(command, PaintCommand::BackdropBlur { .. }))
-    {
-        return OffscreenRedraw::Full;
+) -> RedrawDecision {
+    if !valid {
+        return RedrawDecision {
+            redraw: OffscreenRedraw::Full,
+            validation_visits: 0,
+            fallback_reason: "retained-framebuffer-uninitialized",
+        };
     }
     let Some(damage) = damage else {
-        return OffscreenRedraw::Full;
+        return RedrawDecision {
+            redraw: OffscreenRedraw::Full,
+            validation_visits: 0,
+            fallback_reason: "damage-provenance-unknown",
+        };
     };
-    damage
-        .iter()
-        .copied()
-        .reduce(union_rect)
-        .map_or(OffscreenRedraw::Reuse, OffscreenRedraw::Partial)
+    let Some(damage) = damage.iter().copied().reduce(union_rect) else {
+        // An explicit empty authoritative damage set proves that the accepted
+        // scene is unchanged. In particular, do not rescan the display list
+        // for effects: no scene content will be prepared or redrawn.
+        return RedrawDecision {
+            redraw: OffscreenRedraw::Reuse,
+            validation_visits: 0,
+            fallback_reason: "none",
+        };
+    };
+    let mut validation_visits = 0;
+    for command in commands {
+        validation_visits += 1;
+        if matches!(command, PaintCommand::BackdropBlur { .. }) {
+            return RedrawDecision {
+                redraw: OffscreenRedraw::Full,
+                validation_visits,
+                fallback_reason: "backdrop-blur",
+            };
+        }
+    }
+    RedrawDecision {
+        redraw: OffscreenRedraw::Partial(damage),
+        validation_visits,
+        fallback_reason: "none",
+    }
 }
 
 fn physical_scissor(
@@ -458,7 +540,7 @@ impl GpuPresenter {
             graphics
                 .instance
                 .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle: Some(graphics.display),
+                    raw_display_handle: graphics.display,
                     raw_window_handle: window.as_raw(),
                 })
         }
@@ -479,6 +561,21 @@ impl GpuPresenter {
         {
             config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
         }
+        crate::pipeline_trace::backend_identity("surface_synchronization", || {
+            format!(
+                "present_mode={:?}; desired_maximum_frame_latency={}; format={:?}; alpha_mode={:?}; physical_display_timing=unavailable",
+                config.present_mode,
+                config.desired_maximum_frame_latency,
+                config.format,
+                config.alpha_mode
+            )
+        });
+        crate::pipeline_trace::event!({
+            "event": "surface_synchronization",
+            "present_mode": format!("{:?}", config.present_mode),
+            "desired_maximum_frame_latency": config.desired_maximum_frame_latency,
+            "physical_display_timing": null
+        });
         let layout = graphics
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -593,6 +690,15 @@ impl GpuPresenter {
             retained_diagnostics: RetainedFramebufferDiagnostics::default(),
             vertex_buffer: None,
             vertex_capacity: 0,
+            reuse_preparation_bypass: std::env::var_os(
+                "TWINKLE_GPU_FORCE_LEGACY_REUSE_PREPARATION",
+            )
+            .is_none(),
+            incremental_preparation_enabled: std::env::var_os(
+                "TWINKLE_GPU_DISABLE_INCREMENTAL_PREPARATION",
+            )
+            .is_none(),
+            prepared_scene: None,
         })
     }
 
@@ -670,6 +776,12 @@ impl GpuPresenter {
                 self.retained_diagnostics.releases.saturating_add(1);
         }
         self.retained_diagnostics.live_bytes = 0;
+        self.discard_prepared_scene();
+    }
+
+    fn discard_prepared_scene(&mut self) {
+        self.prepared_scene = None;
+        self.retained_diagnostics.prepared_scene_live_bytes = 0;
     }
 
     fn present(
@@ -679,6 +791,8 @@ impl GpuPresenter {
         commands: &[PaintCommand],
         damage: Option<&[Rect]>,
     ) -> Result<DamageRegion, String> {
+        let _presenter_started = crate::pipeline_trace::clock();
+        let _allocation_started = crate::pipeline_trace::allocator_counts();
         if geometry.pixel_width == 0 || geometry.pixel_height == 0 {
             self.release_retained_framebuffer();
             self.configured = false;
@@ -696,14 +810,16 @@ impl GpuPresenter {
         let scale = width as f32 / geometry.logical_width.max(1) as f32;
         let retained = self.ensure_retained_framebuffer(graphics, width, height, scale);
         let retained_valid = self.retained.as_ref().is_some_and(|target| target.valid);
-        let mut redraw = if retained {
+        let decision = if retained {
             offscreen_redraw(commands, damage, retained_valid)
         } else {
-            OffscreenRedraw::Full
+            RedrawDecision {
+                redraw: OffscreenRedraw::Full,
+                validation_visits: 0,
+                fallback_reason: "retained-framebuffer-budget",
+            }
         };
-        let mut frame = Frame::new(width, height, scale, graphics.white.clone());
-        frame.prepare(commands, graphics);
-        let clear_start = frame.vertices.len() as u32;
+        let mut redraw = decision.redraw;
         let mut damage_scissor = match redraw {
             OffscreenRedraw::Partial(damage) => physical_scissor(damage, width, height, scale),
             OffscreenRedraw::Full | OffscreenRedraw::Reuse => None,
@@ -714,17 +830,103 @@ impl GpuPresenter {
         } else if matches!(redraw, OffscreenRedraw::Partial(_)) && damage_scissor.is_none() {
             redraw = OffscreenRedraw::Reuse;
         }
+        let _preparation_started = crate::pipeline_trace::clock();
+        let mut frame = Frame::new(width, height, scale, graphics.white.clone());
+        let configuration =
+            retained_framebuffer_configuration(width, height, scale, self.config.format);
+        let previous_prepared_scene = if matches!(redraw, OffscreenRedraw::Partial(_))
+            && self.incremental_preparation_enabled
+        {
+            self.prepared_scene.take()
+        } else {
+            None
+        };
+        let mut prepared_update = if matches!(redraw, OffscreenRedraw::Partial(_))
+            && self.incremental_preparation_enabled
+        {
+            prepare_incremental_scene(
+                commands,
+                configuration,
+                width,
+                height,
+                scale,
+                graphics,
+                previous_prepared_scene,
+            )
+        } else {
+            if matches!(redraw, OffscreenRedraw::Full) {
+                self.prepared_scene = None;
+            }
+            None
+        };
+        if matches!(redraw, OffscreenRedraw::Partial(_))
+            && self.incremental_preparation_enabled
+            && prepared_update.is_none()
+        {
+            self.retained_diagnostics.prepared_scene_budget_fallbacks = self
+                .retained_diagnostics
+                .prepared_scene_budget_fallbacks
+                .saturating_add(1);
+            self.retained_diagnostics.prepared_scene_live_bytes = 0;
+        }
+        let prepare_scene = prepared_update.is_none()
+            && (!matches!(redraw, OffscreenRedraw::Reuse) || !self.reuse_preparation_bypass);
+        if prepare_scene {
+            frame.prepare(commands, graphics);
+        }
+        let _preparation_us = crate::pipeline_trace::micros(_preparation_started);
+        let _fragments_rebuilt = prepared_update.as_ref().map_or(0, |update| update.rebuilt);
+        let _fragments_reused = prepared_update.as_ref().map_or(0, |update| update.reused);
+        let _fragments_invalidated = prepared_update
+            .as_ref()
+            .map_or(0, |update| update.invalidated);
+        let _scene_vertices_generated = prepared_update
+            .as_ref()
+            .map_or_else(|| frame.vertices.len(), |update| update.generated_vertices);
+        let _commands_prepared = prepared_update.as_ref().map_or_else(
+            || if prepare_scene { commands.len() } else { 0 },
+            |update| update.rebuilt,
+        );
+        let prepared_update_metadata = prepared_update.take().map(|update| {
+            self.retained_diagnostics.prepared_scene_live_bytes = update.scene.estimated_bytes;
+            self.retained_diagnostics.prepared_scene_peak_bytes = self
+                .retained_diagnostics
+                .prepared_scene_peak_bytes
+                .max(update.scene.estimated_bytes);
+            self.prepared_scene = Some(update.scene);
+            PreparedSceneUpdateMetadata {
+                changed: update.changed,
+                layout_stable: update.layout_stable,
+            }
+        });
+        let prepared_active = matches!(redraw, OffscreenRedraw::Partial(_))
+            && self.prepared_scene.is_some()
+            && prepared_update_metadata.is_some();
+        let scene_vertex_count = if prepared_active {
+            self.prepared_scene
+                .as_ref()
+                .map_or(0, |scene| scene.vertex_count)
+        } else {
+            frame.vertices.len()
+        };
+        let preserved_scene_vertex_count = if matches!(redraw, OffscreenRedraw::Reuse) {
+            self.prepared_scene
+                .as_ref()
+                .filter(|scene| scene.configuration == configuration)
+                .map_or(0, |scene| scene.vertex_count)
+        } else {
+            scene_vertex_count
+        };
+        let clear_start = preserved_scene_vertex_count as u32;
+        let mut auxiliary_vertices = Vec::with_capacity(12);
         if damage_scissor.is_some() {
-            frame
-                .vertices
-                .extend_from_slice(&fullscreen_vertices([0.0; 4]));
+            auxiliary_vertices.extend_from_slice(&fullscreen_vertices([0.0; 4]));
         }
-        let composite_start = frame.vertices.len() as u32;
+        let composite_start = clear_start + auxiliary_vertices.len() as u32;
         if retained {
-            frame
-                .vertices
-                .extend_from_slice(&fullscreen_vertices([1.0; 4]));
+            auxiliary_vertices.extend_from_slice(&fullscreen_vertices([1.0; 4]));
         }
+        let _acquisition_started = crate::pipeline_trace::clock();
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => output,
             wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
@@ -736,7 +938,16 @@ impl GpuPresenter {
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(output)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+                    wgpu::CurrentSurfaceTexture::Timeout
+                    | wgpu::CurrentSurfaceTexture::Occluded => {
+                        self.discard_prepared_scene();
+                        return Ok(DamageRegion::default());
+                    }
                     other => {
+                        // Preparation may already have replaced the CPU-side cache. If the
+                        // corresponding vertex writes cannot be submitted, that cache must not
+                        // be trusted by a later sparse update.
+                        self.release_retained_framebuffer();
                         return Err(format!(
                             "cannot acquire GPU surface after reconfigure: {other:?}"
                         ));
@@ -744,12 +955,20 @@ impl GpuPresenter {
                 }
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                self.discard_prepared_scene();
                 return Ok(DamageRegion::default());
             }
-            other => return Err(format!("cannot acquire GPU surface: {other:?}")),
+            other => {
+                self.release_retained_framebuffer();
+                return Err(format!("cannot acquire GPU surface: {other:?}"));
+            }
         };
-        let vertex_bytes = bytemuck::cast_slice(&frame.vertices);
-        let required = vertex_bytes.len().max(std::mem::size_of::<Vertex>());
+        let _acquisition_us = crate::pipeline_trace::micros(_acquisition_started);
+        let _upload_started = crate::pipeline_trace::clock();
+        let required = (preserved_scene_vertex_count + auxiliary_vertices.len())
+            .saturating_mul(std::mem::size_of::<Vertex>())
+            .max(std::mem::size_of::<Vertex>());
+        let mut buffer_reallocated = false;
         if required > self.vertex_capacity {
             self.vertex_capacity = required.next_power_of_two();
             self.vertex_buffer = Some(graphics.device.create_buffer(&wgpu::BufferDescriptor {
@@ -758,11 +977,55 @@ impl GpuPresenter {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
+            buffer_reallocated = true;
         }
         let vertex_buffer = self.vertex_buffer.as_ref().expect("frame buffer allocated");
-        if !vertex_bytes.is_empty() {
-            graphics.queue.write_buffer(vertex_buffer, 0, vertex_bytes);
+        let mut _scene_vertex_upload_bytes = 0usize;
+        let mut _vertex_upload_calls = 0usize;
+        if prepared_active {
+            let scene = self.prepared_scene.as_ref().expect("prepared scene");
+            let update = prepared_update_metadata
+                .as_ref()
+                .expect("prepared update metadata");
+            let upload_all = buffer_reallocated || !update.layout_stable;
+            for (index, segment) in scene.segments.iter().enumerate() {
+                if upload_all || update.changed[index] {
+                    let bytes = bytemuck::cast_slice(&segment.vertices);
+                    if !bytes.is_empty() {
+                        graphics.queue.write_buffer(
+                            vertex_buffer,
+                            scene.vertex_offsets[index] as u64
+                                * std::mem::size_of::<Vertex>() as u64,
+                            bytes,
+                        );
+                        _scene_vertex_upload_bytes += bytes.len();
+                        _vertex_upload_calls += 1;
+                    }
+                }
+            }
+        } else if prepare_scene {
+            let bytes = bytemuck::cast_slice(&frame.vertices);
+            if !bytes.is_empty() {
+                graphics.queue.write_buffer(vertex_buffer, 0, bytes);
+                _scene_vertex_upload_bytes = bytes.len();
+                _vertex_upload_calls += 1;
+            }
         }
+        let auxiliary_bytes = bytemuck::cast_slice(&auxiliary_vertices);
+        if !auxiliary_bytes.is_empty() {
+            graphics.queue.write_buffer(
+                vertex_buffer,
+                preserved_scene_vertex_count as u64 * std::mem::size_of::<Vertex>() as u64,
+                auxiliary_bytes,
+            );
+            _vertex_upload_calls += 1;
+        }
+        let _total_vertex_upload_bytes = _scene_vertex_upload_bytes + auxiliary_bytes.len();
+        let _upload_us = crate::pipeline_trace::micros(_upload_started);
+        let _draw_started = crate::pipeline_trace::clock();
+        let _scene_encode_started = crate::pipeline_trace::clock();
+        #[cfg(feature = "pipeline-attribution")]
+        let mut _scene_draws_encoded = 0usize;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -771,7 +1034,7 @@ impl GpuPresenter {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Nickel shell frame"),
             });
-        {
+        if !matches!(redraw, OffscreenRedraw::Reuse) {
             let target = self
                 .retained
                 .as_ref()
@@ -804,24 +1067,68 @@ impl GpuPresenter {
                 pass.set_bind_group(0, graphics.white.as_ref(), &[]);
                 pass.draw(clear_start..clear_start + 6, 0..1);
             }
-            for draw in &frame.draws {
-                let scissor = match redraw {
-                    OffscreenRedraw::Full => Some(draw.scissor),
-                    OffscreenRedraw::Partial(_) => {
-                        damage_scissor.and_then(|damage| intersect_scissor(draw.scissor, damage))
+            if prepared_active {
+                for (segment, base) in self
+                    .prepared_scene
+                    .as_ref()
+                    .expect("prepared scene")
+                    .segments
+                    .iter()
+                    .zip(
+                        self.prepared_scene
+                            .as_ref()
+                            .expect("prepared scene")
+                            .vertex_offsets
+                            .iter()
+                            .copied(),
+                    )
+                {
+                    for draw in &segment.draws {
+                        let Some(scissor) = damage_scissor
+                            .and_then(|damage| intersect_scissor(draw.scissor, damage))
+                        else {
+                            continue;
+                        };
+                        pass.set_pipeline(match draw.kind {
+                            DrawKind::Textured => &self.pipeline,
+                            DrawKind::Shape => &self.shape_pipeline,
+                        });
+                        pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                        pass.set_bind_group(0, draw.texture.as_ref(), &[]);
+                        pass.draw(base + draw.start..base + draw.end, 0..1);
+                        #[cfg(feature = "pipeline-attribution")]
+                        {
+                            _scene_draws_encoded += 1;
+                        }
                     }
-                    OffscreenRedraw::Reuse => None,
-                };
-                let Some(scissor) = scissor else { continue };
-                pass.set_pipeline(match draw.kind {
-                    DrawKind::Textured => &self.pipeline,
-                    DrawKind::Shape => &self.shape_pipeline,
-                });
-                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
-                pass.set_bind_group(0, draw.texture.as_ref(), &[]);
-                pass.draw(draw.start..draw.end, 0..1);
+                }
+            } else {
+                for draw in &frame.draws {
+                    let scissor = match redraw {
+                        OffscreenRedraw::Full => Some(draw.scissor),
+                        OffscreenRedraw::Partial(_) => damage_scissor
+                            .and_then(|damage| intersect_scissor(draw.scissor, damage)),
+                        OffscreenRedraw::Reuse => None,
+                    };
+                    let Some(scissor) = scissor else { continue };
+                    pass.set_pipeline(match draw.kind {
+                        DrawKind::Textured => &self.pipeline,
+                        DrawKind::Shape => &self.shape_pipeline,
+                    });
+                    pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                    pass.set_bind_group(0, draw.texture.as_ref(), &[]);
+                    pass.draw(draw.start..draw.end, 0..1);
+                    #[cfg(feature = "pipeline-attribution")]
+                    {
+                        _scene_draws_encoded += 1;
+                    }
+                }
             }
         }
+        let _scene_encoding_us = crate::pipeline_trace::micros(_scene_encode_started);
+        let _composite_started = crate::pipeline_trace::clock();
+        #[cfg(feature = "pipeline-attribution")]
+        let _composite_encoded = self.retained.is_some() && retained;
         if let Some(retained) = self.retained.as_ref().filter(|_| retained) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Nickel shell surface composite"),
@@ -854,7 +1161,10 @@ impl GpuPresenter {
                 .direct_full_frames
                 .saturating_add(1);
         }
+        let _composite_encoding_us = crate::pipeline_trace::micros(_composite_started);
+        let _submit_started = crate::pipeline_trace::clock();
         graphics.queue.submit(Some(encoder.finish()));
+        let _submit_us = crate::pipeline_trace::micros(_submit_started);
         match redraw {
             OffscreenRedraw::Full => {
                 self.retained_diagnostics.full_redraws =
@@ -878,13 +1188,81 @@ impl GpuPresenter {
                 .full_initializations
                 .saturating_add(1);
         }
+        let _encode_submit_us = crate::pipeline_trace::micros(_draw_started);
+        let _present_started = crate::pipeline_trace::clock();
         graphics.queue.present(output);
+        let _allocation_delta = _allocation_started
+            .zip(crate::pipeline_trace::allocator_counts())
+            .map(|(before, after)| {
+                [
+                    after[0].saturating_sub(before[0]),
+                    after[1].saturating_sub(before[1]),
+                    after[2].saturating_sub(before[2]),
+                ]
+            });
+        crate::pipeline_trace::event!({
+            "event": "gpu_frame", "physical_width": width, "physical_height": height, "scale": scale,
+            "provenance_validation_visits": decision.validation_visits,
+            "fallback_reason": decision.fallback_reason,
+            "reuse_preparation_bypass_enabled": self.reuse_preparation_bypass,
+            "incremental_preparation_enabled": self.incremental_preparation_enabled,
+            "commands_prepared": _commands_prepared,
+            "scene_vertices": _scene_vertices_generated,
+            "prepared_scene_vertices": scene_vertex_count,
+            "scene_vertex_bytes": _scene_vertices_generated * std::mem::size_of::<Vertex>(),
+            "scene_vertex_upload_bytes": _scene_vertex_upload_bytes,
+            "auxiliary_vertex_bytes": auxiliary_bytes.len(),
+            "total_vertex_upload_bytes": _total_vertex_upload_bytes,
+            "vertex_upload_calls": _vertex_upload_calls,
+            "redraw": format!("{redraw:?}"),
+            "preparation_us": _preparation_us, "surface_acquisition_us": _acquisition_us,
+            "vertex_upload_call_us": _upload_us, "encode_submit_us": _encode_submit_us,
+            "scene_encoding_us": _scene_encoding_us, "scene_draws_encoded": _scene_draws_encoded,
+            "composite_encoding_us": if _composite_encoded { _composite_encoding_us } else { Some(0u64) },
+            "composite_skipped": !_composite_encoded, "command_finalize_and_submit_us": _submit_us,
+            "effective_damage_scissor": damage_scissor,
+            "scene_damage_coverage_pixels": match redraw { OffscreenRedraw::Full => u64::from(width)*u64::from(height), OffscreenRedraw::Partial(_) => damage_scissor.map_or(0, |(_,_,w,h)|u64::from(w)*u64::from(h)), OffscreenRedraw::Reuse => 0 },
+            "present_call_us": crate::pipeline_trace::micros(_present_started),
+            "framebuffer_live_bytes": self.retained_diagnostics.live_bytes,
+            "framebuffer_peak_bytes": self.retained_diagnostics.peak_bytes,
+            "texture_cache_resident_bytes": graphics.textures.borrow().bytes,
+            "texture_cache_peak_bytes": graphics.textures.borrow().peak_bytes,
+            "externally_held_and_inflight_texture_bytes": null,
+            "compositor_presentation_timestamp": null,
+            "gpu_execution_us": null,
+            "presenter_call_us": crate::pipeline_trace::micros(_presenter_started),
+            "timing_boundary": "CPU calls only; preparation includes text cache/raster/texture uploads; GPU completion and compositor display unavailable"
+        });
+        crate::pipeline_trace::event!({
+            "event": "gpu_damage",
+            "damage_rectangles": damage.map_or(0, <[Rect]>::len),
+            "damage_rectangle_pixels": damage.map_or(0, |rects| rects.iter().filter_map(|rect| physical_scissor(*rect, width, height, scale)).map(|(_,_,w,h)|u64::from(w)*u64::from(h)).sum::<u64>()),
+            "damage_union_pixels": match redraw { OffscreenRedraw::Full => u64::from(width)*u64::from(height), OffscreenRedraw::Partial(_) => damage_scissor.map_or(0, |(_,_,w,h)|u64::from(w)*u64::from(h)), OffscreenRedraw::Reuse => 0 },
+            "allocation_calls": _allocation_delta.map(|delta| delta[0]),
+            "deallocation_calls": _allocation_delta.map(|delta| delta[1]),
+            "allocation_requested_bytes": _allocation_delta.map(|delta| delta[2]),
+            "draw_calls": _scene_draws_encoded + usize::from(damage_scissor.is_some()) + usize::from(_composite_encoded),
+            "allocation_boundary": "Process-wide Rust allocator delta across presenter call; concurrent threads may overlap; excludes foreign driver allocations"
+        });
+        crate::pipeline_trace::event!({
+            "event": "gpu_prepared_fragments",
+            "rebuilt": _fragments_rebuilt,
+            "reused": _fragments_reused,
+            "invalidated": _fragments_invalidated,
+            "live_bytes": self.retained_diagnostics.prepared_scene_live_bytes,
+            "peak_bytes": self.retained_diagnostics.prepared_scene_peak_bytes,
+            "budget_bytes": PREPARED_SCENE_BUDGET_BYTES,
+            "vertex_buffer_capacity_bytes": self.vertex_capacity,
+            "draw_records": if prepared_active { self.prepared_scene.as_ref().map_or(0, |scene| scene.segments.iter().map(|segment| segment.draws.len()).sum()) } else { frame.draws.len() },
+            "budget_fallbacks": self.retained_diagnostics.prepared_scene_budget_fallbacks
+        });
         Ok(DamageRegion {
             rects: vec![Rect::new(0.0, 0.0, width as f32, height as f32)].into(),
         })
     }
 }
 
+#[derive(Clone)]
 struct Draw {
     start: u32,
     end: u32,
@@ -893,10 +1271,223 @@ struct Draw {
     kind: DrawKind,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DrawKind {
     Textured,
     Shape,
+}
+
+const PREPARED_SCENE_BUDGET_BYTES: usize = 32 * 1024 * 1024;
+
+struct PreparedSegment {
+    command: PaintCommand,
+    entry_clips: Vec<Rect>,
+    exit_clips: Vec<Rect>,
+    vertices: Vec<Vertex>,
+    draws: Vec<Draw>,
+    estimated_bytes: usize,
+}
+
+struct PreparedScene {
+    configuration: (u32, u32, u32, wgpu::TextureFormat),
+    segments: Vec<Arc<PreparedSegment>>,
+    vertex_offsets: Vec<u32>,
+    vertex_count: usize,
+    estimated_bytes: usize,
+}
+
+struct PreparedSceneUpdate {
+    scene: PreparedScene,
+    rebuilt: usize,
+    reused: usize,
+    invalidated: usize,
+    generated_vertices: usize,
+    changed: Vec<bool>,
+    layout_stable: bool,
+}
+
+struct PreparedSceneUpdateMetadata {
+    changed: Vec<bool>,
+    layout_stable: bool,
+}
+
+fn paint_command_owned_bytes(command: &PaintCommand, scale: f32) -> usize {
+    let texture_bytes = |bounds: Rect| {
+        ((bounds.size.width * scale).ceil().max(1.0) as usize)
+            .saturating_mul((bounds.size.height * scale).ceil().max(1.0) as usize)
+            .saturating_mul(4)
+    };
+    match command {
+        PaintCommand::Text { bounds, text, .. } => {
+            text.capacity().saturating_add(texture_bytes(*bounds))
+        }
+        PaintCommand::StyledText {
+            bounds,
+            text,
+            spans,
+            ..
+        } => text
+            .capacity()
+            .saturating_add(
+                spans.capacity().saturating_mul(
+                    spans
+                        .first()
+                        .map_or(0, |_| std::mem::size_of_val(&spans[0])),
+                ),
+            )
+            .saturating_add(texture_bytes(*bounds)),
+        PaintCommand::Image {
+            image,
+            high_density,
+            ..
+        } => {
+            let cpu_bytes = image.as_raw().len().saturating_add(
+                high_density
+                    .as_ref()
+                    .map_or(0, |image| image.as_raw().len()),
+            );
+            let selected = high_density
+                .as_ref()
+                .filter(|_| scale >= 1.5)
+                .unwrap_or(image);
+            cpu_bytes.saturating_add(selected.as_raw().len())
+        }
+        PaintCommand::BackdropBlur { .. }
+        | PaintCommand::Fill { .. }
+        | PaintCommand::TopRoundedFill { .. }
+        | PaintCommand::RoundedFill { .. }
+        | PaintCommand::RoundedStroke { .. }
+        | PaintCommand::Gradient { .. }
+        | PaintCommand::Stroke { .. }
+        | PaintCommand::OverlayFill { .. }
+        | PaintCommand::OverlayStroke { .. }
+        | PaintCommand::PushClip(_)
+        | PaintCommand::PopClip => 0,
+    }
+}
+
+fn prepare_segment(
+    command: &PaintCommand,
+    entry_clips: &[Rect],
+    width: u32,
+    height: u32,
+    scale: f32,
+    graphics: &GpuGraphics,
+) -> Arc<PreparedSegment> {
+    let mut frame = Frame::new(width, height, scale, graphics.white.clone());
+    frame.clips.clear();
+    frame.clips.extend_from_slice(entry_clips);
+    frame.prepare(std::slice::from_ref(command), graphics);
+    let estimated_bytes = std::mem::size_of::<PreparedSegment>()
+        .saturating_add(std::mem::size_of::<PaintCommand>())
+        .saturating_add(paint_command_owned_bytes(command, scale))
+        .saturating_add(
+            entry_clips
+                .len()
+                .saturating_add(frame.clips.len())
+                .saturating_mul(std::mem::size_of::<Rect>()),
+        )
+        .saturating_add(
+            frame
+                .vertices
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Vertex>()),
+        )
+        .saturating_add(
+            frame
+                .draws
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Draw>()),
+        );
+    Arc::new(PreparedSegment {
+        command: command.clone(),
+        entry_clips: entry_clips.to_vec(),
+        exit_clips: frame.clips,
+        vertices: frame.vertices,
+        draws: frame.draws,
+        estimated_bytes,
+    })
+}
+
+fn prepare_incremental_scene(
+    commands: &[PaintCommand],
+    configuration: (u32, u32, u32, wgpu::TextureFormat),
+    width: u32,
+    height: u32,
+    scale: f32,
+    graphics: &GpuGraphics,
+    previous: Option<PreparedScene>,
+) -> Option<PreparedSceneUpdate> {
+    let previous_compatible = previous
+        .as_ref()
+        .is_some_and(|scene| scene.configuration == configuration);
+    let initial_clip = Rect::new(0.0, 0.0, width as f32 / scale, height as f32 / scale);
+    let mut clips = vec![initial_clip];
+    let mut segments = Vec::with_capacity(commands.len());
+    let mut offsets = Vec::with_capacity(commands.len());
+    let mut changed = Vec::with_capacity(commands.len());
+    let mut vertex_count = 0usize;
+    let mut estimated_bytes =
+        std::mem::size_of::<PreparedScene>().saturating_add(commands.len().saturating_mul(
+            std::mem::size_of::<Arc<PreparedSegment>>() + std::mem::size_of::<u32>(),
+        ));
+    let mut rebuilt = 0usize;
+    let mut reused = 0usize;
+    let mut generated_vertices = 0usize;
+    let mut layout_stable = previous_compatible
+        && previous
+            .as_ref()
+            .is_some_and(|scene| scene.segments.len() == commands.len());
+
+    for (index, command) in commands.iter().enumerate() {
+        offsets.push(u32::try_from(vertex_count).ok()?);
+        let prior = previous
+            .as_ref()
+            .filter(|_| previous_compatible)
+            .and_then(|scene| scene.segments.get(index));
+        let segment = if let Some(prior) = prior
+            && prior.command == *command
+            && prior.entry_clips == clips
+        {
+            reused += 1;
+            changed.push(false);
+            Arc::clone(prior)
+        } else {
+            let segment = prepare_segment(command, &clips, width, height, scale, graphics);
+            generated_vertices = generated_vertices.saturating_add(segment.vertices.len());
+            rebuilt += 1;
+            changed.push(true);
+            if prior.is_none_or(|prior| prior.vertices.len() != segment.vertices.len()) {
+                layout_stable = false;
+            }
+            segment
+        };
+        clips.clone_from(&segment.exit_clips);
+        vertex_count = vertex_count.checked_add(segment.vertices.len())?;
+        estimated_bytes = estimated_bytes.checked_add(segment.estimated_bytes)?;
+        if estimated_bytes > PREPARED_SCENE_BUDGET_BYTES {
+            return None;
+        }
+        segments.push(segment);
+    }
+    let invalidated = previous
+        .as_ref()
+        .map_or(0, |scene| scene.segments.len().saturating_sub(reused));
+    Some(PreparedSceneUpdate {
+        scene: PreparedScene {
+            configuration,
+            segments,
+            vertex_offsets: offsets,
+            vertex_count,
+            estimated_bytes,
+        },
+        rebuilt,
+        reused,
+        invalidated,
+        generated_vertices,
+        changed,
+        layout_stable,
+    })
 }
 
 struct Frame {
@@ -1296,6 +1887,59 @@ fn mix(start: u32, end: u32, at: f32) -> u32 {
 mod tests {
     use super::*;
 
+    type DrawStreamEntry = (Vertex, (u32, u32, u32, u32), DrawKind, usize);
+
+    fn prepared_draw_stream(scene: &PreparedScene) -> Vec<DrawStreamEntry> {
+        let mut stream = Vec::new();
+        let mut expected_base = 0u32;
+        for (segment, base) in scene
+            .segments
+            .iter()
+            .zip(scene.vertex_offsets.iter().copied())
+        {
+            assert_eq!(base, expected_base);
+            for draw in &segment.draws {
+                for index in draw.start..draw.end {
+                    stream.push((
+                        segment.vertices[index as usize],
+                        draw.scissor,
+                        draw.kind,
+                        Arc::as_ptr(&draw.texture) as usize,
+                    ));
+                }
+                assert!(draw.end as usize <= segment.vertices.len());
+            }
+            expected_base += segment.vertices.len() as u32;
+        }
+        stream
+    }
+
+    fn frame_draw_stream(frame: &Frame) -> Vec<DrawStreamEntry> {
+        let mut stream = Vec::new();
+        for draw in &frame.draws {
+            for index in draw.start..draw.end {
+                stream.push((
+                    frame.vertices[index as usize],
+                    draw.scissor,
+                    draw.kind,
+                    Arc::as_ptr(&draw.texture) as usize,
+                ));
+            }
+        }
+        stream
+    }
+
+    fn assert_matches_full(
+        commands: &[PaintCommand],
+        graphics: &GpuGraphics,
+        scene: &PreparedScene,
+    ) {
+        let mut full = Frame::new(320, 240, 1.0, graphics.white.clone());
+        full.prepare(commands, graphics);
+        assert_eq!(scene.vertex_count, full.vertices.len());
+        assert_eq!(prepared_draw_stream(scene), frame_draw_stream(&full));
+    }
+
     #[test]
     fn retained_framebuffer_obeys_memory_budget() {
         assert_eq!(retained_framebuffer_bytes(1920, 1080), Some(8_294_400));
@@ -1309,15 +1953,23 @@ mod tests {
             color: 0xffffff,
         }];
         assert_eq!(
-            offscreen_redraw(&commands, None, true),
+            offscreen_redraw(&commands, None, true).redraw,
             OffscreenRedraw::Full
         );
         assert_eq!(
             offscreen_redraw(&commands, Some(&[]), true),
+            RedrawDecision {
+                redraw: OffscreenRedraw::Reuse,
+                validation_visits: 0,
+                fallback_reason: "none",
+            }
+        );
+        assert_eq!(
+            offscreen_redraw(&commands, Some(&[]), true).redraw,
             OffscreenRedraw::Reuse
         );
         assert_eq!(
-            offscreen_redraw(&commands, Some(&[Rect::new(2.0, 3.0, 4.0, 5.0)]), true),
+            offscreen_redraw(&commands, Some(&[Rect::new(2.0, 3.0, 4.0, 5.0)]), true).redraw,
             OffscreenRedraw::Partial(Rect::new(2.0, 3.0, 4.0, 5.0))
         );
     }
@@ -1332,5 +1984,362 @@ mod tests {
             physical_scissor(Rect::new(30.0, 30.0, 2.0, 2.0), 20, 20, 1.0),
             None
         );
+    }
+
+    #[test]
+    fn blur_forces_full_without_weakening_explicit_empty_reuse() {
+        let commands = [
+            PaintCommand::Fill {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                color: 0xff00ff,
+            },
+            PaintCommand::BackdropBlur {
+                rect: Rect::new(2.0, 2.0, 4.0, 4.0),
+                radius: 2.0,
+                blur: 3.0,
+            },
+        ];
+        let partial = offscreen_redraw(&commands, Some(&[Rect::new(1.0, 1.0, 2.0, 2.0)]), true);
+        assert_eq!(partial.redraw, OffscreenRedraw::Full);
+        assert_eq!(partial.validation_visits, 2);
+        assert_eq!(partial.fallback_reason, "backdrop-blur");
+        assert_eq!(
+            offscreen_redraw(&commands, Some(&[]), true).redraw,
+            OffscreenRedraw::Reuse
+        );
+    }
+
+    #[test]
+    fn prepared_fragments_preserve_order_clips_resources_and_sparse_reuse() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let image = Arc::new(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([255, 0, 0, 128]),
+        ));
+        let mut commands = vec![
+            PaintCommand::Fill {
+                rect: Rect::new(0.0, 0.0, 320.0, 240.0),
+                color: 0xff101820,
+            },
+            PaintCommand::PushClip(Rect::new(10.0, 12.0, 180.0, 100.0)),
+            PaintCommand::Fill {
+                rect: Rect::new(4.0, 5.0, 90.0, 80.0),
+                color: 0x80336699,
+            },
+            PaintCommand::PushClip(Rect::new(20.0, 20.0, 50.0, 40.0)),
+            PaintCommand::Image {
+                bounds: Rect::new(15.0, 16.0, 64.0, 48.0),
+                id: 7,
+                generation: 1,
+                image: image.clone(),
+                high_density: None,
+            },
+            PaintCommand::PopClip,
+            PaintCommand::RoundedStroke {
+                rect: Rect::new(30.0, 30.0, 100.0, 50.0),
+                color: 0xc0ffffff,
+                width: 2.0,
+                radius: 8.0,
+            },
+            PaintCommand::PopClip,
+            PaintCommand::OverlayFill {
+                rect: Rect::new(40.0, 35.0, 120.0, 70.0),
+                color: 0x6044cc88,
+            },
+        ];
+        let configuration = (320, 240, 1.0f32.to_bits(), wgpu::TextureFormat::Rgba8Unorm);
+        let initial =
+            prepare_incremental_scene(&commands, configuration, 320, 240, 1.0, &graphics, None)
+                .expect("initial prepared scene");
+        assert_eq!(initial.rebuilt, commands.len());
+        assert_matches_full(&commands, &graphics, &initial.scene);
+
+        let unchanged = prepare_incremental_scene(
+            &commands,
+            configuration,
+            320,
+            240,
+            1.0,
+            &graphics,
+            Some(initial.scene),
+        )
+        .expect("unchanged prepared scene");
+        assert_eq!(unchanged.rebuilt, 0);
+        assert_eq!(unchanged.reused, commands.len());
+
+        commands[2] = PaintCommand::Fill {
+            rect: Rect::new(4.0, 5.0, 90.0, 80.0),
+            color: 0x80aa2299,
+        };
+        let sparse = prepare_incremental_scene(
+            &commands,
+            configuration,
+            320,
+            240,
+            1.0,
+            &graphics,
+            Some(unchanged.scene),
+        )
+        .expect("sparse prepared scene");
+        assert_eq!(sparse.rebuilt, 1);
+        assert_eq!(sparse.reused, commands.len() - 1);
+        assert_eq!(sparse.invalidated, 1);
+        assert_matches_full(&commands, &graphics, &sparse.scene);
+
+        commands[1] = PaintCommand::PushClip(Rect::new(11.0, 12.0, 170.0, 90.0));
+        let clip_changed = prepare_incremental_scene(
+            &commands,
+            configuration,
+            320,
+            240,
+            1.0,
+            &graphics,
+            Some(sparse.scene),
+        )
+        .expect("clip-changed prepared scene");
+        assert!(clip_changed.rebuilt > 1);
+        assert!(clip_changed.reused > 0);
+        assert_matches_full(&commands, &graphics, &clip_changed.scene);
+
+        if let PaintCommand::Image { generation, .. } = &mut commands[4] {
+            *generation += 1;
+        }
+        let resource_changed = prepare_incremental_scene(
+            &commands,
+            configuration,
+            320,
+            240,
+            1.0,
+            &graphics,
+            Some(clip_changed.scene),
+        )
+        .expect("resource-changed prepared scene");
+        assert_eq!(resource_changed.rebuilt, 1);
+        assert_matches_full(&commands, &graphics, &resource_changed.scene);
+
+        commands[0] = PaintCommand::Fill {
+            rect: Rect::new(0.0, 0.0, 320.0, 240.0),
+            color: 0xff17242d,
+        };
+        commands[8] = PaintCommand::OverlayFill {
+            rect: Rect::new(42.0, 37.0, 116.0, 68.0),
+            color: 0x7044cc88,
+        };
+        let separated = prepare_incremental_scene(
+            &commands,
+            configuration,
+            320,
+            240,
+            1.0,
+            &graphics,
+            Some(resource_changed.scene),
+        )
+        .expect("separated changes prepared scene");
+        assert_eq!(separated.rebuilt, 2);
+        assert_eq!(separated.reused, commands.len() - 2);
+        assert_matches_full(&commands, &graphics, &separated.scene);
+
+        commands.swap(6, 8);
+        commands.remove(7);
+        let reordered = prepare_incremental_scene(
+            &commands,
+            configuration,
+            320,
+            240,
+            1.0,
+            &graphics,
+            Some(separated.scene),
+        )
+        .expect("reordered prepared scene");
+        assert!(reordered.rebuilt > 0);
+        assert!(reordered.invalidated > 0);
+        assert_matches_full(&commands, &graphics, &reordered.scene);
+
+        let resized = prepare_incremental_scene(
+            &commands,
+            (321, 241, 1.0f32.to_bits(), wgpu::TextureFormat::Rgba8Unorm),
+            321,
+            241,
+            1.0,
+            &graphics,
+            Some(reordered.scene),
+        )
+        .expect("resize-invalidated prepared scene");
+        assert_eq!(resized.rebuilt, commands.len());
+        assert_eq!(resized.reused, 0);
+
+        let mut scene = resized.scene;
+        for cycle in 0..32u32 {
+            if cycle.is_multiple_of(2) {
+                commands.push(PaintCommand::Fill {
+                    rect: Rect::new(250.0, 180.0, 20.0, 20.0),
+                    color: 0xff58d6c5,
+                });
+            } else {
+                commands.pop();
+            }
+            let update = prepare_incremental_scene(
+                &commands,
+                (321, 241, 1.0f32.to_bits(), wgpu::TextureFormat::Rgba8Unorm),
+                321,
+                241,
+                1.0,
+                &graphics,
+                Some(scene),
+            )
+            .expect("bounded remove/reinsert cycle");
+            assert!(update.scene.estimated_bytes <= PREPARED_SCENE_BUDGET_BYTES);
+            assert_eq!(update.scene.segments.len(), commands.len());
+            scene = update.scene;
+        }
+    }
+
+    #[test]
+    fn prepared_fragment_budget_counts_cpu_and_gpu_resource_holds() {
+        let image = Arc::new(image::RgbaImage::new(16, 8));
+        let command = PaintCommand::Image {
+            bounds: Rect::new(0.0, 0.0, 16.0, 8.0),
+            id: 1,
+            generation: 1,
+            image,
+            high_density: None,
+        };
+        // One CPU image plus one selected GPU texture payload.
+        assert_eq!(paint_command_owned_bytes(&command, 1.0), 16 * 8 * 4 * 2);
+    }
+
+    #[test]
+    fn oversized_prepared_scene_falls_back_instead_of_retaining_resources() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let command = PaintCommand::Fill {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            color: 0xff123456,
+        };
+        let clips = vec![Rect::new(0.0, 0.0, 320.0, 240.0)];
+        let segment = Arc::new(PreparedSegment {
+            command: command.clone(),
+            entry_clips: clips.clone(),
+            exit_clips: clips,
+            vertices: Vec::new(),
+            draws: Vec::new(),
+            estimated_bytes: PREPARED_SCENE_BUDGET_BYTES + 1,
+        });
+        let configuration = (320, 240, 1.0f32.to_bits(), wgpu::TextureFormat::Rgba8Unorm);
+        let previous = PreparedScene {
+            configuration,
+            segments: vec![segment],
+            vertex_offsets: vec![0],
+            vertex_count: 0,
+            estimated_bytes: PREPARED_SCENE_BUDGET_BYTES + 1,
+        };
+        assert!(
+            prepare_incremental_scene(
+                &[command],
+                configuration,
+                320,
+                240,
+                1.0,
+                &graphics,
+                Some(previous),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn randomized_sparse_sequences_match_full_images_and_full_preparation() {
+        let graphics = GpuGraphics::new_headless().expect("headless test GPU adapter");
+        let configuration = (320, 240, 1.0f32.to_bits(), wgpu::TextureFormat::Rgba8Unorm);
+        let mut commands = Vec::new();
+        for index in 0..64u32 {
+            let x = (index % 8) as f32 * 36.0 + 8.0;
+            let y = (index / 8) as f32 * 27.0 + 8.0;
+            commands.push(PaintCommand::RoundedFill {
+                rect: Rect::new(x, y, 30.0, 21.0),
+                color: 0x80204060 + index * 0x000101,
+                radius: 3.0,
+            });
+        }
+        // Box shadows enter the paint list as ordered, expanding translucent
+        // rounded-fill layers; keep representative effect extents in the oracle.
+        for layer in 0..3u32 {
+            commands.push(PaintCommand::RoundedFill {
+                rect: Rect::new(
+                    106.0 - layer as f32,
+                    76.0 - layer as f32,
+                    88.0 + layer as f32 * 2.0,
+                    48.0 + layer as f32 * 2.0,
+                ),
+                color: 0x18000000u32.saturating_sub(layer << 24),
+                radius: 8.0 + layer as f32,
+            });
+        }
+        // Overlapping translucent contributors make partial repaint order observable.
+        commands.push(PaintCommand::OverlayFill {
+            rect: Rect::new(30.0, 30.0, 220.0, 150.0),
+            color: 0x3044cc88,
+        });
+
+        let initial =
+            prepare_incremental_scene(&commands, configuration, 320, 240, 1.0, &graphics, None)
+                .expect("random sequence initial scene");
+        let mut prepared = initial.scene;
+        let mut retained = SoftwareRenderer::new(320, 240, 1.0);
+        retained.render(&commands);
+        let mut state = 0x4d595df4d0f33173u64;
+        for step in 0..96u32 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let index = (state as usize) % 64;
+            if let PaintCommand::RoundedFill { color, rect, .. } = &mut commands[index] {
+                *color ^= 0x0001_0305;
+                rect.origin.x += if step.is_multiple_of(2) { 1.0 } else { -1.0 };
+            }
+            if step % 17 == 0
+                && let PaintCommand::OverlayFill { color, .. } = commands.last_mut().unwrap()
+            {
+                *color ^= 0x0010_2010;
+            }
+
+            let update = prepare_incremental_scene(
+                &commands,
+                configuration,
+                320,
+                240,
+                1.0,
+                &graphics,
+                Some(prepared),
+            )
+            .expect("random sparse prepared scene");
+            assert!(update.rebuilt <= 2);
+            assert_matches_full(&commands, &graphics, &update.scene);
+            prepared = update.scene;
+
+            let before = retained.pixels().to_vec();
+            let damage = retained.render(&commands);
+            let mut full = SoftwareRenderer::new(320, 240, 1.0);
+            full.render(&commands);
+            assert_eq!(retained.pixels(), full.pixels(), "step {step}");
+            for (pixel_index, _) in before
+                .iter()
+                .zip(retained.pixels())
+                .enumerate()
+                .filter(|(_, (old, new))| old != new)
+            {
+                let x = (pixel_index % 320) as f32;
+                let y = (pixel_index / 320) as f32;
+                assert!(
+                    damage.rects.iter().any(|rect| {
+                        x >= rect.origin.x
+                            && x < rect.origin.x + rect.size.width
+                            && y >= rect.origin.y
+                            && y < rect.origin.y + rect.size.height
+                    }),
+                    "changed pixel ({x}, {y}) escaped damage at step {step}: {damage:?}"
+                );
+            }
+        }
     }
 }

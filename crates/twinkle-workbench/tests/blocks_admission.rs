@@ -185,8 +185,12 @@ impl JsxAdmission {
         })
     }
 
-    fn advance(&mut self, snapshot: serde_json::Value) -> Result<(), String> {
+    fn advance(
+        &mut self,
+        build_snapshot: impl FnOnce() -> serde_json::Value,
+    ) -> Result<(), String> {
         let started = Instant::now();
+        let snapshot = build_snapshot();
         self.sample.snapshot = started.elapsed();
 
         self.runtime.begin_transaction()?;
@@ -352,7 +356,7 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
     for _ in 0..WARMUP_ITERATIONS {
         row = (row + 1) % (HEIGHT - 1);
         host.application_mut()
-            .advance(blocks_snapshot(row))
+            .advance(|| blocks_snapshot(row))
             .expect("warmup update");
         host.step(HostBatch {
             application_changed: true,
@@ -366,7 +370,7 @@ fn blocks_shaped_jsx_updates_emit_end_to_end_release_distribution() {
         row = (row + 1) % (HEIGHT - 1);
         let complete_started = Instant::now();
         host.application_mut()
-            .advance(blocks_snapshot(row))
+            .advance(|| blocks_snapshot(row))
             .expect("measured update");
         let native_started = Instant::now();
         let outcome = host.step(HostBatch {
@@ -503,7 +507,7 @@ fn rich_accessible_form_updates_emit_end_to_end_release_distribution() {
     );
     for revision in 1..=WARMUP_ITERATIONS {
         host.application_mut()
-            .advance(rich_form_snapshot(revision))
+            .advance(|| rich_form_snapshot(revision))
             .expect("warmup update");
         host.step(HostBatch {
             application_changed: true,
@@ -517,7 +521,7 @@ fn rich_accessible_form_updates_emit_end_to_end_release_distribution() {
         let revision = WARMUP_ITERATIONS + iteration + 1;
         let complete_started = Instant::now();
         host.application_mut()
-            .advance(rich_form_snapshot(revision))
+            .advance(|| rich_form_snapshot(revision))
             .expect("measured update");
         let native_started = Instant::now();
         let outcome = host.step(HostBatch {

@@ -1428,7 +1428,7 @@ fn compact_transient_overlay_keeps_the_declaration_canonical_during_resolution()
     let root_id = UiId::from("root").scoped("button");
     let mut overlay = TransientStateJournal::default();
 
-    apply_transient_state_staged(&declaration, &root_id, &mut state, &mut overlay);
+    apply_transient_state_staged(&declaration, &root_id, &mut state, &mut overlay, None);
     assert_eq!(
         declaration.style.background,
         Some(Background::Solid(0x112233))
@@ -1437,7 +1437,7 @@ fn compact_transient_overlay_keeps_the_declaration_canonical_during_resolution()
         overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))
     );
-    overlay.finalize(&declaration, &root_id);
+    overlay.finalize(&declaration, &root_id, None);
 
     assert_eq!(
         declaration.style.background,
@@ -1448,7 +1448,7 @@ fn compact_transient_overlay_keeps_the_declaration_canonical_during_resolution()
         Some(Background::Solid(0x445566))
     );
     let staged_bytes = overlay.storage_bytes();
-    overlay.finalize(&declaration, &root_id);
+    overlay.finalize(&declaration, &root_id, None);
     assert_eq!(
         overlay.style(&root_id, &declaration).background(),
         Some(Background::Solid(0x445566))
@@ -2273,6 +2273,9 @@ fn resolved_frame_releases_build_only_storage_and_reports_live_authority() {
     assert_eq!(resources.declaration_kind_sidecar_bytes, 0);
     assert!(resources.resolved_storage_bytes > 0);
     assert!(resources.retained_arena_bytes > 0);
+    assert!(resources.retained_id_index_bytes > 0);
+    assert!(resources.retained_id_index_bytes < resources.retained_arena_bytes);
+    assert!(resources.hash_table_overhead_bytes > 0);
     assert!(resources.accessibility_storage_bytes > 0);
     assert!(resources.paint_storage_bytes > 0);
     assert!(resources.interaction_storage_bytes > 0);

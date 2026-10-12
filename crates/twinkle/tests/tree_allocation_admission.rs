@@ -53,9 +53,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-fn native_cell_tree() -> Column<()> {
+fn native_cell_tree(cells: usize) -> Column<()> {
     let mut root = Column::new().width(640.0).height(480.0);
-    for index in 0..200 {
+    for index in 0..cells {
         root = root.child(
             Container::new()
                 .id(format!("cell-{index}"))
@@ -81,39 +81,43 @@ fn retained_tree_estimate_is_cross_checked_against_live_allocator_bytes() {
     // Warm global font/layout caches before isolating the tree lifetime.
     let mut warm_state = UiStateStore::default();
     drop(UiFrame::resolve(
-        native_cell_tree(),
+        native_cell_tree(800),
         FrameRequest::new(Rect::new(0.0, 0.0, 640.0, 480.0), &mut warm_state),
     ));
 
-    let mut state = UiStateStore::default();
-    reset_counter();
-    let frame = Box::new(UiFrame::resolve(
-        native_cell_tree(),
-        FrameRequest::new(Rect::new(0.0, 0.0, 640.0, 480.0), &mut state),
-    ));
-    let resources = frame.resource_diagnostics();
-    let live_bytes = LIVE_BYTES.load(Ordering::Relaxed).max(0) as usize;
-    let peak_bytes = PEAK_BYTES.load(Ordering::Relaxed).max(0) as usize;
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed);
-    ACTIVE.store(false, Ordering::SeqCst);
+    for cells in [50, 200, 800] {
+        let mut state = UiStateStore::default();
+        reset_counter();
+        let frame = Box::new(UiFrame::resolve(
+            native_cell_tree(cells),
+            FrameRequest::new(Rect::new(0.0, 0.0, 640.0, 480.0), &mut state),
+        ));
+        let resources = frame.resource_diagnostics();
+        let live_bytes = LIVE_BYTES.load(Ordering::Relaxed).max(0) as usize;
+        let peak_bytes = PEAK_BYTES.load(Ordering::Relaxed).max(0) as usize;
+        let allocations = ALLOCATIONS.load(Ordering::Relaxed);
+        ACTIVE.store(false, Ordering::SeqCst);
 
-    println!(
-        "tree_allocator_cross_check nodes={} estimated_owned_bytes={} allocator_live_bytes={} allocator_peak_bytes={} allocator_calls={} residual_bytes={}",
-        resources.node_count,
-        resources.estimated_owned_bytes,
-        live_bytes,
-        peak_bytes,
-        allocations,
-        live_bytes as isize - resources.estimated_owned_bytes as isize,
-    );
-    assert_eq!(resources.node_count, 401);
-    assert!(resources.estimated_owned_bytes > 0);
-    assert!(live_bytes > 0);
-    assert!(peak_bytes >= live_bytes);
-    assert!(allocations > 0);
-    assert!(resources.estimated_owned_bytes <= live_bytes);
-    assert!(
-        live_bytes - resources.estimated_owned_bytes <= live_bytes / 10,
-        "categorized estimate diverged by more than 10% from allocator-visible live bytes"
-    );
+        println!(
+            "tree_allocator_cross_check nodes={} estimated_owned_bytes={} allocator_live_bytes={} allocator_peak_bytes={} allocator_calls={} residual_bytes={}",
+            resources.node_count,
+            resources.estimated_owned_bytes,
+            live_bytes,
+            peak_bytes,
+            allocations,
+            live_bytes as isize - resources.estimated_owned_bytes as isize,
+        );
+        assert_eq!(resources.node_count, cells * 2 + 1);
+        assert!(resources.retained_id_index_bytes > 0);
+        assert!(resources.hash_table_overhead_bytes > 0);
+        assert!(resources.estimated_owned_bytes > 0);
+        assert!(live_bytes > 0);
+        assert!(peak_bytes >= live_bytes);
+        assert!(allocations > 0);
+        assert!(resources.estimated_owned_bytes <= live_bytes);
+        assert!(
+            live_bytes - resources.estimated_owned_bytes <= live_bytes / 10,
+            "categorized estimate diverged by more than 10% from allocator-visible live bytes"
+        );
+    }
 }

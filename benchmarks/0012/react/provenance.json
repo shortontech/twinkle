@@ -1,0 +1,16 @@
+{
+  "gitRevision": "1c4d33838b00afb51cc4d12238b22c99627ef099",
+  "sourceSha256": {
+    "twinkle-blocks.jsx": "931912c4b970f542cf7ea4818538cbed9bb95a352e14795856022bb618aa3b94",
+    "style.css": "19d3b639e3b11a5ed1ac109f3c03851bee4c3a1da4baf4a0e64595a9c238f951"
+  },
+  "changes": [
+    "export frozen Game class",
+    "controlled benchmark prop disables autonomous animation-frame model clock",
+    "expose existing React state and focus setters for normalized fixed-clock replay"
+  ],
+  "limitations": [
+    "normalized polls use the frozen native cadence; original browser animation-frame polling is a separate natural-cadence workload",
+    "diagnostic UI remains present and its extra host nodes must be reported"
+  ]
+}

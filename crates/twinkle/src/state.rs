@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, hash_map::RandomState},
     hash::{BuildHasher, Hash, Hasher},
+    num::NonZeroU64,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -31,10 +32,30 @@ pub struct UiId(Arc<UiIdData>);
 struct UiIdData {
     value: String,
     fingerprint: StableIdFingerprint,
+    mounted: Option<MountedUiToken>,
 }
 
 #[derive(Clone, Copy)]
 struct StableIdFingerprint(u64);
+
+/// Process-local identity assigned only after a readable ID is admitted into a
+/// retained mount. It is an equality fast path, never an authority or a
+/// replacement for the collision-safe canonical path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MountedUiToken(NonZeroU64);
+
+impl MountedUiToken {
+    pub(crate) const fn new(mount: u32, identity: u32) -> Self {
+        assert!(mount != 0, "mounted UI mount must be nonzero");
+        assert!(identity != 0, "mounted UI identity must be nonzero");
+        let packed = ((mount as u64) << 32) | identity as u64;
+        Self(NonZeroU64::new(packed).expect("nonzero mount makes token nonzero"))
+    }
+
+    pub(crate) const fn mount(self) -> u32 {
+        (self.0.get() >> 32) as u32
+    }
+}
 
 fn ui_id_fingerprint(value: &str) -> StableIdFingerprint {
     static RANDOM_STATE: OnceLock<RandomState> = OnceLock::new();
@@ -47,8 +68,14 @@ impl UiId {
     /// Creates an identity from an application-stable string.
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
+        crate::pipeline_trace::count_work!(4, 1);
+        crate::pipeline_trace::count_work!(5, value.len() as u64);
         let fingerprint = ui_id_fingerprint(&value);
-        Self(Arc::new(UiIdData { value, fingerprint }))
+        Self(Arc::new(UiIdData {
+            value,
+            fingerprint,
+            mounted: None,
+        }))
     }
 
     /// Creates a descendant identity by appending a slash-separated segment.
@@ -59,6 +86,28 @@ impl UiId {
     /// Returns the complete stable identity.
     pub fn as_str(&self) -> &str {
         &self.0.value
+    }
+
+    pub(crate) fn mounted_token(&self) -> Option<MountedUiToken> {
+        self.0.mounted
+    }
+
+    pub(crate) fn with_mounted_token(self, token: MountedUiToken) -> Self {
+        if self.0.mounted == Some(token) {
+            return self;
+        }
+        let data = match Arc::try_unwrap(self.0) {
+            Ok(mut data) => {
+                data.mounted = Some(token);
+                data
+            }
+            Err(data) => UiIdData {
+                value: data.value.clone(),
+                fingerprint: data.fingerprint,
+                mounted: Some(token),
+            },
+        };
+        Self(Arc::new(data))
     }
 
     pub(crate) fn allocation_identity(&self) -> usize {
@@ -82,7 +131,9 @@ impl std::fmt::Debug for UiId {
 
 impl PartialEq for UiId {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.mounted.is_some() && self.0.mounted == other.0.mounted)
+            || self.as_str() == other.as_str()
     }
 }
 
@@ -1100,6 +1151,8 @@ mod tests {
         equal.hash(&mut equal_hash);
         assert_eq!(id_hash.finish(), equal_hash.finish());
         assert_eq!(std::mem::size_of::<UiId>(), std::mem::size_of::<usize>());
+        assert_eq!(std::mem::size_of::<MountedUiToken>(), 8);
+        assert_eq!(std::mem::size_of::<Option<MountedUiToken>>(), 8);
     }
 
     #[test]
@@ -1108,10 +1161,12 @@ mod tests {
         let first = UiId(Arc::new(UiIdData {
             value: "root/first".into(),
             fingerprint,
+            mounted: None,
         }));
         let second = UiId(Arc::new(UiIdData {
             value: "root/second".into(),
             fingerprint,
+            mounted: None,
         }));
         assert_ne!(first, second);
 
@@ -1121,6 +1176,32 @@ mod tests {
         assert_eq!(values.len(), 2);
         assert_eq!(values.get(&first), Some(&1));
         assert_eq!(values.get(&second), Some(&2));
+    }
+
+    #[test]
+    fn mounted_ui_ids_preserve_textual_identity_across_mounts() {
+        use std::hash::{Hash, Hasher};
+
+        let plain = UiId::new("root/board/cell-17");
+        let first = plain.clone().with_mounted_token(MountedUiToken::new(7, 11));
+        let same_token =
+            UiId::new("root/board/cell-17").with_mounted_token(MountedUiToken::new(7, 11));
+        let foreign_mount =
+            UiId::new("root/board/cell-17").with_mounted_token(MountedUiToken::new(8, 11));
+        let replacement_token =
+            UiId::new("root/board/cell-17").with_mounted_token(MountedUiToken::new(7, 12));
+
+        assert_eq!(first, same_token);
+        assert_eq!(first, foreign_mount);
+        assert_eq!(first, replacement_token);
+        assert_eq!(first, plain);
+
+        let hashes = [first, same_token, foreign_mount, replacement_token, plain].map(|id| {
+            let mut hash = std::hash::DefaultHasher::new();
+            id.hash(&mut hash);
+            hash.finish()
+        });
+        assert!(hashes.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
     #[test]

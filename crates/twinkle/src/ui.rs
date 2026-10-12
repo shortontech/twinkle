@@ -19,6 +19,23 @@ use crate::{
 
 pub type Color = u32;
 
+/// Approximate std HashMap/HashSet allocation beyond capacity * entry size.
+/// The current SwissTable backend uses power-of-two buckets, one control byte
+/// per bucket, and a mirrored 16-byte control group on this 64-bit target.
+/// Capacity is not an allocation API (especially after deletions); this is an
+/// explicitly reported estimate, cross-checked against the allocator, not an
+/// assertion about std's stable layout. No table walk or allocation is needed.
+fn estimated_hash_table_overhead<Entry>(capacity: usize) -> usize {
+    if capacity == 0 {
+        return 0;
+    }
+    let buckets = capacity.checked_next_power_of_two().unwrap_or(capacity);
+    let entries = buckets
+        .saturating_sub(capacity)
+        .saturating_mul(std::mem::size_of::<Entry>());
+    entries.saturating_add(buckets).saturating_add(16)
+}
+
 pub(crate) enum TextMessageMapper<Message> {
     Function(fn(String) -> Message),
     Closure(Arc<dyn Fn(String) -> Message>),
@@ -3398,6 +3415,7 @@ mod background_policy_tests {
     use super::*;
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "prohibited pure-black/white UI background in root/dialog")]
     fn runtime_policy_attributes_extreme_fills_to_the_component_root() {
         assert_background_color_policy(
