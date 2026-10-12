@@ -14,10 +14,10 @@
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::time::Instant;
+use std::{rc::Rc, time::Instant};
 
 mod bindings;
-pub use bindings::{DataPublisher, HostBindings};
+pub use bindings::{DataPublisher, HostBindings, NativeJsonCallback};
 mod attribution;
 pub mod composition;
 mod engine;
@@ -65,6 +65,8 @@ pub struct JsxRuntime {
     projection_names: Vec<String>,
     projection_identities: std::collections::BTreeMap<String, std::rc::Rc<Value>>,
     checkpoint: Option<(u64, Option<std::rc::Rc<Value>>)>,
+    transaction_prepared: bool,
+    after_accept_pending: bool,
     invalidated: bool,
     maintenance_checkpoint: u64,
     maintenance_drain_pending: bool,
@@ -380,10 +382,20 @@ impl JsxRuntime {
             projection_names: bindings.projections.clone(),
             projection_identities: Default::default(),
             checkpoint: None,
+            transaction_prepared: false,
+            after_accept_pending: false,
             invalidated: false,
             maintenance_checkpoint: 0,
             maintenance_drain_pending: false,
         };
+        for (name, callback) in &bindings.native_callbacks {
+            runtime
+                .engine
+                .install_json_callback(name, Rc::clone(callback))?;
+        }
+        for name in &bindings.native_proxy_guards {
+            runtime.engine.install_proxy_guard(name)?;
+        }
         #[cfg(feature = "pipeline-attribution")]
         if attribution::configured() {
             runtime.eval(&attribution::bootstrap(BOOTSTRAP))?;
@@ -407,6 +419,14 @@ impl JsxRuntime {
     /// at most once and shares the bootstrap, hooks, effects, and surface state.
     pub fn new_modules(graph: &JsxModuleGraph, data: Option<&str>) -> Result<Self, String> {
         Self::new(&graph.compile()?, data)
+    }
+
+    pub fn new_modules_with_bindings(
+        graph: &JsxModuleGraph,
+        data: Option<&str>,
+        bindings: &HostBindings,
+    ) -> Result<Self, String> {
+        Self::new_with_bindings(&graph.compile()?, data, bindings)
     }
 
     pub fn hot_install_modules(
@@ -470,6 +490,18 @@ impl JsxRuntime {
             return Err("runtime checkpoint was invalidated".into());
         }
         self.engine.call_global_void(name, arguments)
+    }
+
+    fn call_native_void_without_microtasks(
+        &mut self,
+        name: &str,
+        arguments: &[Value],
+    ) -> Result<(), String> {
+        if self.invalidated {
+            return Err("runtime checkpoint was invalidated".into());
+        }
+        self.engine
+            .call_global_void_without_microtasks(name, arguments)
     }
 
     fn call_native_json<T: DeserializeOwned>(
@@ -965,36 +997,135 @@ impl JsxRuntime {
     /// or irreversible restoration invalidates execution. Package globals and
     /// arbitrary closure state remain outside this contract.
     pub fn begin_transaction(&mut self) -> Result<(), String> {
-        if self.checkpoint.is_some() {
+        if self.checkpoint.is_some() || self.after_accept_pending {
             return Err("runtime transaction already pending".into());
         }
         self.call_native_void("__twinkleBeginCheckpoint", &[])?;
         self.checkpoint = Some((self.settings_revision, self.settings_data.clone()));
+        self.transaction_prepared = false;
+        Ok(())
+    }
+
+    /// Validate that the runtime checkpoint can enter a callback-free final
+    /// acceptance switch. This does not consume the checkpoint, so another
+    /// participant's failed preparation can still roll this runtime back.
+    pub fn prepare_transaction(&mut self) -> Result<(), String> {
+        if self.checkpoint.is_none() {
+            return Err("runtime transaction is unavailable".into());
+        }
+        self.call_native_void("__twinklePrepareCheckpoint", &[])?;
+        self.transaction_prepared = true;
+        Ok(())
+    }
+
+    /// Callback- and microtask-free irreversible acceptance switch.
+    pub fn finalize_transaction(&mut self) -> Result<(), String> {
+        if !self.transaction_prepared {
+            return Err("runtime transaction is not prepared".into());
+        }
+        let _checkpoint = self
+            .checkpoint
+            .take()
+            .ok_or("runtime transaction is unavailable")?;
+        if let Err(error) = self
+            .call_native_void_without_microtasks("__twinkleFinishCheckpoint", &[Value::from(true)])
+        {
+            self.invalidated = true;
+            return Err(error);
+        }
+        self.after_accept_pending = true;
+        self.transaction_prepared = false;
+        Ok(())
+    }
+
+    /// Release passive lifecycle callbacks after every participant finalized.
+    pub fn after_transaction_accept(&mut self) -> Result<(), String> {
+        if !self.after_accept_pending {
+            return Err("runtime after-accept lifecycle is unavailable".into());
+        }
+        self.after_accept_pending = false;
+        self.call_native_void("__twinkleAfterCheckpoint", &[])
+    }
+
+    /// Whether accepted passive lifecycle callbacks await a fresh transaction.
+    pub fn after_transaction_work_pending(&mut self) -> Result<bool, String> {
+        self.call_host_observation("__twinkleOuterLifecyclePending", &[])
+    }
+
+    /// Capture a fresh checkpoint, then release accepted lifecycle callbacks
+    /// inside it. Hosts must render/validate and prepare/finalize this new turn.
+    pub fn begin_after_transaction(&mut self) -> Result<(), String> {
+        self.capture_after_transaction()?;
+        if let Err(error) = self.release_after_transaction() {
+            let _ = self.finish_transaction(false);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn capture_after_transaction(&mut self) -> Result<(), String> {
+        if !self.after_accept_pending || self.checkpoint.is_some() {
+            return Err("runtime after-accept transaction is unavailable".into());
+        }
+        self.call_native_void("__twinkleBeginCheckpoint", &[Value::from(true)])?;
+        self.checkpoint = Some((self.settings_revision, self.settings_data.clone()));
+        self.transaction_prepared = false;
+        Ok(())
+    }
+
+    pub(crate) fn release_after_transaction(&mut self) -> Result<(), String> {
+        if !self.after_accept_pending || self.checkpoint.is_none() {
+            return Err("runtime after-accept lifecycle is unavailable".into());
+        }
+        self.after_accept_pending = false;
+        self.call_native_void("__twinkleAfterCheckpoint", &[])
+    }
+
+    pub(crate) fn cancel_after_transaction_capture(&mut self) -> Result<(), String> {
+        let (revision, data) = self
+            .checkpoint
+            .take()
+            .ok_or("runtime lifecycle checkpoint is unavailable")?;
+        self.mount_settings_identity = None;
+        self.mount_transport_identity = None;
+        self.projection_identities.clear();
+        if let Err(error) = self.call_native_void_without_microtasks(
+            "__twinkleFinishCheckpoint",
+            &[Value::from(false), Value::from(true)],
+        ) {
+            self.invalidated = true;
+            return Err(error);
+        }
+        self.settings_revision = revision;
+        self.settings_data = data;
+        self.transaction_prepared = false;
         Ok(())
     }
 
     pub fn finish_transaction(&mut self, accepted: bool) -> Result<(), String> {
+        if accepted {
+            self.prepare_transaction()?;
+            self.finalize_transaction()?;
+            return self.after_transaction_accept();
+        }
         let (revision, data) = self
             .checkpoint
             .take()
             .ok_or("runtime transaction is unavailable")?;
         // A rejected transaction restores a different settings-data owner.
         // Discard the comparison shortcut before attempting that restoration.
-        if !accepted {
-            self.mount_settings_identity = None;
-            self.mount_transport_identity = None;
-            self.projection_identities.clear();
-        }
-        if let Err(error) =
-            self.call_native_void("__twinkleFinishCheckpoint", &[Value::from(accepted)])
+        self.mount_settings_identity = None;
+        self.mount_transport_identity = None;
+        self.projection_identities.clear();
+        if let Err(error) = self
+            .call_native_void_without_microtasks("__twinkleFinishCheckpoint", &[Value::from(false)])
         {
             self.invalidated = true;
             return Err(error);
         }
-        if !accepted {
-            self.settings_revision = revision;
-            self.settings_data = data;
-        }
+        self.settings_revision = revision;
+        self.settings_data = data;
+        self.transaction_prepared = false;
         Ok(())
     }
 
@@ -4087,6 +4218,43 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn outer_transaction_defers_passive_effects_until_after_acceptance() {
+        let mut runtime = JsxRuntime::new(
+            r#"
+let outerEffectRuns=0;
+function App(){useEffect(()=>{outerEffectRuns++;},[]);return h(Text,null,'ready');}
+"#,
+            None,
+        )
+        .unwrap();
+        runtime.begin_transaction().unwrap();
+        let _: Value = runtime
+            .render("__twinkleRender()", |value| Ok(value.clone()))
+            .unwrap();
+        assert_eq!(runtime.eval_json::<u64>("outerEffectRuns").unwrap(), 0);
+        runtime.prepare_transaction().unwrap();
+        runtime.finalize_transaction().unwrap();
+        assert_eq!(runtime.eval_json::<u64>("outerEffectRuns").unwrap(), 0);
+        runtime.after_transaction_accept().unwrap();
+        assert_eq!(runtime.eval_json::<u64>("outerEffectRuns").unwrap(), 1);
+
+        let mut rejected = JsxRuntime::new(
+            r#"
+let rejectedEffectRuns=0;
+function App(){useEffect(()=>{rejectedEffectRuns++;},[]);return h(Text,null,'ready');}
+"#,
+            None,
+        )
+        .unwrap();
+        rejected.begin_transaction().unwrap();
+        let _: Value = rejected
+            .render("__twinkleRender()", |value| Ok(value.clone()))
+            .unwrap();
+        rejected.finish_transaction(false).unwrap();
+        assert_eq!(rejected.eval_json::<u64>("rejectedEffectRuns").unwrap(), 0);
     }
 
     #[test]

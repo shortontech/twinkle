@@ -1,0 +1,17 @@
+{
+  "redux": {
+    "initial": { "count": 0, "label": "zero" },
+    "ignored": { "type": "ignored" },
+    "ignoredRootShared": true,
+    "dispatched": { "type": "counter/add", "payload": 2 },
+    "final": { "count": 2, "label": "zero" },
+    "combinedIgnoredRootShared": true
+  },
+  "toolkit": {
+    "action": { "type": "counter/add", "payload": 3 },
+    "actionType": "counter/add",
+    "sliceName": "value",
+    "sliceAction": { "type": "value/replace", "payload": 9 },
+    "final": 9
+  }
+}

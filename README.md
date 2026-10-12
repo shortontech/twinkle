@@ -82,6 +82,7 @@ Apache-2.0 except separately licensed dependencies. Twinkle is adopted by Nickel
 - [Supported CSS subset](crates/twinkle-presentation/docs/css.md)
 - [Workspace crate map](docs/crate-map.md)
 - [Accessibility capabilities](docs/accessibility.md)
+- [Native transactional Redux](docs/native-redux.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Support, platforms, and compatibility](SUPPORT.md)
 - [Contributing](CONTRIBUTING.md)

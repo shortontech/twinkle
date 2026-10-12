@@ -995,6 +995,15 @@ impl<H: CompositionHost> CompositionRuntime<H> {
             return Err("cannot query idle work during a composition transaction".into());
         }
         self.validate_mount(root)?;
+        for package in self.packages.values() {
+            if package
+                .runtime
+                .borrow_mut()
+                .after_transaction_work_pending()?
+            {
+                return Ok(true);
+            }
+        }
         for id in std::iter::once(root.id).chain(
             self.nested_mounts
                 .iter()
@@ -1222,15 +1231,149 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         self.checkpoint.is_some()
     }
 
+    /// Whether any owner has accepted passive lifecycle work awaiting a fresh
+    /// outer composition transaction.
+    pub fn after_transaction_work_pending(&mut self) -> Result<bool, String> {
+        if self.checkpoint.is_some() {
+            return Err("composition lifecycle query requires an idle transaction".into());
+        }
+        for package in self.packages.values() {
+            if package
+                .runtime
+                .borrow_mut()
+                .after_transaction_work_pending()?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Capture every owner, then release each accepted lifecycle queue inside
+    /// this new rollbackable composition turn.
+    pub fn begin_after_transaction(&mut self) -> Result<(), String> {
+        if self.checkpoint.is_some() {
+            return Err("composition transaction already pending".into());
+        }
+        let mut started = Vec::new();
+        let mut lifecycle = Vec::new();
+        for (owner, package) in &self.packages {
+            let runtime = &mut *package.runtime.borrow_mut();
+            let has_lifecycle = match runtime.after_transaction_work_pending() {
+                Ok(value) => value,
+                Err(error) => {
+                    for owner in started {
+                        let runtime = &mut *self.packages[&owner].runtime.borrow_mut();
+                        let _ = if lifecycle.contains(&owner) {
+                            runtime.cancel_after_transaction_capture()
+                        } else {
+                            runtime.finish_transaction(false)
+                        };
+                    }
+                    return Err(error);
+                }
+            };
+            let result = if has_lifecycle {
+                runtime.capture_after_transaction()
+            } else {
+                runtime.begin_transaction()
+            };
+            if let Err(error) = result {
+                for owner in started {
+                    let runtime = &mut *self.packages[&owner].runtime.borrow_mut();
+                    let _ = if lifecycle.contains(&owner) {
+                        runtime.cancel_after_transaction_capture()
+                    } else {
+                        runtime.finish_transaction(false)
+                    };
+                }
+                return Err(error);
+            }
+            started.push(owner.clone());
+            if has_lifecycle {
+                lifecycle.push(owner.clone());
+            }
+        }
+        for owner in lifecycle {
+            if let Err(error) = self.packages[&owner]
+                .runtime
+                .borrow_mut()
+                .release_after_transaction()
+            {
+                for owner in &started {
+                    let _ = self.packages[owner]
+                        .runtime
+                        .borrow_mut()
+                        .finish_transaction(false);
+                }
+                return Err(error);
+            }
+        }
+        self.checkpoint = Some(CompositionCheckpoint::<H> {
+            mounts: self.mounts.clone(),
+            effects: self.effects.clone(),
+            nested_mounts: self.nested_mounts.clone(),
+            callbacks: self.callbacks.clone(),
+            children: self.children.clone(),
+            data: self
+                .packages
+                .iter()
+                .map(|(owner, package)| (owner.clone(), package.data.clone()))
+                .collect(),
+            scheduled_renders: self.scheduled_renders.clone(),
+            patch_authority: self.patch_authority.clone(),
+        });
+        Ok(())
+    }
+
     pub fn finish_transaction(&mut self, accepted: bool) -> Result<(), String> {
         let checkpoint = self
             .checkpoint
             .take()
             .ok_or("composition transaction is unavailable")?;
         let mut failure = None;
-        for package in self.packages.values() {
-            if let Err(error) = package.runtime.borrow_mut().finish_transaction(accepted) {
-                failure = Some(error);
+        if accepted {
+            for package in self.packages.values() {
+                if let Err(error) = package.runtime.borrow_mut().prepare_transaction() {
+                    failure = Some(error);
+                    break;
+                }
+            }
+            if failure.is_some() {
+                for package in self.packages.values() {
+                    let _ = package.runtime.borrow_mut().finish_transaction(false);
+                }
+            }
+            // Prepare happens before this entry point. Discard every owner
+            // checkpoint before releasing any passive lifecycle callback.
+            if failure.is_none() {
+                for package in self.packages.values() {
+                    if let Err(error) = package.runtime.borrow_mut().finalize_transaction() {
+                        failure = Some(error);
+                    }
+                }
+            }
+            // Accepted passive lifecycle work remains queued. The host releases
+            // it with `begin_after_transaction`, under a fresh all-owner checkpoint.
+            if failure.is_none() {
+                for package in self.packages.values() {
+                    let runtime = &mut *package.runtime.borrow_mut();
+                    match runtime.after_transaction_work_pending() {
+                        Ok(false) => {
+                            if let Err(error) = runtime.after_transaction_accept() {
+                                failure = Some(error);
+                            }
+                        }
+                        Ok(true) => {}
+                        Err(error) => failure = Some(error),
+                    }
+                }
+            }
+        } else {
+            for package in self.packages.values() {
+                if let Err(error) = package.runtime.borrow_mut().finish_transaction(false) {
+                    failure = Some(error);
+                }
             }
         }
         if !accepted {
@@ -1975,12 +2118,16 @@ impl<H: CompositionHost> CompositionRuntime<H> {
         root: &ComponentMount,
         accepted_events: &BTreeMap<u64, ComponentEventHandle<H>>,
         accepted_source: &Value,
-        validate: impl FnMut(
+        mut validate: impl FnMut(
             &NativePatchEnvelope,
             &BTreeMap<u64, ComponentEventHandle<H>>,
             u64,
         ) -> Result<T, String>,
     ) -> Result<ScheduledExpandedBatch<H, T>, String> {
+        let lifecycle_turn = self.after_transaction_work_pending()?;
+        if lifecycle_turn {
+            self.begin_after_transaction()?;
+        }
         let mut requested = false;
         let owned_mounts = std::iter::once(root.id)
             .chain(
@@ -2004,15 +2151,18 @@ impl<H: CompositionHost> CompositionRuntime<H> {
             requested |= runtime.reconciliation_requested()?;
         }
         if !requested {
-            self.begin_transaction()?;
+            if !lifecycle_turn {
+                self.begin_transaction()?;
+            }
             return Ok(ScheduledExpandedBatch::Unchanged);
         }
-        self.dispatch_expanded_batch_scheduled_pending_validated(
+        self.dispatch_expanded_batch_scheduled_pending_with_validator(
             root,
             &[],
             accepted_events,
             accepted_source,
-            validate,
+            &mut validate,
+            !lifecycle_turn,
         )
     }
 

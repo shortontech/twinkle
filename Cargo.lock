@@ -4013,6 +4013,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "twinkle-redux"
+version = "0.1.0"
+
+[[package]]
+name = "twinkle-redux-jsx"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "twinkle-jsx-runtime",
+ "twinkle-redux",
+]
+
+[[package]]
 name = "twinkle-render-assets"
 version = "0.2.0"
 dependencies = [
@@ -4054,6 +4067,7 @@ dependencies = [
  "tracing",
  "twinkle-input",
  "twinkle-macros",
+ "twinkle-redux",
  "twinkle-render-assets",
  "unicode-segmentation",
  "wgpu",
@@ -4074,6 +4088,7 @@ dependencies = [
  "twinkle-jsx-runtime",
  "twinkle-presentation",
  "twinkle-protocol",
+ "twinkle-redux-jsx",
  "twinkle-testkit",
  "twinkle-ui",
 ]

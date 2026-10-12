@@ -8,6 +8,8 @@ members = [
     "crates/twinkle-presentation",
     "crates/twinkle-protocol",
     "crates/twinkle-render-assets",
+    "crates/twinkle-redux",
+    "crates/twinkle-redux-jsx",
     "crates/twinkle-testkit",
     "crates/twinkle-theme",
     "crates/twinkle-workbench",

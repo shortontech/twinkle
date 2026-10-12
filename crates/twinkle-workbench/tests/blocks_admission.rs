@@ -18,6 +18,7 @@ use twinkle_presentation::{
     css::StyleSheet,
 };
 use twinkle_protocol::SurfaceBounds;
+use twinkle_redux_jsx::ReduxJsxRuntime;
 
 const WIDTH: usize = 10;
 const HEIGHT: usize = 20;
@@ -51,6 +52,37 @@ const SOURCE: &str = r#"
             </Column>
         </Window>;
     }
+"#;
+
+const REDUX_SOURCE: &str = r#"
+    import './fixture.css';
+    import {createStore, Provider, useSelector} from 'twinkle/redux';
+    globalThis.measuredStore = createStore((state=twinkle.data, action) =>
+        action.type === 'replace' ? action.payload : state);
+    const Cell = memo(function Cell({color}) {
+        return <Div className={color ? 'cell filled ' + color : 'cell'} />;
+    });
+    function Board() {
+        const data = useSelector(state => state);
+        const board = data.board || [];
+        return <Window id="main" width={800} height={720} title="Redux Blocks admission" background={0xff101820}>
+            <Column className="app">
+                <Row className="topbar">
+                    <Text className="brand">Redux Blocks admission</Text>
+                    <Text>{'Score ' + data.score + '  ·  Lines ' + data.lines + '  ·  Level ' + data.level}</Text>
+                </Row>
+                <Row className="play">
+                    <Div className="board" role="group" aria-label="Game board">{board.map((color, index) => <Cell key={index} color={color} />)}</Div>
+                    <Column className="side">
+                        <Text className="status">In play</Text><Text>Next</Text>
+                        <Div className="next-piece"><Div className="next-block" /></Div>
+                        <Text>Controls</Text><Text className="hint">Event-driven controls</Text>
+                    </Column>
+                </Row>
+            </Column>
+        </Window>;
+    }
+    export default function App() { return <Provider store={measuredStore}><Board /></Provider>; }
 "#;
 
 const CSS: &str = r#"
@@ -110,6 +142,40 @@ const RICH_FORM_SOURCE: &str = r#"
     }
 "#;
 
+const REDUX_RICH_FORM_SOURCE: &str = r#"
+    import './fixture.css';
+    import {createStore, Provider, useSelector} from 'twinkle/redux';
+    globalThis.measuredStore = createStore((state=twinkle.data, action) =>
+        action.type === 'replace' ? action.payload : state);
+    const FieldRow = memo(function FieldRow({field, value}) {
+        return <Column className="field-row"><Text className="label">{field.label}</Text>
+            <TextField className={field.multiline ? 'field notes' : 'field'} id={field.id}
+                value={value} placeholder={field.placeholder} accessibilityLabel={field.label}
+                onChange={() => {}} onFocus={() => {}} onBlur={() => {}} /></Column>;
+    });
+    function Form() {
+        const data = useSelector(state => state);
+        return <Window id="main" width={800} height={720} title="Redux accessible form" background={0xff182028}>
+            <Column className="shell"><Text className="heading">Account details</Text>
+                <Text className="description">A representative accessible form with retained controls and scrolling.</Text>
+                <ScrollView id="form-scroll" className="form-scroll" height={500}>
+                    <Column className="form" role="group" aria-label="Account details form">
+                        {data.fields.map(field => <FieldRow key={field.id} field={field} value={data.values[field.id]} />)}
+                        <Checkbox id="updates" checked={data.updates} label="Receive product updates" accessibilityLabel="Receive product updates" onChange={() => {}} />
+                        <Slider id="volume" value={data.volume} min={0} max={100} step={1} accessibilityLabel="Notification volume" onChange={() => {}} />
+                        <Select id="region" value={data.region} accessibilityLabel="Region" onClick={() => {}}>
+                            <Option id="americas" onClick={() => {}}>Americas</Option><Option id="europe" onClick={() => {}}>Europe</Option><Option id="asia" onClick={() => {}}>Asia Pacific</Option>
+                        </Select>
+                        <Row className="actions"><Button id="cancel" className="button" accessibilityLabel="Discard account changes" onClick={() => {}}>Cancel</Button>
+                            <Button id="save" className="button primary" accessibilityLabel="Save account changes" onClick={() => {}}>Save changes</Button></Row>
+                    </Column>
+                </ScrollView><Text className="status">{'Revision ' + data.revision + ': ' + data.status}</Text>
+            </Column>
+        </Window>;
+    }
+    export default function App() { return <Provider store={measuredStore}><Form /></Provider>; }
+"#;
+
 const RICH_FORM_CSS: &str = r#"
     :root { --ink: #e8eef2; --muted: #aebbc5; --panel: #22303b; --accent: #58d6c5; }
     .shell { width: 100%; height: 100%; padding: 20px; gap: 10px; background: #182028; color: var(--ink); }
@@ -156,6 +222,160 @@ struct JsxAdmission {
     changed_view_ids: Option<Vec<UiId>>,
     title: &'static str,
     counters: PublicationCounters,
+}
+
+/// The same retained-presentation admission path as `JsxAdmission`, with the
+/// authoritative snapshot carried by the native Redux adapter instead of the
+/// external `twinkle.data` producer.
+struct ReduxAdmission {
+    runtime: ReduxJsxRuntime,
+    accepted: RetainedPanelTree,
+    bounds: SurfaceBounds,
+    stylesheet: StyleSheet,
+    images: PluginImages,
+    sample: StageSample,
+    changed_view_ids: Option<Vec<UiId>>,
+    title: &'static str,
+}
+
+impl ReduxAdmission {
+    fn new(
+        source: &'static str,
+        css: &'static str,
+        initial: serde_json::Value,
+        title: &'static str,
+    ) -> Result<Self, String> {
+        let graph = ReduxJsxRuntime::graph(
+            "fixture.tsx",
+            [
+                ModuleSource {
+                    path: "fixture.tsx",
+                    source,
+                },
+                ModuleSource {
+                    path: "fixture.css",
+                    source: css,
+                },
+            ],
+        )?;
+        let stylesheet = StyleSheet::compile(&graph.stylesheet()?)?;
+        let bounds = SurfaceBounds::from_json(
+            r#"{"surfaces":[{"id":"main","kind":"window","width":800,"height":720}]}"#,
+        )?;
+        let initial_json = serde_json::to_string(&initial).map_err(|error| error.to_string())?;
+        let mut runtime = ReduxJsxRuntime::new(&graph, Some(&initial_json))?;
+        let accepted =
+            render_retained_panel(&mut runtime, &bounds, Some("main"), "__twinkleRender()", 1)?;
+        accepted.validate_candidate(accepted.source(), &bounds, Some("main"), &stylesheet)?;
+        // Admit one ordinary outer turn and its fresh passive-effect turn so
+        // `useSelector` subscriptions are installed before timing begins.
+        runtime.begin_transaction()?;
+        let _: serde_json::Value =
+            runtime.render("__twinkleRender()", |value| Ok(value.clone()))?;
+        runtime.prepare_accept()?;
+        runtime.finalize_accept()?;
+        runtime.after_accept()?;
+        while runtime.effect_turn_pending()? {
+            runtime.begin_effect_turn()?;
+            let _: serde_json::Value =
+                runtime.render("__twinkleRender()", |value| Ok(value.clone()))?;
+            runtime.prepare_accept()?;
+            runtime.finalize_accept()?;
+            runtime.after_accept()?;
+        }
+        Ok(Self {
+            runtime,
+            accepted,
+            bounds,
+            stylesheet,
+            images: PluginImages::default(),
+            sample: StageSample::default(),
+            changed_view_ids: None,
+            title,
+        })
+    }
+
+    fn advance(&mut self, snapshot: serde_json::Value) -> Result<(), String> {
+        let snapshot_started = Instant::now();
+        let snapshot = serde_json::to_string(&snapshot).map_err(|error| error.to_string())?;
+        self.sample.snapshot = snapshot_started.elapsed();
+        self.runtime.begin_transaction()?;
+        let reconcile_started = Instant::now();
+        let outcome = self.runtime.dispatch_patched(&format!(
+            "(measuredStore.dispatch({{type:'replace',payload:{snapshot}}}),__twinkleDispatchBatchPatched([]))"
+        ));
+        self.sample.patch_reconciliation = reconcile_started.elapsed();
+        let mut changed_view_ids = None;
+        let result: Result<Option<RetainedPanelTree>, String> = (|| {
+            let admission_started = Instant::now();
+            let candidate = match outcome? {
+                ScheduledPatch::Unchanged => None,
+                ScheduledPatch::Patched {
+                    patch,
+                    transport_bytes,
+                    ..
+                } => {
+                    let candidate = self.accepted.clone();
+                    changed_view_ids = candidate
+                        .changed_element_ids(&patch)
+                        .map(|ids| ids.into_iter().map(UiId::from).collect());
+                    let generation = candidate.generation() + 1;
+                    let candidate = candidate
+                        .apply_patch_owned(
+                            &patch,
+                            &self.bounds,
+                            Some("main"),
+                            &self.stylesheet,
+                            generation,
+                            transport_bytes,
+                        )?
+                        .0;
+                    Some(candidate)
+                }
+            };
+            self.runtime.finish_patch_render(true)?;
+            self.runtime.finish_event(true)?;
+            self.sample.patch_admission = admission_started.elapsed();
+            if !self.runtime.take_effects()?.is_empty() {
+                return Err("Redux reconciliation emitted an effect".into());
+            }
+            Ok(candidate)
+        })();
+        match result {
+            Ok(candidate) => {
+                self.runtime.prepare_accept()?;
+                self.runtime.finalize_accept()?;
+                self.runtime.after_accept()?;
+                if let Some(candidate) = candidate {
+                    self.accepted = candidate;
+                }
+                self.changed_view_ids = changed_view_ids;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.runtime.abort();
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Application for ReduxAdmission {
+    type Message = PluginMessage;
+
+    fn update(&mut self, _message: Self::Message) {}
+
+    fn view(&self, _context: ViewContext) -> impl View<Self::Message> {
+        self.accepted.node().view(&self.images, &self.stylesheet)
+    }
+
+    fn title(&self) -> &str {
+        self.title
+    }
+
+    fn take_changed_view_ids(&mut self) -> Option<Vec<UiId>> {
+        self.changed_view_ids.take()
+    }
 }
 
 impl JsxAdmission {
@@ -767,4 +987,104 @@ fn rich_accessible_form_updates_emit_end_to_end_release_distribution() {
         ticks_per_second,
     );
     println!("twinkle_release_admission={report}");
+}
+
+fn run_redux_workload(
+    suite: &str,
+    source: &'static str,
+    css: &'static str,
+    snapshot: impl Fn(usize) -> serde_json::Value,
+    minimum_semantic_nodes: usize,
+) {
+    let mut host = UiHost::new(
+        ReduxAdmission::new(source, css, snapshot(0), "Redux admission").expect("fixture"),
+        800,
+        720,
+    );
+    for revision in 1..=WARMUP_ITERATIONS {
+        host.application_mut()
+            .advance(snapshot(revision))
+            .expect("warmup update");
+        host.step(HostBatch {
+            application_changed: true,
+            ..HostBatch::default()
+        });
+    }
+    let mut samples = Samples::default();
+    let workload_started = Instant::now();
+    for iteration in 0..MEASURED_ITERATIONS {
+        let revision = WARMUP_ITERATIONS + iteration + 1;
+        let complete_started = Instant::now();
+        host.application_mut()
+            .advance(snapshot(revision))
+            .expect("measured Redux update");
+        let native_started = Instant::now();
+        let outcome = host.step(HostBatch {
+            application_changed: true,
+            ..HostBatch::default()
+        });
+        let native_frame = native_started.elapsed();
+        let complete = complete_started.elapsed();
+        samples.record(
+            &host.application().sample,
+            Duration::from_micros(outcome.telemetry.paint_list_us),
+            Duration::from_micros(outcome.telemetry.layout_us),
+            native_frame,
+            complete,
+            outcome.telemetry,
+        );
+        assert!(host.semantic_nodes().len() >= minimum_semantic_nodes);
+    }
+    let elapsed = workload_started.elapsed();
+    let resources = host.inspect().resources;
+    println!(
+        "twinkle_redux_release_admission={}",
+        json!({
+            "schema": 1,
+            "suite": suite,
+            "iterations": MEASURED_ITERATIONS,
+            "viewport": {"width": 800, "height": 720},
+            "summary": {
+                "total_us": micros(elapsed),
+                "average_tick_us": micros(elapsed / MEASURED_ITERATIONS as u32),
+            },
+            "timings": {
+                "bridgeAndCheckpoint": {"p50_us": micros(percentile(&samples.patch_reconciliation, 50)), "p95_us": micros(percentile(&samples.patch_reconciliation, 95))},
+                "nativeAdmission": {"p50_us": micros(percentile(&samples.patch_admission, 50)), "p95_us": micros(percentile(&samples.patch_admission, 95))},
+                "nativeFrame": {"p50_us": micros(percentile(&samples.native_frame, 50)), "p95_us": micros(percentile(&samples.native_frame, 95))},
+                "complete": {"p50_us": micros(percentile(&samples.complete, 50)), "p95_us": micros(percentile(&samples.complete, 95)), "p99_us": micros(percentile(&samples.complete, 99))},
+            },
+            "resources": {
+                "nodes": resources.node_count,
+                "estimatedOwnedBytes": resources.estimated_owned_bytes,
+                "peakOverlappingGenerationBytes": resources.peak_overlapping_generation_bytes,
+                "retainedArenaBytes": resources.retained_arena_bytes,
+                "resolvedStorageBytes": resources.resolved_storage_bytes,
+            },
+        })
+    );
+}
+
+#[test]
+#[ignore = "release-profile Redux Blocks end-to-end admission workload"]
+fn redux_blocks_updates_emit_end_to_end_release_distribution() {
+    run_redux_workload(
+        "redux_blocks_end_to_end",
+        REDUX_SOURCE,
+        CSS,
+        |revision| blocks_snapshot(revision % (HEIGHT - 1)),
+        7,
+    );
+}
+
+#[test]
+#[ignore = "release-profile Redux rich-form end-to-end admission workload"]
+fn redux_rich_form_updates_emit_end_to_end_release_distribution() {
+    run_redux_workload(
+        "redux_rich_accessible_form_end_to_end",
+        REDUX_RICH_FORM_SOURCE,
+        RICH_FORM_CSS,
+        rich_form_snapshot,
+        20,
+    );
 }

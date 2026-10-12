@@ -1,0 +1,14 @@
+[package]
+name = "twinkle-redux"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Transactional Redux-style state management for native Twinkle applications"
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"

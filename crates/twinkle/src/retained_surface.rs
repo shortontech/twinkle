@@ -373,6 +373,27 @@ pub struct RetainedSurfaceHost<M: RetainedSurfaceModel> {
     destroyed: bool,
 }
 
+/// Fully validated retained-surface candidate that has not replaced the
+/// accepted presentation yet. Hosts may prepare several candidates, validate
+/// every other transaction participant, then finalize each with no model
+/// callback or admission failure.
+pub struct RetainedSurfaceCandidate<M: RetainedSurfaceModel> {
+    prepared: RetainedSurfaceHost<M>,
+}
+
+impl<M: RetainedSurfaceModel> RetainedSurfaceCandidate<M> {
+    pub fn update(
+        &mut self,
+        input: RetainedSurfaceInput,
+    ) -> Result<&RetainedSurfaceSnapshot, String> {
+        self.prepared.update(input)
+    }
+
+    pub fn snapshot(&self) -> &RetainedSurfaceSnapshot {
+        self.prepared.snapshot()
+    }
+}
+
 impl<M: RetainedSurfaceModel> fmt::Debug for RetainedSurfaceHost<M> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -403,6 +424,31 @@ impl<M: RetainedSurfaceModel> RetainedSurfaceHost<M> {
             attached: false,
             destroyed: false,
         })
+    }
+
+    /// Clone the accepted surface authority into a speculative candidate.
+    /// Custom models opt into this rollback policy by implementing `Clone`.
+    pub fn begin_candidate(&self) -> RetainedSurfaceCandidate<M>
+    where
+        M: Clone,
+    {
+        RetainedSurfaceCandidate {
+            prepared: Self {
+                model: self.model.clone(),
+                limits: self.limits,
+                accepted: self.accepted.clone(),
+                diagnostics: self.diagnostics,
+                attached: self.attached,
+                destroyed: self.destroyed,
+            },
+        }
+    }
+
+    /// Callback-free accepted-presentation switch. The displaced host is
+    /// returned so a multi-surface coordinator can defer arbitrary destructors
+    /// until every candidate and store generation has switched.
+    pub fn finalize_candidate(&mut self, candidate: RetainedSurfaceCandidate<M>) -> Self {
+        std::mem::replace(self, candidate.prepared)
     }
 
     /// Update and transactionally publish a complete candidate. An unchanged

@@ -25,10 +25,11 @@ required-features = ["jsx"]
 pipeline-allocator = ["jsx"]
 pipeline-attribution = ["twinkle/pipeline-attribution", "twinkle-jsx-runtime?/pipeline-attribution"]
 default = []
-jsx = ["dep:twinkle-jsx-runtime", "dep:twinkle-presentation", "dep:twinkle-protocol", "dep:serde_json"]
+jsx = ["dep:twinkle-jsx-runtime", "dep:twinkle-redux-jsx", "dep:twinkle-presentation", "dep:twinkle-protocol", "dep:serde_json"]
 
 [dependencies]
 twinkle-jsx-runtime = { version = "0.2.0", path = "../twinkle-jsx-runtime", optional = true }
+twinkle-redux-jsx = { version = "0.1.0", path = "../twinkle-redux-jsx", optional = true }
 twinkle-presentation = { version = "0.2.0", path = "../twinkle-presentation", features = ["jsx"], optional = true }
 twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol", optional = true }
 serde_json = { workspace = true, optional = true }

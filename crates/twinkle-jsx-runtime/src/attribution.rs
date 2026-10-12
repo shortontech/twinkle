@@ -140,6 +140,7 @@ function __twinkleAttributionStringify(value) {
         )
     )
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn call(
     name: &str,
     conversion: Option<f64>,

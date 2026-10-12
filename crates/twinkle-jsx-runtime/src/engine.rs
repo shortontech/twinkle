@@ -39,6 +39,8 @@ pub(crate) struct EngineDiagnostics {
 
 mod implementation {
     use super::*;
+    use crate::NativeJsonCallback;
+    use std::ffi::c_void;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Once, OnceLock, mpsc};
     use std::time::{Duration, Instant};
@@ -104,6 +106,65 @@ mod implementation {
     }
 
     struct DeadlineGuard(Arc<AtomicU64>);
+
+    struct NativeCallbackSlot {
+        callback: NativeJsonCallback,
+    }
+
+    fn throw_native_callback_error(scope: &mut v8::PinScope, message: &str) {
+        let message = v8::String::new(scope, message).unwrap_or_else(|| v8::String::empty(scope));
+        let exception = v8::Exception::error(scope, message);
+        scope.throw_exception(exception);
+    }
+
+    fn native_json_callback(
+        scope: &mut v8::PinScope,
+        arguments: v8::FunctionCallbackArguments,
+        mut result: v8::ReturnValue<v8::Value>,
+    ) {
+        let outcome = (|| {
+            if arguments.length() != 1 {
+                return Err("native JSON callback requires exactly one argument".to_string());
+            }
+            let external = v8::Local::<v8::External>::try_from(arguments.data())
+                .map_err(|_| "native JSON callback data is invalid".to_string())?;
+            let pointer = external.value().cast::<NativeCallbackSlot>();
+            if pointer.is_null() {
+                return Err("native JSON callback is unavailable".to_string());
+            }
+            let json = v8::json::stringify(scope, arguments.get(0))
+                .ok_or_else(|| "native callback argument is not bounded JSON".to_string())?
+                .to_rust_string_lossy(scope);
+            let input = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            // SAFETY: the external points to a boxed slot retained by this
+            // engine for the complete isolate lifetime. V8 callbacks execute
+            // synchronously on the engine's owning thread.
+            let slot = unsafe { &*pointer };
+            let mut callback = slot
+                .callback
+                .try_borrow_mut()
+                .map_err(|_| "native JSON callback cannot reenter itself".to_string())?;
+            let output = callback(input)?;
+            let mut values = 0;
+            json_to_v8(scope, &output, &mut values)
+        })();
+        match outcome {
+            Ok(value) => result.set(value),
+            Err(error) => throw_native_callback_error(scope, &error),
+        }
+    }
+
+    fn native_proxy_guard(
+        scope: &mut v8::PinScope,
+        arguments: v8::FunctionCallbackArguments,
+        mut result: v8::ReturnValue<v8::Value>,
+    ) {
+        if arguments.length() != 1 {
+            throw_native_callback_error(scope, "native proxy guard requires exactly one argument");
+            return;
+        }
+        result.set(v8::Boolean::new(scope, arguments.get(0).is_proxy()).into());
+    }
 
     #[derive(Default)]
     struct GcDiagnostics {
@@ -201,6 +262,9 @@ mod implementation {
         active_deadline: Arc<AtomicU64>,
         diagnostics: EngineDiagnostics,
         gc_diagnostics: Box<GcDiagnostics>,
+        // Boxes keep External pointers stable while the vector grows.
+        #[allow(clippy::vec_box)]
+        native_callbacks: Vec<Box<NativeCallbackSlot>>,
     }
 
     impl JavascriptEngine {
@@ -281,7 +345,77 @@ mod implementation {
                     ..EngineDiagnostics::default()
                 },
                 gc_diagnostics,
+                native_callbacks: Vec::new(),
             }
+        }
+
+        pub(crate) fn install_json_callback(
+            &mut self,
+            name: &str,
+            callback: NativeJsonCallback,
+        ) -> Result<(), String> {
+            let mut slot = Box::new(NativeCallbackSlot { callback });
+            let pointer = (&mut *slot as *mut NativeCallbackSlot).cast::<c_void>();
+            let context = self.context.clone();
+            // SAFETY: the exclusive engine borrow owns the isolate. The boxed
+            // callback slot remains pinned in `native_callbacks` until after
+            // the V8 isolate and context are disposed.
+            unsafe { self.isolate.enter() };
+            let result = (|| {
+                v8::scope!(let scope, &mut self.isolate);
+                let context = v8::Local::new(scope, context);
+                let scope = &mut v8::ContextScope::new(scope, context);
+                let external = v8::External::new(scope, pointer);
+                let function = v8::Function::builder(native_json_callback)
+                    .data(external.into())
+                    .constructor_behavior(v8::ConstructorBehavior::Throw)
+                    .build(scope)
+                    .ok_or("V8 rejected a native JSON callback")?;
+                let key =
+                    v8::String::new(scope, name).ok_or("native JSON callback name is too large")?;
+                if context
+                    .global(scope)
+                    .create_data_property(scope, key.into(), function.into())
+                    != Some(true)
+                {
+                    return Err("V8 rejected a native JSON callback binding".into());
+                }
+                Ok(())
+            })();
+            // SAFETY: every V8 handle scope created above has dropped.
+            unsafe { self.isolate.exit() };
+            if result.is_ok() {
+                self.native_callbacks.push(slot);
+            }
+            result
+        }
+
+        pub(crate) fn install_proxy_guard(&mut self, name: &str) -> Result<(), String> {
+            let context = self.context.clone();
+            // SAFETY: the exclusive engine borrow owns the isolate.
+            unsafe { self.isolate.enter() };
+            let result = (|| {
+                v8::scope!(let scope, &mut self.isolate);
+                let context = v8::Local::new(scope, context);
+                let scope = &mut v8::ContextScope::new(scope, context);
+                let function = v8::Function::builder(native_proxy_guard)
+                    .constructor_behavior(v8::ConstructorBehavior::Throw)
+                    .build(scope)
+                    .ok_or("V8 rejected a native proxy guard")?;
+                let key =
+                    v8::String::new(scope, name).ok_or("native proxy guard name is too large")?;
+                if context
+                    .global(scope)
+                    .create_data_property(scope, key.into(), function.into())
+                    != Some(true)
+                {
+                    return Err("V8 rejected a native proxy guard binding".into());
+                }
+                Ok(())
+            })();
+            // SAFETY: every V8 handle scope created above has dropped.
+            unsafe { self.isolate.exit() };
+            result
         }
 
         pub(crate) fn diagnostics(&mut self) -> EngineDiagnostics {
@@ -479,6 +613,20 @@ mod implementation {
             self.call_global(name, arguments, false).map(|_| ())
         }
 
+        pub(crate) fn call_global_void_without_microtasks(
+            &mut self,
+            name: &str,
+            arguments: &[Value],
+        ) -> Result<(), String> {
+            self.call_global_arguments(
+                name,
+                arguments.iter().map(NativeArgument::Value),
+                false,
+                false,
+            )
+            .map(|_| ())
+        }
+
         pub(crate) fn call_global_object_fields(
             &mut self,
             name: &str,
@@ -567,7 +715,23 @@ mod implementation {
                         return Err(error);
                     }
                 };
-                let value = match script.run(&scope) {
+                let global = context.global(&scope);
+                if let Some(function) = v8::String::new(&scope, "__twinkleBeginSynchronousHostCall")
+                    .and_then(|key| global.get(&scope, key.into()))
+                    .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+                {
+                    let receiver = v8::undefined(&scope).into();
+                    let _ = function.call(&scope, receiver, &[]);
+                }
+                let value = script.run(&scope);
+                if let Some(function) = v8::String::new(&scope, "__twinkleEndSynchronousHostCall")
+                    .and_then(|key| global.get(&scope, key.into()))
+                    .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+                {
+                    let receiver = v8::undefined(&scope).into();
+                    let _ = function.call(&scope, receiver, &[]);
+                }
+                let value = match value {
                     Some(value) => value,
                     None => {
                         terminated = scope.has_terminated();
@@ -699,7 +863,22 @@ mod implementation {
                 }
                 let receiver = v8::undefined(&scope).into();
                 let javascript_started = Instant::now();
-                let result = match function.call(&scope, receiver, &arguments) {
+                if let Some(hook) = v8::String::new(&scope, "__twinkleBeginSynchronousHostCall")
+                    .and_then(|key| global.get(&scope, key.into()))
+                    .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+                {
+                    let hook_receiver = v8::undefined(&scope).into();
+                    let _ = hook.call(&scope, hook_receiver, &[]);
+                }
+                let result = function.call(&scope, receiver, &arguments);
+                if let Some(hook) = v8::String::new(&scope, "__twinkleEndSynchronousHostCall")
+                    .and_then(|key| global.get(&scope, key.into()))
+                    .and_then(|value| v8::Local::<v8::Function>::try_from(value).ok())
+                {
+                    let hook_receiver = v8::undefined(&scope).into();
+                    let _ = hook.call(&scope, hook_receiver, &[]);
+                }
+                let result = match result {
                     Some(result) => result,
                     None => {
                         terminated = scope.has_terminated();

@@ -1,0 +1,7 @@
+initial=0
+burst=3
+notifications=1
+rejected=3
+notifications_after_reject=1
+noop=3
+notifications_after_noop=2

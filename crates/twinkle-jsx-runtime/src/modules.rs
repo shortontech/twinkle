@@ -32,6 +32,7 @@ pub struct JsxModuleGraph {
     component_bridge: bool,
     host_prelude: String,
     module_prelude: String,
+    builtin_modules: BTreeMap<String, String>,
     contribution_catalog: serde_json::Value,
     local_components: serde_json::Value,
     compiled: Arc<OnceLock<Result<String, String>>>,
@@ -41,6 +42,18 @@ impl JsxModuleGraph {
     pub fn new<'a>(
         entry: &str,
         modules: impl IntoIterator<Item = ModuleSource<'a>>,
+    ) -> Result<Self, String> {
+        Self::new_with_builtin_modules(
+            entry,
+            modules,
+            std::iter::empty::<(&'static str, &'static str)>(),
+        )
+    }
+
+    pub fn new_with_builtin_modules<'a, 'b>(
+        entry: &str,
+        modules: impl IntoIterator<Item = ModuleSource<'a>>,
+        builtin_modules: impl IntoIterator<Item = (&'b str, &'b str)>,
     ) -> Result<Self, String> {
         let entry = normalize_path(entry)?;
         let mut scripts = BTreeMap::new();
@@ -68,6 +81,16 @@ impl JsxModuleGraph {
         if !scripts.contains_key(&entry) {
             return Err(format!("entry module {entry:?} is missing"));
         }
+        let mut builtin_map = BTreeMap::new();
+        for (specifier, source) in builtin_modules {
+            Self::validate_builtin_module(specifier, source, builtin_map.len())?;
+            if builtin_map
+                .insert(specifier.to_owned(), source.to_owned())
+                .is_some()
+            {
+                return Err("invalid or duplicate built-in module".into());
+            }
+        }
         let graph = Self {
             entry,
             scripts,
@@ -76,6 +99,7 @@ impl JsxModuleGraph {
             component_bridge: false,
             host_prelude: String::new(),
             module_prelude: String::new(),
+            builtin_modules: builtin_map,
             contribution_catalog: serde_json::json!({}),
             local_components: serde_json::json!({}),
             compiled: Arc::new(OnceLock::new()),
@@ -108,6 +132,34 @@ impl JsxModuleGraph {
         self.module_prelude = per_module.into();
         self.compiled = Arc::new(OnceLock::new());
         Ok(self)
+    }
+
+    /// Admit one trusted host-provided bare module without enabling npm or
+    /// arbitrary package resolution. The source is an ordinary factory body
+    /// that writes exports through `exports` or `module.exports`.
+    pub fn with_builtin_module(mut self, specifier: &str, source: &str) -> Result<Self, String> {
+        Self::validate_builtin_module(specifier, source, self.builtin_modules.len())?;
+        if self.builtin_modules.contains_key(specifier) {
+            return Err("invalid or duplicate built-in module".into());
+        }
+        self.builtin_modules.insert(specifier.into(), source.into());
+        self.compiled = Arc::new(OnceLock::new());
+        self.validate_reachable()?;
+        Ok(self)
+    }
+
+    fn validate_builtin_module(specifier: &str, source: &str, count: usize) -> Result<(), String> {
+        if !specifier.starts_with("twinkle/")
+            || specifier.len() > 128
+            || !specifier.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '/' | '-' | '_' | '.')
+            })
+            || source.len() > 256 * 1024
+            || count >= 16
+        {
+            return Err("invalid or duplicate built-in module".into());
+        }
+        Ok(())
     }
 
     /// Connect public contracts to actual module exports, including modules not
@@ -264,22 +316,26 @@ function __twinkleHydrateComponentProps(value) {
 "#);
         }
         output.push_str(&self.host_prelude);
+        for (specifier, source) in &self.builtin_modules {
+            output.push_str(&format!(
+                "__twinkleDefineModule({}, function(module, exports, require) {{\n{}\n}});\n",
+                js_string(specifier),
+                source
+            ));
+        }
         for path in order {
             let source = &self.scripts[&path];
             let source = transpile_module(&path, source)?;
-            let transformed = transform_module(&path, &source)?;
+            let transformed = transform_module(&path, &source, &self.builtin_modules)?;
+            let client = if self.component_bridge {
+                "const twinkle = __twinkleCompositionClient;"
+            } else {
+                ""
+            };
             output.push_str(&format!(
-                "__twinkleDefineModule({}, function(module, exports, require) {{\n{}\n}});\n",
+                "__twinkleDefineModule({}, function(module, exports, require) {{\n{client}\n{}\n{transformed}\n}});\n",
                 js_string(&path),
-                format!(
-                    "{}\n{}\n{transformed}",
-                    if self.component_bridge {
-                        "const twinkle = __twinkleCompositionClient;"
-                    } else {
-                        ""
-                    },
-                    self.module_prelude
-                )
+                self.module_prelude,
             ));
         }
         for (contract, (path, name)) in &self.public_exports {
@@ -323,6 +379,9 @@ function __twinkleHydrateComponentProps(value) {
             .get(path)
             .ok_or_else(|| format!("script module {path:?} is missing"))?;
         for specifier in import_specifiers(source)? {
+            if self.builtin_modules.contains_key(&specifier) {
+                continue;
+            }
             let resolved = resolve(path, &specifier)?;
             if resolved.ends_with(".css") {
                 if !self.stylesheets.contains_key(&resolved) {
@@ -403,13 +462,17 @@ fn transpile_module(path: &str, source: &str) -> Result<String, String> {
     Ok(Codegen::new().build(&program).code)
 }
 
-fn transform_module(path: &str, source: &str) -> Result<String, String> {
+fn transform_module(
+    path: &str,
+    source: &str,
+    builtin_modules: &BTreeMap<String, String>,
+) -> Result<String, String> {
     let mut output = String::new();
     let mut exported = Vec::new();
     for raw in source.lines() {
         let line = raw.trim();
         if line.starts_with("import ") {
-            output.push_str(&transform_import(path, line)?);
+            output.push_str(&transform_import(path, line, builtin_modules)?);
             output.push('\n');
         } else if let Some(rest) = line.strip_prefix("export default ") {
             output.push_str("exports.default = ");
@@ -450,7 +513,11 @@ fn transform_module(path: &str, source: &str) -> Result<String, String> {
     Ok(output)
 }
 
-fn transform_import(importer: &str, line: &str) -> Result<String, String> {
+fn transform_import(
+    importer: &str,
+    line: &str,
+    builtin_modules: &BTreeMap<String, String>,
+) -> Result<String, String> {
     let declaration = line.trim_end_matches(';').trim();
     let (binding, specifier) = if let Some(specifier) = declaration
         .strip_prefix("import '")
@@ -469,7 +536,11 @@ fn transform_import(importer: &str, line: &str) -> Result<String, String> {
             .ok_or_else(|| format!("invalid import {line:?}"))?;
         (binding.trim(), unquote(quoted.trim())?)
     };
-    let resolved = resolve(importer, specifier)?;
+    let resolved = if builtin_modules.contains_key(specifier) {
+        specifier.to_owned()
+    } else {
+        resolve(importer, specifier)?
+    };
     if resolved.ends_with(".css") {
         if binding.is_empty() {
             return Ok(String::new());
@@ -584,6 +655,37 @@ fn js_string(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::JsxRuntime;
+
+    #[test]
+    fn admitted_builtin_module_resolves_without_opening_package_imports() {
+        let graph = JsxModuleGraph::new_with_builtin_modules(
+            "main.jsx",
+            [ModuleSource {
+                path: "main.jsx",
+                source: "import { label } from 'twinkle/test';\nexport default function App() { return <Text>{label}</Text>; }",
+            }],
+            [("twinkle/test", "exports.label = 'native built-in';")],
+        )
+        .unwrap();
+        let mut runtime = JsxRuntime::new_modules(&graph, None).unwrap();
+        assert!(
+            runtime
+                .render("__twinkleRender()", |value| Ok(value.clone()))
+                .unwrap()
+                .to_string()
+                .contains("native built-in")
+        );
+        assert!(
+            JsxModuleGraph::new(
+                "main.js",
+                [ModuleSource {
+                    path: "main.js",
+                    source: "import 'twinkle/test'; export default function App() { return null; }",
+                }],
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn imported_components_share_one_runtime_and_module_instance() {

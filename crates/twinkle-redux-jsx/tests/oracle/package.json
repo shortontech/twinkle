@@ -1,0 +1,13 @@
+{
+  "name": "twinkle-redux-oracle",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "trace": "node trace.mjs"
+  },
+  "devDependencies": {
+    "@reduxjs/toolkit": "2.9.0",
+    "redux": "5.0.1"
+  }
+}

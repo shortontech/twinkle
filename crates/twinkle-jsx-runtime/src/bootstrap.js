@@ -1628,13 +1628,22 @@ function __twinkleCommitRender() {
     // clone the whole mount even when a single leaf is dirty.
     __acceptedNativeTree = null;
     __dirtyComponents.clear();
-    const commitStarted=Date.now(),profile=__twinkleProfile();
+    const lifecycle={removedEffects:pending.removedEffects,passiveEffects:pending.passiveEffects};
     for (const entry of pending.reducerEntries) {
         entry.reducer = entry.nextReducer;
         delete entry.nextReducer;
     }
-    for (const entry of pending.removedEffects) __twinkleRunCleanup(entry);
-    for (const effect of pending.passiveEffects) {
+    if (__compositionCheckpoint !== null) {
+        if (lifecycle.removedEffects.length || lifecycle.passiveEffects.length)
+            __outerLifecycle.push(lifecycle);
+    } else __twinkleRunLifecycle(lifecycle);
+}
+function __twinkleRunLifecycle(lifecycle) {
+    const commitStarted=Date.now(),profile=__twinkleProfile();
+    if (lifecycle.passiveEffects.length && profile.consecutiveEffectTurns >= 25)
+        throw Error('consecutive effect-turn limit 25 exceeded');
+    for (const entry of lifecycle.removedEffects) __twinkleRunCleanup(entry);
+    for (const effect of lifecycle.passiveEffects) {
         __twinkleRunCleanup(effect.entry);
         effect.entry.deps = effect.deps;
         try {
@@ -1645,7 +1654,9 @@ function __twinkleCommitRender() {
         } catch (error) { __twinkleCaptureFailure(effect.entry.owner, error, 'effect'); }
     }
     profile.lifecycleCommits++;profile.lifecycleCommitMillis+=Math.max(0,Date.now()-commitStarted);
-    if(pending.passiveEffects.length&&__dirtyComponents.size)profile.consecutiveEffectTurns++;
+    const externalPending=typeof globalThis.__twinkleExternalWorkPending === 'function'
+        && globalThis.__twinkleExternalWorkPending();
+    if(lifecycle.passiveEffects.length&&(__dirtyComponents.size||externalPending))profile.consecutiveEffectTurns++;
     else profile.consecutiveEffectTurns=0;
     if(profile.consecutiveEffectTurns===25)
         __twinkleDeveloperDiagnostic('effect-loop','effects scheduled another render for 25 consecutive commits',
@@ -1663,6 +1674,7 @@ function __twinkleActiveEntry() {
 
 function __twinkleRender(component = __twinkleActiveEntry(), patchOnly = false) {
     if (__pendingRender !== null) throw Error('previous render was not finalized');
+    if (typeof globalThis.__twinkleBeforeRender === 'function') globalThis.__twinkleBeforeRender();
     __runtimeCounters.renders++;
     const profile=__twinkleProfile(),reconciliationStarted=Date.now();profile.renders++;
     const previousHandlers = __handlers;
@@ -2023,6 +2035,7 @@ function __twinkleDispatchBatchScheduled(events, previous = false) {
             const handler = (previous ? __previousHandlers : __handlers).get(action);
             if (handler) handler(value);
         }
+        if (typeof globalThis.__twinkleBeforeRender === 'function') globalThis.__twinkleBeforeRender();
         const dirty = Array.from(__dirtyComponents);
         if (!dirty.length) return JSON.stringify({rendered:false, dirty});
         return JSON.stringify({rendered:true, dirty, node:JSON.parse(__twinkleRender())});
@@ -2045,6 +2058,7 @@ function __twinkleDispatchBatchPatched(events, previous = false) {
             const handler = (previous ? __previousHandlers : __handlers).get(action);
             if (handler) handler(value);
         }
+        if (typeof globalThis.__twinkleBeforeRender === 'function') globalThis.__twinkleBeforeRender();
         const dirty = Array.from(__dirtyComponents);
         if (!dirty.length) return JSON.stringify({rendered:false, dirty});
         const patch = __twinkleRender(undefined,true);
@@ -2058,6 +2072,7 @@ function __twinkleDispatchBatchPatched(events, previous = false) {
 // Host-data publication is already enclosed by the native runtime transaction.
 // Reconcile it directly instead of manufacturing and cloning an empty event.
 function __twinkleReconcileDataPatched() {
+    if (typeof globalThis.__twinkleBeforeRender === 'function') globalThis.__twinkleBeforeRender();
     const dirty = Array.from(__dirtyComponents);
     if (!dirty.length) return JSON.stringify({rendered:false, dirty});
     const patch = __twinkleRender(undefined, true);
@@ -2081,6 +2096,7 @@ function __twinkleConsumeReconciliation() { __dirtyComponents.clear(); }
 // They deliberately do not snapshot package globals or closure-captured values.
 // Trusted host extensions may participate in rollback without engine-owned domain schemas.
 const __hostCheckpointParticipants = [];
+let __outerLifecycle = [];
 function __twinkleRegisterCheckpointParticipant(participant) {
     if (__compositionCheckpoint !== null || __pendingRender !== null || __pendingEvent !== null)
         throw Error('checkpoint registration requires an idle runtime');
@@ -2097,10 +2113,13 @@ function __twinkleSurfaceWorkPending(id) {
     const state = id === __activeSurface
         ? {dirty:__dirtyComponents, effects:__effects}
         : __surfaceStates.get(id);
-    return !!state && (state.dirty.size > 0 || state.effects.length > 0);
+    return (!!state && (state.dirty.size > 0 || state.effects.length > 0))
+        || (typeof globalThis.__twinkleExternalWorkPending === 'function'
+            && globalThis.__twinkleExternalWorkPending());
 }
-function __twinkleBeginCheckpoint() {
+function __twinkleBeginCheckpoint(allowLifecycle = false) {
     if (__compositionCheckpoint !== null || __pendingRender !== null || __pendingEvent !== null) throw Error('checkpoint already pending');
+    if (__outerLifecycle.length && !allowLifecycle) throw Error('outer lifecycle delivery is pending');
     const seen = new Map();
     const extensible = new Map();
     let nodes = 0;
@@ -2132,12 +2151,18 @@ function __twinkleBeginCheckpoint() {
     __compositionCheckpoint = {active, surfaces, graph:seen, extensible, apps:new Map(__surfaceApps), activeSurface:__activeSurface,
         extensions:__hostCheckpointParticipants.map(participant=>participant.capture(copy))};
 }
-function __twinkleFinishCheckpoint(accepted) {
+function __twinklePrepareCheckpoint() {
+    if (__compositionCheckpoint === null) throw Error('checkpoint is unavailable');
+    if (__pendingRender !== null || __pendingEvent !== null)
+        throw Error('unfinished local checkpoint transaction');
+}
+function __twinkleFinishCheckpoint(accepted, preserveOuterLifecycle = false) {
     const checkpoint = __compositionCheckpoint;
     if (checkpoint === null) throw Error('checkpoint is unavailable');
     if (__pendingRender !== null || __pendingEvent !== null) { if (accepted) throw Error('unfinished local checkpoint transaction'); __twinkleRollbackRender(); }
     __compositionCheckpoint = null;
     if (accepted) return;
+    if (!preserveOuterLifecycle) __outerLifecycle = [];
     // Restore supported mutable hook objects in place: existing approved event
     // closures can retain these identities. Arbitrary closure cells/globals are
     // still outside this graph and are not presented as rolled back.
@@ -2176,3 +2201,9 @@ function __twinkleFinishCheckpoint(accepted) {
     __hostCheckpointParticipants.forEach((participant,index)=>participant.restore(checkpoint.extensions[index],original));
     __visitedComponents = new Set(); __componentChildren = new Map(); __currentComponent = null; __hookIndex = 0; __listKeyErrors = [];
 }
+function __twinkleAfterCheckpoint() {
+    const lifecycle=__outerLifecycle;
+    __outerLifecycle=[];
+    for (const batch of lifecycle) __twinkleRunLifecycle(batch);
+}
+function __twinkleOuterLifecyclePending() { return __outerLifecycle.length > 0; }

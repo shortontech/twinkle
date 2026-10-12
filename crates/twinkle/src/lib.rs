@@ -30,6 +30,8 @@ pub mod on_screen_keyboard;
 pub mod overlay;
 #[allow(missing_docs)]
 pub mod primitives;
+#[cfg(feature = "redux")]
+pub mod redux;
 #[cfg(test)]
 mod release_admission;
 #[allow(missing_docs)]
@@ -78,10 +80,10 @@ pub use primitives::{
     ActionRegion, ArtworkPresentation, ItemPresentation, StatusRegion, SurfaceScaffold, ToolRegion,
 };
 pub use retained_surface::{
-    RetainedSurfaceChanges, RetainedSurfaceDiagnostics, RetainedSurfaceHost, RetainedSurfaceInput,
-    RetainedSurfaceInteraction, RetainedSurfaceLifecycle, RetainedSurfaceLimits,
-    RetainedSurfaceModel, RetainedSurfaceOutput, RetainedSurfaceRevisions, RetainedSurfaceSemantic,
-    RetainedSurfaceSnapshot,
+    RetainedSurfaceCandidate, RetainedSurfaceChanges, RetainedSurfaceDiagnostics,
+    RetainedSurfaceHost, RetainedSurfaceInput, RetainedSurfaceInteraction,
+    RetainedSurfaceLifecycle, RetainedSurfaceLimits, RetainedSurfaceModel, RetainedSurfaceOutput,
+    RetainedSurfaceRevisions, RetainedSurfaceSemantic, RetainedSurfaceSnapshot,
 };
 pub use runtime::{
     AdapterOutcome, Application, BoundedSemanticActionError, Completion, CompletionFailure,
