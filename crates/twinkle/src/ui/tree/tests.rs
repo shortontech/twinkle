@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn pointer_motion_mapper_uses_one_hit_tested_surface_message() {
+    let element = Layer::new()
+        .id("surface")
+        .width(120.0)
+        .height(80.0)
+        .child(
+            Layer::new()
+                .id("child")
+                .width(120.0)
+                .height(80.0)
+                .into_element()
+                .message(Point { x: 0.0, y: 0.0 }),
+        )
+        .into_element()
+        .on_pointer_move(|point| point);
+    let frame = UiFrame::layout(element, Rect::new(10.0, 20.0, 120.0, 80.0));
+    let mut state = UiStateStore::default();
+    let point = Point { x: 45.0, y: 55.0 };
+    assert_eq!(
+        frame
+            .handle_event(&mut state, UiEvent::PointerMoved(point))
+            .messages,
+        vec![point]
+    );
+    assert!(
+        frame
+            .handle_event(
+                &mut state,
+                UiEvent::PointerMoved(Point { x: 500.0, y: 500.0 })
+            )
+            .messages
+            .is_empty()
+    );
+}
+
+#[test]
 #[ignore = "release-profile stationary sparse paint-output reuse workload"]
 fn stationary_sparse_paint_output_reuse_release_workload() {
     const NODES: usize = 4_096;

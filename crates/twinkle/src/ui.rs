@@ -1595,6 +1595,7 @@ struct ElementEvents<Message> {
     increment_message: Option<Message>,
     focus_message: Option<Message>,
     blur_message: Option<Message>,
+    pointer_move_mapper: Option<fn(Point) -> Message>,
     drag_seed: Option<Message>,
     drop_message: Option<Message>,
 }
@@ -1608,6 +1609,7 @@ impl<Message> Default for ElementEvents<Message> {
             increment_message: None,
             focus_message: None,
             blur_message: None,
+            pointer_move_mapper: None,
             drag_seed: None,
             drop_message: None,
         }
@@ -1656,6 +1658,12 @@ impl<Message> Element<Message> {
             .and_then(|events| events.blur_message.as_ref())
     }
 
+    pub(crate) fn declared_pointer_move_mapper(&self) -> Option<fn(Point) -> Message> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.pointer_move_mapper)
+    }
+
     pub(crate) fn declared_drag_seed(&self) -> Option<&Message> {
         self.events
             .as_ref()
@@ -1676,6 +1684,7 @@ impl<Message> Element<Message> {
                 || events.increment_message.is_some()
                 || events.focus_message.is_some()
                 || events.blur_message.is_some()
+                || events.pointer_move_mapper.is_some()
                 || events.drag_seed.is_some()
                 || events.drop_message.is_some()
         })
@@ -2043,6 +2052,14 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Emit hit-tested pointer motion through the ordinary application message
+    /// path. One target receives each motion event; no per-point child regions
+    /// are required for dense custom surfaces such as charts or canvases.
+    pub fn on_pointer_move(mut self, map: fn(Point) -> Message) -> Self {
+        self.events_mut().pointer_move_mapper = Some(map);
+        self
+    }
+
     /// Turns this element into a declarative pointer-drag target.
     ///
     /// The seed message supplies target-specific typed data. Twinkle owns
@@ -2168,6 +2185,7 @@ impl<Message> Element<Message> {
         assert!(
             self.message_mapper.is_none()
                 && self.seeded_value_mapper.is_none()
+                && self.declared_pointer_move_mapper().is_none()
                 && self.drag_mapper.is_none()
                 && self.drop_mapper.is_none()
                 && self.text_mapper.is_none(),
@@ -2182,6 +2200,7 @@ impl<Message> Element<Message> {
                 increment_message: events.increment_message.map(&mut *map),
                 focus_message: events.focus_message.map(&mut *map),
                 blur_message: events.blur_message.map(&mut *map),
+                pointer_move_mapper: None,
                 drag_seed: None,
                 drop_message: None,
             };

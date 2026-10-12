@@ -96,6 +96,7 @@ struct HitRegion<Message> {
     message: Option<Message>,
     message_mapper: Option<fn(f32) -> Message>,
     seeded_value_mapper: Option<fn(Message, f32) -> Message>,
+    pointer_move_mapper: Option<fn(Point) -> Message>,
     drag_seed: Option<Message>,
     drag_mapper: Option<fn(Message, DragGesture) -> Message>,
     drop_message: Option<Message>,
@@ -1161,6 +1162,20 @@ impl<Message: Clone> UiFrame<Message> {
         ))
     }
 
+    fn pointer_move_message(&self, id: &UiId, position: Point) -> Option<Message> {
+        let hit = self
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| &hit.id == id && hit.pointer_move_mapper.is_some())
+            .or_else(|| {
+                self.hits.iter().rev().find(|hit| {
+                    hit.pointer_move_mapper.is_some() && self.is_descendant_or_self(&hit.id, id)
+                })
+            })?;
+        Some((hit.pointer_move_mapper?)(position))
+    }
+
     fn drop_message(&self, source: &UiId, position: Point) -> Option<Message> {
         let source_hit = self.hits.iter().rev().find(|hit| &hit.id == source)?;
         // Only a declarative drag source can deliver a drop. An ordinary click
@@ -1706,6 +1721,8 @@ impl<Message: Clone> UiFrame<Message> {
                 message_mapper: None,
                 seeded_value_mapper: None,
                 drag_seed: None,
+                pointer_move_mapper: None,
+
                 drag_mapper: None,
                 drop_message: None,
                 drop_mapper: None,
@@ -5280,6 +5297,12 @@ impl<Message: Clone> UiFrame<Message> {
                     }
                     invalidation => invalidation,
                 };
+                if let Some(message) = hovered
+                    .as_ref()
+                    .and_then(|id| self.pointer_move_message(id, point))
+                {
+                    outcome.messages.push(message);
+                }
                 let mut invalidation = state.set_hovered(hovered).merge(pointer_invalidation);
                 if let Some(captured) = state.captured()
                     && let Some(message) = self.drag_message(captured, DragPhase::Moved, point)

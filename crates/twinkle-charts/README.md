@@ -86,6 +86,10 @@ Once a datum is active, the native projection adds a plot-bounded visible and
 semantic tooltip containing up to six exact fields; further fields remain
 available through `ChartInspection` and the data table. The tooltip is passive,
 does not take focus, and is never the sole exact-value surface.
+`ChartView::element_with_pointer` adds one hit-tested pointer-motion target for
+the whole chart. Its coordinate-bearing application message should call
+`inspect_nearest` during update; it does not allocate an interaction node for
+each datum and does not consume wheel input from an enclosing scroll view.
 
 The native projection has one bounded graphical-control entry plus ordinary
 focusable legend controls. Its mechanical summary reports source rows,

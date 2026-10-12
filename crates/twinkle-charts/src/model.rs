@@ -2126,7 +2126,29 @@ impl ChartView {
     pub fn element<Message: Clone>(
         &self,
         id: impl Into<UiId>,
+        message: impl FnMut(ChartEvent) -> Message,
+    ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
+        self.element_inner(id, message, None)
+    }
+
+    /// Native projection with one bounded pointer-motion target. The supplied
+    /// function should produce an application message that calls
+    /// [`ChartView::inspect_nearest`] or [`ChartView::inspect_nearest_detail`]
+    /// during update; rebuilding then projects the passive inspector.
+    pub fn element_with_pointer<Message: Clone>(
+        &self,
+        id: impl Into<UiId>,
+        message: impl FnMut(ChartEvent) -> Message,
+        pointer_message: fn(Point) -> Message,
+    ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
+        self.element_inner(id, message, Some(pointer_message))
+    }
+
+    fn element_inner<Message: Clone>(
+        &self,
+        id: impl Into<UiId>,
         mut message: impl FnMut(ChartEvent) -> Message,
+        pointer_message: Option<fn(Point) -> Message>,
     ) -> Result<impl twinkle_ui::Component<Message>, ChartError> {
         let visible = self.host.model().state.visible_series.clone();
         let mut snapshot = self.snapshot().clone();
@@ -2222,9 +2244,13 @@ impl ChartView {
                 element = element.accessibility_state(state);
             }
         }
-        Ok(element.map_message(move |action| match action {
+        let mut element = element.map_message(move |action| match action {
             ChartProjectionAction::Event(event) => message(event),
-        }))
+        });
+        if let Some(pointer_message) = pointer_message {
+            element = element.on_pointer_move(pointer_message);
+        }
+        Ok(element)
     }
     pub fn detach(&mut self) {
         self.host.detach();
@@ -3139,6 +3165,45 @@ mod tests {
         assert!(
             tooltip.name.as_deref().unwrap().contains("y: 4"),
             "{tooltip:?}"
+        );
+    }
+
+    #[test]
+    fn native_projection_emits_one_coordinate_bearing_pointer_message() {
+        #[derive(Clone, Debug, PartialEq)]
+        enum Message {
+            Chart(ChartEvent),
+            Pointer(Point),
+        }
+        fn pointer(point: Point) -> Message {
+            Message::Pointer(point)
+        }
+
+        let mut view = ChartView::new(model()).unwrap();
+        let bounds = Rect::new(0.0, 0.0, 400.0, 240.0);
+        view.update(RetainedSurfaceInput::new(
+            bounds,
+            1.0,
+            twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                content: 7,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let frame = twinkle_ui::UiFrame::layout(
+            view.element_with_pointer("chart", Message::Chart, pointer)
+                .unwrap(),
+            bounds,
+        );
+        let point = Point { x: 200.0, y: 100.0 };
+        assert_eq!(
+            frame
+                .handle_event(
+                    &mut twinkle_ui::UiStateStore::default(),
+                    twinkle_ui::UiEvent::PointerMoved(point),
+                )
+                .messages,
+            vec![Message::Pointer(point)]
         );
     }
 
