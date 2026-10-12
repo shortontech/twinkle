@@ -82,9 +82,12 @@ focusable legend controls. Its mechanical summary reports source rows,
 inspectable/displayed values, missing data, selection, and reduction. Activation
 selects the active datum, while a visible, separately focusable **Data table**
 control requests exact paged table mode. `ChartTable` keeps all admitted rows
-reachable without creating one UI node per row. Platform screen-reader support
-is separate from these semantic records; Twinkle does not claim a tested Linux
-screen-reader bridge yet.
+reachable without creating one UI node per row. `page_filtered` applies the
+controlled visible-series policy, while `ChartTable::element` projects the page
+as a named native grid with exact units, stable row inspection, announced row
+positions, Previous/Next controls, and an explicit hidden-series toggle.
+Platform screen-reader support is separate from these semantic records; Twinkle
+does not claim a tested Linux screen-reader bridge yet.
 
 ## Limits, diagnostics, and reduction
 

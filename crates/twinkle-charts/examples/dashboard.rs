@@ -1,12 +1,12 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use twinkle_charts::{
-    ChartData, ChartLimits, ChartModel, ChartState, ChartTable, ChartView, Column, CsvOptions,
-    DataValue, Dataset, DatasetId, FieldRef, Legend, RasterOptions, Recipes, RowKey, Scale,
-    ScaleKind, export_csv, export_raster,
+    ChartData, ChartLimits, ChartModel, ChartState, ChartTable, ChartTableFilter, ChartView, Column,
+    CsvOptions, DataValue, Dataset, DatasetId, FieldRef, Legend, RasterOptions, Recipes, RowKey,
+    Scale, ScaleKind, export_csv, export_raster,
 };
 use twinkle_ui::{
-    Rect,
+    Rect, UiFrame,
     retained_surface::{RetainedSurfaceInput, RetainedSurfaceRevisions},
 };
 
@@ -77,11 +77,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let table = ChartTable::new(data.clone(), limits);
-    let first_page = table.page("sales", 0)?;
+    let first_page = table.page_filtered(
+        "sales",
+        0,
+        &ChartTableFilter {
+            series_column: Some(Arc::from("region")),
+            visible_series: Some([Arc::from("North")].into_iter().collect()),
+            include_hidden_series: false,
+        },
+    )?;
     println!(
         "table rows {} of {}",
         first_page.rows.len(),
         first_page.total_rows
+    );
+    let table_frame = UiFrame::layout(
+        table.element(&first_page, "sales-table", |event| event),
+        Rect::new(0.0, 0.0, 640.0, 360.0),
+    );
+    println!(
+        "table semantic nodes {}",
+        table_frame.semantic_nodes().len()
     );
     println!(
         "CSV bytes: {}",

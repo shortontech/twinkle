@@ -26,7 +26,9 @@ pub use interaction::{ChartNavigation, NavigationCommand, PanZoomPolicy};
 pub use model::{ChartHit, ChartModel, ChartView};
 pub use scale::{BandScale, ContinuousScale, LinearScale, LogScale, ScaleValue};
 pub use spec::*;
-pub use table::{ChartTable, ChartTableCell, ChartTablePage, ChartTableRow};
+pub use table::{
+    ChartTable, ChartTableCell, ChartTableEvent, ChartTableFilter, ChartTablePage, ChartTableRow,
+};
 pub use theme::{ChartTheme, SeriesCue};
 pub use time::{CalendarTick, TimeScale, TimeTickInterval, TimeZonePolicy};
 pub use transform::{
