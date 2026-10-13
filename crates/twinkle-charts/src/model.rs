@@ -1809,6 +1809,10 @@ impl ChartModel {
                 let step = values.len().div_ceil(max_marks).max(1);
                 let size_column = channel(&layer.encodings, Channel::Size)
                     .and_then(|encoding| dataset.column(&encoding.field.column));
+                let size_scale = channel(&layer.encodings, Channel::Size)
+                    .and_then(|encoding| encoding.scale.as_ref())
+                    .and_then(|name| self.spec.scales.iter().find(|scale| &scale.name == name));
+                let size_domain = size_scale.and_then(|scale| scale.domain);
                 let size_max = size_column
                     .into_iter()
                     .flat_map(|column| column.values.iter())
@@ -1821,7 +1825,15 @@ impl ChartModel {
                         .and_then(|column| column.values[*index].number())
                         .filter(|value| value.is_finite() && *value >= 0.0)
                         .map_or(3.0, |value| {
-                            if size_max == 0.0 {
+                            if let Some(domain) = size_domain {
+                                let mut normalized = (value - domain[0]) / (domain[1] - domain[0]);
+                                if size_scale.is_some_and(|scale| scale.reversed) {
+                                    normalized = 1.0 - normalized;
+                                }
+                                // Explicit size domains preserve quantitative area across
+                                // revisions and keep zero-size services inspectable.
+                                (normalized.clamp(0.0, 1.0).sqrt() as f32 * 10.0).max(2.0)
+                            } else if size_max == 0.0 {
                                 0.0
                             } else {
                                 (value / size_max).sqrt() as f32 * 10.0
@@ -1865,8 +1877,12 @@ impl ChartModel {
                     .filter_map(DataValue::number)
                     .filter(|value| value.is_finite())
                     .collect();
-                let fill_domain =
-                    (!numeric_fill.is_empty()).then(|| extent(numeric_fill.iter().copied()));
+                let fill_scale = channel(&layer.encodings, Channel::Fill)
+                    .and_then(|encoding| encoding.scale.as_ref())
+                    .and_then(|name| self.spec.scales.iter().find(|scale| &scale.name == name));
+                let fill_domain = fill_scale.and_then(|scale| scale.domain).or_else(|| {
+                    (!numeric_fill.is_empty()).then(|| extent(numeric_fill.iter().copied()))
+                });
                 for (index, x, y) in &values {
                     let center = map(*x, *y);
                     let left = (center.x - cell_width / 2.0).max(plot.origin.x);
@@ -1876,9 +1892,13 @@ impl ChartModel {
                         (center.y + cell_height / 2.0).min(plot.origin.y + plot.size.height);
                     let value = fill_column.map(|column| &column.values[*index]);
                     let cell_color = match (value, fill_domain) {
-                        (Some(DataValue::Number(value)), Some(domain)) if value.is_finite() => self
-                            .theme
-                            .sequential((value - domain[0]) / (domain[1] - domain[0])),
+                        (Some(DataValue::Number(value)), Some(domain)) if value.is_finite() => {
+                            let mut normalized = (value - domain[0]) / (domain[1] - domain[0]);
+                            if fill_scale.is_some_and(|scale| scale.reversed) {
+                                normalized = 1.0 - normalized;
+                            }
+                            self.theme.sequential(normalized)
+                        }
                         (Some(DataValue::Category(_)), _) => {
                             self.theme
                                 .series_cue(
@@ -5844,6 +5864,102 @@ mod tests {
             })
             .collect();
         assert_eq!(radii, vec![5.0, 10.0]);
+    }
+
+    #[test]
+    fn explicit_color_and_size_domains_keep_values_stable_across_revisions() {
+        let limits = ChartLimits::default();
+        let data = |revision, other| {
+            Arc::new(
+                ChartData::new(
+                    revision,
+                    vec![
+                        Dataset::new(
+                            DatasetId::from("d"),
+                            vec![
+                                RowKey::from("zero"),
+                                RowKey::from("fixed"),
+                                RowKey::from("changing"),
+                            ],
+                            vec![
+                                Column::new(
+                                    "x",
+                                    vec![
+                                        DataValue::Number(0.0),
+                                        DataValue::Number(1.0),
+                                        DataValue::Number(2.0),
+                                    ],
+                                ),
+                                Column::new("y", vec![DataValue::Number(1.0); 3]),
+                                Column::new(
+                                    "value",
+                                    vec![
+                                        DataValue::Number(0.0),
+                                        DataValue::Number(25.0),
+                                        DataValue::Number(other),
+                                    ],
+                                ),
+                            ],
+                        )
+                        .unwrap(),
+                    ],
+                    &limits,
+                )
+                .unwrap(),
+            )
+        };
+        let field = |name| FieldRef::new("d", name);
+        for mut spec in [
+            crate::Recipes::heatmap("Heat", field("x"), field("y"), field("value")),
+            crate::Recipes::bubble("Hosts", field("x"), field("y"), field("value")),
+        ] {
+            for scale in &mut spec.scales {
+                if matches!(scale.kind, crate::ScaleKind::Color | crate::ScaleKind::Size) {
+                    scale.domain = Some([0.0, 100.0]);
+                }
+            }
+            let spec = Arc::new(spec);
+            let mut view = ChartView::new(
+                ChartModel::new(spec.clone(), data(1, 50.0), limits.clone()).unwrap(),
+            )
+            .unwrap();
+            let input = |revision| {
+                RetainedSurfaceInput::new(
+                    Rect::new(0.0, 0.0, 600.0, 300.0),
+                    1.0,
+                    twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                        content: revision,
+                        ..Default::default()
+                    },
+                )
+            };
+            let first = view.update(input(1)).unwrap().output.paint.clone();
+            let second = view
+                .replace_and_update(spec, data(2, 100.0), input(2))
+                .unwrap()
+                .output
+                .paint
+                .clone();
+            // The zero and fixed marks must not change just because another
+            // datum's maximum changes. Guides are independent of size/fill.
+            let marks = |paint: &[PaintCommand]| {
+                paint
+                    .iter()
+                    .filter(|command| match command {
+                        PaintCommand::Fill { rect, .. } => rect.size.width < 600.0,
+                        PaintCommand::RoundedFill { radius, .. } => {
+                            *radius == 2.0 || *radius == 5.0
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            let a = marks(&first);
+            let b = marks(&second);
+            assert!(a.len() >= 2, "must paint zero and fixed marks");
+            assert_eq!(&a[..2], &b[..2]);
+        }
     }
 
     #[test]

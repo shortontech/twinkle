@@ -132,3 +132,23 @@ GPU execution-completion and compositor display timestamps remain unavailable on
 the current window-presenter boundary and are not inferred from submission time.
 This limits claims about physical display latency, but no longer leaves raster
 agreement or the specified CPU-side warm-frame budget unmeasured.
+
+## Application-owned benchmark attribution
+
+Applications may publish a payload-free `NativeFrameCorrelation` through
+`Application::take_frame_correlation`. The standalone native runtime now calls
+`Application::native_frame_submitted` after a successful GPU presenter call or
+software buffer present. `NativeFrameSubmission` carries the correlation captured
+with that frame, its native frame generation, an `Instant` acknowledgement,
+actual backend, scale factor, and physical surface size. Software raster results
+that are dirty, stale, or mismatched in size do not produce an acknowledgement.
+Applications can use missing correlation generations to detect coalesced frames;
+this callback does not disable the runtime's coalescing policy.
+
+This evidence ends at CPU submission. GPU completion and compositor presentation
+remain unavailable; neither refresh cadence nor this callback proves display.
+
+Explicit heatmap color domains now remain fixed across snapshot extrema changes.
+Explicit bubble size domains map normalized value to marker area (10 logical-pixel
+maximum radius), with a 2-pixel minimum radius so zero-size entities remain
+inspectable. Implicit domains retain their existing maximum-relative behavior.

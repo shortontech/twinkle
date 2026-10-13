@@ -855,6 +855,11 @@ pub trait Application: Sized {
         None
     }
 
+    /// Observe a completed native presenter call for the captured frame identity.
+    /// This is CPU submission acknowledgement, never compositor presentation or
+    /// GPU completion. The callback does not trigger a declarative rebuild.
+    fn native_frame_submitted(&mut self, _submission: NativeFrameSubmission) {}
+
     /// Drains the complete set of stable declared element IDs changed by the
     /// next non-structural view update. `None` requests conservative full-tree
     /// reconciliation. The host resolves IDs against the accepted frame and
@@ -1852,6 +1857,19 @@ pub struct HostChangeToken {
 pub struct NativeFrameCorrelation {
     pub mount: u64,
     pub generation: u64,
+}
+
+/// CPU-side submission evidence delivered only after a successful native present
+/// call. Correlation is captured with the submitted frame, not read from newer
+/// application state when a software worker finishes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeFrameSubmission {
+    pub correlation: Option<NativeFrameCorrelation>,
+    pub frame_generation: u64,
+    pub submitted_at: Instant,
+    pub backend: &'static str,
+    pub scale_factor: f32,
+    pub physical_size: (u32, u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4513,6 +4531,8 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     window: Option<Arc<dyn Window>>,
     raster: AsyncRasterWorker,
     raster_revision: u64,
+    raster_correlation: Option<NativeFrameCorrelation>,
+    raster_frame_generation: u64,
     input: twinkle_input::winit::Adapter,
     clipboard: Option<arboard::Clipboard>,
     controller: Option<NativeControllerWorker>,
@@ -4639,6 +4659,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             window: None,
             raster,
             raster_revision: 0,
+            raster_correlation: None,
+            raster_frame_generation: 0,
             input: twinkle_input::winit::Adapter::default(),
             clipboard: arboard::Clipboard::new().ok(),
             controller,
@@ -5034,6 +5056,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         self.raster_revision = self.raster_revision.wrapping_add(1).max(1);
         let _snapshot_started = crate::pipeline_trace::clock();
         let commands = host.commands().to_vec();
+        self.raster_correlation = host.native_correlation;
+        self.raster_frame_generation = host.frame_generation;
         crate::pipeline_trace::event!({
             "event": "software_submission", "surface": self.native_host_generation,
             "revision": self.raster_revision, "frame_generation": host.frame_generation,
@@ -5075,6 +5099,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             return Ok(false);
         };
         let size = window.surface_size();
+        let frame_generation = host.frame_generation;
+        let correlation = host.native_correlation;
         let frame = host.render_frame();
         let _presenter_started = crate::pipeline_trace::clock();
         crate::pipeline_trace::event!({"event": "gpu_present_start", "frame_generation": host.frame_generation});
@@ -5096,6 +5122,17 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         crate::pipeline_trace::event!({"event": "gpu_present_end", "frame_generation": host.frame_generation,
             "presenter_call_us": crate::pipeline_trace::micros(_presenter_started),
             "boundary": "CPU presenter call including nested attribution writes; excludes compositor display"});
+        if let Some(host) = self.host.as_mut() {
+            host.application
+                .native_frame_submitted(NativeFrameSubmission {
+                    correlation,
+                    frame_generation,
+                    submitted_at: Instant::now(),
+                    backend: "gpu",
+                    scale_factor: self.scale,
+                    physical_size: (size.width, size.height),
+                });
+        }
         Ok(true)
     }
 
@@ -5142,6 +5179,17 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         });
         self.raster
             .acknowledge(self.native_host_generation, result.revision);
+        if let Some(host) = self.host.as_mut() {
+            host.application
+                .native_frame_submitted(NativeFrameSubmission {
+                    correlation: self.raster_correlation,
+                    frame_generation: self.raster_frame_generation,
+                    submitted_at: Instant::now(),
+                    backend: "software",
+                    scale_factor: self.scale,
+                    physical_size: (size.width, size.height),
+                });
+        }
         Ok(())
     }
 
