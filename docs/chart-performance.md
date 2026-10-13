@@ -152,3 +152,23 @@ Explicit heatmap color domains now remain fixed across snapshot extrema changes.
 Explicit bubble size domains map normalized value to marker area (10 logical-pixel
 maximum radius), with a 2-pixel minimum radius so zero-size entities remain
 inspectable. Implicit domains retain their existing maximum-relative behavior.
+
+### Optional Wayland compositor feedback
+
+Enable `twinkle-ui/wayland-presentation` on Linux to attach a guest event queue to
+the standalone winit-owned Wayland display and surface. Where the compositor
+advertises `wp_presentation` with `CLOCK_MONOTONIC`, the runtime requests feedback
+before each native present commit and delivers `NativeFramePresentation` through
+`Application::native_frame_presented`. It also announces capability through
+`native_presentation_supported`. Feedback contains the captured correlation,
+actual reported presentation time mapped to Rust `Instant`, callback observation
+time, refresh interval, display sequence, and explicit discarded-frame state.
+
+Timestamp mapping samples Linux CLOCK_MONOTONIC and Instant back to back; its
+uncertainty is the sampling overhead, not event-loop callback delay. Future or
+invalid timestamps remain unavailable. Unsupported clocks and non-Wayland
+surfaces remain unsupported. The guest queue is bounded to 128 outstanding
+feedback objects, never owns or closes winit's display, and is dropped before
+its surface/window owner. This feature provides compositor display evidence,
+not GPU execution timestamps. Earlier uninstrumented measurements in this
+file retain their original unavailable-presentation boundary.

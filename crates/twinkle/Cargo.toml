@@ -13,6 +13,7 @@ keywords = ["gui", "ui", "desktop", "declarative"]
 categories = ["gui"]
 
 [features]
+wayland-presentation = ["dep:wayland-client", "dep:wayland-protocols", "dep:libc", "dep:raw-window-handle"]
 pipeline-attribution = ["dep:serde_json"]
 redux = ["dep:twinkle-redux"]
 default = ["native-controller", "gpu-presenter"]
@@ -47,3 +48,8 @@ windows-core = "0.62.2"
 proptest.workspace = true
 sha2.workspace = true
 toml.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31.15", features = ["system"], optional = true }
+wayland-protocols = { version = "0.32.13", features = ["client"], optional = true }
+libc = { version = "0.2", optional = true }

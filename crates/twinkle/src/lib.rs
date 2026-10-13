@@ -48,6 +48,8 @@ pub mod text_editor;
 pub mod theme;
 #[allow(missing_docs)]
 mod ui;
+#[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+mod wayland_presentation;
 
 #[cfg(target_os = "linux")]
 pub use controller::NativeControllerDevice;
@@ -94,11 +96,11 @@ pub use runtime::{
     FileDragAction, FileDragEvent, FrameOverlay, GlobalAction, HostAdapter, HostBatch,
     HostChangeToken, HostEvent, HostEventOutcome, HostFailure, HostFailureStage, HostInputLease,
     HostInspection, HostServices, HostTelemetry, MessageEvidence, NativeFrameCorrelation,
-    NativeFrameSubmission, NormalizedAdmissionBinding, NormalizedIngressAuthority,
-    NormalizedInputEnvelope, NormalizedRecipientBinding, NormalizedSourceBinding, OutboundFileDrag,
-    OverlayDeclarationFailure, Popover, ScrollAnchor, SemanticActionFailure, Shortcut,
-    ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost, UiHostViewport, ViewContext, run,
-    run_with_adapter, run_with_controller_source,
+    NativeFramePresentation, NativeFrameSubmission, NormalizedAdmissionBinding,
+    NormalizedIngressAuthority, NormalizedInputEnvelope, NormalizedRecipientBinding,
+    NormalizedSourceBinding, OutboundFileDrag, OverlayDeclarationFailure, Popover, ScrollAnchor,
+    SemanticActionFailure, Shortcut, ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost,
+    UiHostViewport, ViewContext, run, run_with_adapter, run_with_controller_source,
 };
 #[cfg(target_os = "windows")]
 pub use runtime::{run_with_adapter_on_any_thread, run_with_controller_source_on_any_thread};
