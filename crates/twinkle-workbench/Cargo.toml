@@ -36,7 +36,7 @@ pipeline-allocator = ["jsx"]
 pipeline-attribution = ["twinkle/pipeline-attribution", "twinkle-jsx-runtime?/pipeline-attribution"]
 default = []
 jsx = ["dep:twinkle-jsx-runtime", "dep:twinkle-redux-jsx", "dep:twinkle-presentation", "dep:twinkle-protocol", "dep:serde_json"]
-charts = ["dep:twinkle-charts"]
+charts = ["dep:twinkle-charts", "twinkle-presentation?/charts"]
 
 [dependencies]
 twinkle-jsx-runtime = { version = "0.2.0", path = "../twinkle-jsx-runtime", optional = true }

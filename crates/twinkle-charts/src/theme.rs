@@ -14,9 +14,31 @@ pub struct SeriesCue {
     pub palette_exhausted: bool,
 }
 
+/// Font sizes shared by chart measurement and retained text painting.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChartTypography {
+    /// Logical pixels, independent of device scale.
+    pub title: f32,
+    pub body: f32,
+    pub label: f32,
+    pub control: f32,
+}
+
+impl Default for ChartTypography {
+    fn default() -> Self {
+        Self {
+            title: 12.0,
+            body: 12.0,
+            label: 12.0,
+            control: 12.0,
+        }
+    }
+}
+
 /// Semantic chart tokens shared by native recipes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChartTheme {
+    pub typography: ChartTypography,
     pub background: u32,
     pub plot_background: u32,
     pub foreground: u32,
@@ -32,6 +54,7 @@ pub struct ChartTheme {
 impl Default for ChartTheme {
     fn default() -> Self {
         Self {
+            typography: ChartTypography::default(),
             background: 0xF7F9FC,
             plot_background: 0xFFFFFF,
             foreground: 0x172033,
@@ -51,6 +74,7 @@ impl Default for ChartTheme {
 impl ChartTheme {
     pub fn dark() -> Self {
         Self {
+            typography: ChartTypography::default(),
             background: 0x151A23,
             plot_background: 0x1D2430,
             foreground: 0xF4F6FA,
@@ -67,6 +91,7 @@ impl ChartTheme {
     }
     pub fn high_contrast() -> Self {
         Self {
+            typography: ChartTypography::default(),
             background: HIGH_CONTRAST_SURFACE,
             plot_background: HIGH_CONTRAST_SURFACE,
             foreground: HIGH_CONTRAST_TEXT,
@@ -80,6 +105,16 @@ impl ChartTheme {
         }
     }
     pub fn validate(&self) -> Result<(), ChartError> {
+        let fonts = self.typography;
+        if [fonts.title, fonts.body, fonts.label, fonts.control]
+            .into_iter()
+            .any(|size| !size.is_finite() || size <= 0.0)
+        {
+            return Err(ChartError::invalid(
+                ChartStage::Validate,
+                "chart font sizes must be finite and positive logical pixels",
+            ));
+        }
         if self.categorical.is_empty() {
             return Err(ChartError::invalid(
                 ChartStage::Validate,
@@ -153,6 +188,21 @@ fn interpolate(a: u32, b: u32, t: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typography_rejects_nonpositive_and_nonfinite_sizes() {
+        for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            for role in 0..4 {
+                let mut theme = ChartTheme::default();
+                match role {
+                    0 => theme.typography.title = invalid,
+                    1 => theme.typography.body = invalid,
+                    2 => theme.typography.label = invalid,
+                    _ => theme.typography.control = invalid,
+                }
+                assert!(theme.validate().is_err());
+            }
+        }
+    }
     #[test]
     fn palette_exhaustion_adds_secondary_cues() {
         let theme = ChartTheme::default();

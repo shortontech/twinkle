@@ -60,10 +60,20 @@ const MAX_TEXTURE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TRANSIENT_TEXTURE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RETAINED_FRAMEBUFFER_BYTES: usize = 128 * 1024 * 1024;
 
+#[cfg(test)]
 fn retained_framebuffer_bytes(width: u32, height: u32) -> Option<usize> {
+    retained_framebuffer_sample_bytes(width, height, 1)
+}
+
+fn retained_framebuffer_sample_bytes(width: u32, height: u32, samples: u32) -> Option<usize> {
     (width as usize)
         .checked_mul(height as usize)?
-        .checked_mul(4)
+        .checked_mul(4)?
+        .checked_mul(if samples == 1 {
+            1
+        } else {
+            samples as usize + 1
+        })
         .filter(|bytes| *bytes <= MAX_RETAINED_FRAMEBUFFER_BYTES)
 }
 
@@ -860,6 +870,82 @@ pub struct GpuOffscreenRenderer {
     graphics: GpuGraphics,
     textured_pipeline: wgpu::RenderPipeline,
     shape_pipeline: wgpu::RenderPipeline,
+    multisampled_textured_pipeline: wgpu::RenderPipeline,
+    multisampled_shape_pipeline: wgpu::RenderPipeline,
+}
+
+fn multisampled_pipeline(
+    graphics: &GpuGraphics,
+    format: wgpu::TextureFormat,
+    fragment: &str,
+    blend: Option<wgpu::BlendState>,
+) -> wgpu::RenderPipeline {
+    let layout = graphics
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Twinkle multisampled scene"),
+            bind_group_layouts: &[Some(&graphics.texture_layout)],
+            immediate_size: 0,
+        });
+    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2];
+    graphics
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Twinkle multisampled scene"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &graphics.shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &attributes,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 4,
+                ..Default::default()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &graphics.shader,
+                entry_point: Some(fragment),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+}
+
+fn multisampled_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("Twinkle path multisample coverage"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 4,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 impl GpuOffscreenRenderer {
@@ -875,7 +961,7 @@ impl GpuOffscreenRenderer {
                 immediate_size: 0,
             });
         let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x2, 4 => Float32x2];
-        let pipeline = |label, fragment| {
+        let pipeline = |label, fragment, count| {
             graphics
                 .device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -893,7 +979,10 @@ impl GpuOffscreenRenderer {
                     },
                     primitive: wgpu::PrimitiveState::default(),
                     depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
+                    multisample: wgpu::MultisampleState {
+                        count,
+                        ..Default::default()
+                    },
                     fragment: Some(wgpu::FragmentState {
                         module: &graphics.shader,
                         entry_point: Some(fragment),
@@ -908,12 +997,18 @@ impl GpuOffscreenRenderer {
                     cache: None,
                 })
         };
-        let textured_pipeline = pipeline("Twinkle offscreen textured rectangles", "fs_main");
-        let shape_pipeline = pipeline("Twinkle offscreen shapes", "fs_shape");
+        let textured_pipeline = pipeline("Twinkle offscreen textured rectangles", "fs_main", 1);
+        let shape_pipeline = pipeline("Twinkle offscreen shapes", "fs_shape", 1);
+        let multisampled_textured_pipeline =
+            pipeline("Twinkle offscreen antialiased paths", "fs_main", 4);
+        let multisampled_shape_pipeline =
+            pipeline("Twinkle offscreen antialiased shapes", "fs_shape", 4);
         Ok(Self {
             graphics,
             textured_pipeline,
             shape_pipeline,
+            multisampled_textured_pipeline,
+            multisampled_shape_pipeline,
         })
     }
 
@@ -925,6 +1020,29 @@ impl GpuOffscreenRenderer {
         height: u32,
         scale: f32,
     ) -> Result<Vec<crate::Pixel>, String> {
+        self.render_sequence(&[(commands, None)], width, height, scale)
+    }
+
+    // The sequence path also exercises persistent multisample storage in GPU
+    // regression tests. Damage scissors use physical pixels, as in the presenter.
+    fn render_sequence(
+        &self,
+        frames: &[(&[PaintCommand], Option<(u32, u32, u32, u32)>)],
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) -> Result<Vec<crate::Pixel>, String> {
+        self.render_sequence_with_antialiasing(frames, width, height, scale, true)
+    }
+
+    fn render_sequence_with_antialiasing(
+        &self,
+        frames: &[(&[PaintCommand], Option<(u32, u32, u32, u32)>)],
+        width: u32,
+        height: u32,
+        scale: f32,
+        antialiasing: bool,
+    ) -> Result<Vec<crate::Pixel>, String> {
         const MAX_PIXELS: u64 = 16 * 1024 * 1024;
         if width == 0 || height == 0 || !scale.is_finite() || scale <= 0.0 {
             return Err("offscreen GPU dimensions and scale must be positive".into());
@@ -935,25 +1053,17 @@ impl GpuOffscreenRenderer {
         if pixels > MAX_PIXELS {
             return Err("offscreen GPU pixel budget exceeded".into());
         }
-        let mut frame = Frame::new(width, height, scale, self.graphics.white.clone());
-        frame.prepare(commands, &self.graphics);
-        if frame.vertices.is_empty() {
-            frame.vertices.push(Vertex {
-                position: [0.0; 2],
-                uv: [0.0; 2],
-                color: [0.0; 4],
-                half_size: [0.0; 2],
-                shape: [0.0; 2],
-            });
+        let has_paths = antialiasing
+            && frames
+                .iter()
+                .flat_map(|(commands, _)| commands.iter())
+                .any(|command| matches!(command, PaintCommand::Path { .. }));
+        let target_bytes = pixels
+            .checked_mul(if has_paths { 20 } else { 4 })
+            .ok_or("offscreen GPU target byte overflow")?;
+        if target_bytes > MAX_RETAINED_FRAMEBUFFER_BYTES as u64 {
+            return Err("offscreen GPU target byte budget exceeded".into());
         }
-        let vertices = self
-            .graphics
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Twinkle offscreen vertices"),
-                contents: bytemuck::cast_slice(&frame.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
         let texture = self
             .graphics
             .device
@@ -972,6 +1082,16 @@ impl GpuOffscreenRenderer {
                 view_formats: &[],
             });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Only path scenes need multisample coverage. Text/rounded rectangles
+        // already have their own coverage, and retain the single-sample path.
+        let multisampled = has_paths.then(|| {
+            multisampled_target(
+                &self.graphics.device,
+                width,
+                height,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+        });
         let unpadded_bytes_per_row = width.checked_mul(4).ok_or("GPU row byte overflow")?;
         let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(256) * 256;
         let buffer_size = u64::from(padded_bytes_per_row)
@@ -989,15 +1109,59 @@ impl GpuOffscreenRenderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Twinkle offscreen frame"),
                 });
-        {
+        let clear_resources = frames.iter().any(|(_, damage)| damage.is_some()).then(|| {
+            assert!(
+                has_paths,
+                "partial offscreen test requires a multisampled scene"
+            );
+            (
+                multisampled_pipeline(
+                    &self.graphics,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    "fs_main",
+                    None,
+                ),
+                self.graphics
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Twinkle offscreen damage clear"),
+                        contents: bytemuck::cast_slice(&fullscreen_vertices([0.0; 4])),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        });
+        for (index, (commands, damage)) in frames.iter().enumerate() {
+            assert!(
+                index > 0 || damage.is_none(),
+                "first frame must initialize the target"
+            );
+            let mut frame = Frame::new(width, height, scale, self.graphics.white.clone());
+            frame.prepare(commands, &self.graphics);
+            if frame.vertices.is_empty() {
+                frame
+                    .vertices
+                    .extend_from_slice(&fullscreen_vertices([0.0; 4]));
+            }
+            let vertices =
+                self.graphics
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Twinkle offscreen vertices"),
+                        contents: bytemuck::cast_slice(&frame.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Twinkle offscreen frame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: multisampled.as_ref().unwrap_or(&view),
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: multisampled.as_ref().map(|_| &view),
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: if damage.is_some() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1006,18 +1170,30 @@ impl GpuOffscreenRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if let Some(scissor) = damage {
+                let (pipeline, vertices) = clear_resources.as_ref().unwrap();
+                pass.set_pipeline(pipeline);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                pass.set_bind_group(0, self.graphics.white.as_ref(), &[]);
+                pass.draw(0..6, 0..1);
+            }
             pass.set_vertex_buffer(0, vertices.slice(..));
             for draw in &frame.draws {
+                let scissor = match damage {
+                    Some(damage) => intersect_scissor(draw.scissor, *damage),
+                    None => Some(draw.scissor),
+                };
+                let Some(scissor) = scissor else { continue };
                 pass.set_pipeline(match draw.kind {
+                    DrawKind::Textured if multisampled.is_some() => {
+                        &self.multisampled_textured_pipeline
+                    }
+                    DrawKind::Shape if multisampled.is_some() => &self.multisampled_shape_pipeline,
                     DrawKind::Textured => &self.textured_pipeline,
                     DrawKind::Shape => &self.shape_pipeline,
                 });
-                pass.set_scissor_rect(
-                    draw.scissor.0,
-                    draw.scissor.1,
-                    draw.scissor.2,
-                    draw.scissor.3,
-                );
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                 pass.set_bind_group(0, draw.texture.as_ref(), &[]);
                 pass.draw(draw.start..draw.end, 0..1);
             }
@@ -1196,6 +1372,7 @@ struct GpuPresenter {
     pipeline: wgpu::RenderPipeline,
     shape_pipeline: wgpu::RenderPipeline,
     clear_pipeline: wgpu::RenderPipeline,
+    multisampled_pipelines: Option<[wgpu::RenderPipeline; 3]>,
     retained: Option<RetainedFramebuffer>,
     retained_diagnostics: RetainedFramebufferDiagnostics,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -1208,6 +1385,7 @@ struct GpuPresenter {
 
 struct RetainedFramebuffer {
     view: wgpu::TextureView,
+    multisampled: Option<wgpu::TextureView>,
     texture: Arc<wgpu::BindGroup>,
     configuration: (u32, u32, u32, wgpu::TextureFormat),
     valid: bool,
@@ -1498,6 +1676,7 @@ impl GpuPresenter {
             pipeline,
             shape_pipeline,
             clear_pipeline,
+            multisampled_pipelines: None,
             retained: None,
             retained_diagnostics: RetainedFramebufferDiagnostics::default(),
             vertex_buffer: None,
@@ -1521,8 +1700,9 @@ impl GpuPresenter {
         width: u32,
         height: u32,
         scale: f32,
+        samples: u32,
     ) -> bool {
-        let Some(bytes) = retained_framebuffer_bytes(width, height) else {
+        let Some(bytes) = retained_framebuffer_sample_bytes(width, height, samples) else {
             self.release_retained_framebuffer();
             self.retained_diagnostics.budget_fallbacks =
                 self.retained_diagnostics.budget_fallbacks.saturating_add(1);
@@ -1530,11 +1710,9 @@ impl GpuPresenter {
         };
         let configuration =
             retained_framebuffer_configuration(width, height, scale, self.config.format);
-        if self
-            .retained
-            .as_ref()
-            .is_some_and(|target| target.configuration == configuration)
-        {
+        if self.retained.as_ref().is_some_and(|target| {
+            target.configuration == configuration && target.multisampled.is_some() == (samples > 1)
+        }) {
             return true;
         }
         self.release_retained_framebuffer();
@@ -1573,6 +1751,8 @@ impl GpuPresenter {
         );
         self.retained = Some(RetainedFramebuffer {
             view,
+            multisampled: (samples > 1)
+                .then(|| multisampled_target(&graphics.device, width, height, self.config.format)),
             texture: sampled,
             configuration,
             valid: false,
@@ -1621,7 +1801,53 @@ impl GpuPresenter {
             self.configured = true;
         }
         let scale = width as f32 / geometry.logical_width.max(1) as f32;
-        let retained = self.ensure_retained_framebuffer(graphics, width, height, scale);
+        let cached_samples = self
+            .retained
+            .as_ref()
+            .filter(|target| {
+                target.valid
+                    && damage.is_some_and(|damage| damage.is_empty())
+                    && target.configuration
+                        == retained_framebuffer_configuration(
+                            width,
+                            height,
+                            scale,
+                            self.config.format,
+                        )
+            })
+            .map(|target| if target.multisampled.is_some() { 4 } else { 1 });
+        let samples = cached_samples.unwrap_or_else(|| {
+            let has_paths = commands
+                .iter()
+                .any(|command| matches!(command, PaintCommand::Path { .. }));
+            if !has_paths {
+                return 1;
+            }
+            if retained_framebuffer_sample_bytes(width, height, 4).is_some() {
+                return 4;
+            }
+            self.retained_diagnostics.budget_fallbacks =
+                self.retained_diagnostics.budget_fallbacks.saturating_add(1);
+            1
+        });
+        if samples > 1 && self.multisampled_pipelines.is_none() {
+            self.multisampled_pipelines = Some([
+                multisampled_pipeline(
+                    graphics,
+                    self.config.format,
+                    "fs_main",
+                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                ),
+                multisampled_pipeline(
+                    graphics,
+                    self.config.format,
+                    "fs_shape",
+                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                ),
+                multisampled_pipeline(graphics, self.config.format, "fs_main", None),
+            ]);
+        }
+        let retained = self.ensure_retained_framebuffer(graphics, width, height, scale, samples);
         let retained_valid = self.retained.as_ref().is_some_and(|target| target.valid);
         let decision = if retained {
             offscreen_redraw(commands, damage, retained_valid)
@@ -1835,12 +2061,24 @@ impl GpuPresenter {
                 .as_ref()
                 .filter(|_| retained)
                 .map_or(&view, |retained| &retained.view);
+            let multisampled = self
+                .retained
+                .as_ref()
+                .filter(|_| retained)
+                .and_then(|retained| retained.multisampled.as_ref());
+            let pipelines = self
+                .multisampled_pipelines
+                .as_ref()
+                .filter(|_| multisampled.is_some());
+            let textured_pipeline = pipelines.map_or(&self.pipeline, |p| &p[0]);
+            let shape_pipeline = pipelines.map_or(&self.shape_pipeline, |p| &p[1]);
+            let clear_pipeline = pipelines.map_or(&self.clear_pipeline, |p| &p[2]);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Nickel retained shell frame"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
+                    view: multisampled.unwrap_or(target),
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: multisampled.map(|_| target),
                     ops: wgpu::Operations {
                         load: if matches!(redraw, OffscreenRedraw::Full) {
                             wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
@@ -1857,7 +2095,7 @@ impl GpuPresenter {
             });
             pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             if let Some(scissor) = damage_scissor {
-                pass.set_pipeline(&self.clear_pipeline);
+                pass.set_pipeline(clear_pipeline);
                 pass.set_vertex_buffer(0, self.auxiliary_vertex_buffer.slice(..));
                 pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                 pass.set_bind_group(0, graphics.white.as_ref(), &[]);
@@ -1887,8 +2125,8 @@ impl GpuPresenter {
                             continue;
                         };
                         pass.set_pipeline(match draw.kind {
-                            DrawKind::Textured => &self.pipeline,
-                            DrawKind::Shape => &self.shape_pipeline,
+                            DrawKind::Textured => textured_pipeline,
+                            DrawKind::Shape => shape_pipeline,
                         });
                         pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                         pass.set_bind_group(0, draw.texture.as_ref(), &[]);
@@ -1909,8 +2147,8 @@ impl GpuPresenter {
                     };
                     let Some(scissor) = scissor else { continue };
                     pass.set_pipeline(match draw.kind {
-                        DrawKind::Textured => &self.pipeline,
-                        DrawKind::Shape => &self.shape_pipeline,
+                        DrawKind::Textured => textured_pipeline,
+                        DrawKind::Shape => shape_pipeline,
                     });
                     pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
                     pass.set_bind_group(0, draw.texture.as_ref(), &[]);
@@ -3322,6 +3560,11 @@ mod tests {
     #[test]
     fn retained_framebuffer_obeys_memory_budget() {
         assert_eq!(retained_framebuffer_bytes(1920, 1080), Some(8_294_400));
+        assert_eq!(
+            retained_framebuffer_sample_bytes(1920, 1080, 4),
+            Some(41_472_000)
+        );
+        assert_eq!(retained_framebuffer_sample_bytes(3840, 2160, 4), None);
         assert_eq!(retained_framebuffer_bytes(u32::MAX, u32::MAX), None);
     }
 
@@ -3719,6 +3962,233 @@ mod tests {
                     "changed pixel ({x}, {y}) escaped damage at step {step}: {damage:?}"
                 );
             }
+        }
+    }
+}
+#[test]
+fn aligned_path_does_not_paint_outside_declared_bounds() {
+    use crate::ui::{PathFillRule, PathGeometry, PathGeometryKind};
+    let renderer = GpuOffscreenRenderer::new().expect("headless GPU");
+    let geometry = PathGeometry::new(
+        vec![
+            Point { x: 8.0, y: 8.0 },
+            Point { x: 8.0, y: 40.0 },
+            Point { x: 40.0, y: 8.0 },
+            Point { x: 40.0, y: 8.0 },
+            Point { x: 8.0, y: 40.0 },
+            Point { x: 40.0, y: 40.0 },
+        ],
+        Rect::new(8.0, 8.0, 32.0, 32.0),
+        PathGeometryKind::Fill {
+            rule: PathFillRule::NonZero,
+        },
+        0.1,
+        4,
+    )
+    .unwrap();
+    let commands = [PaintCommand::Path {
+        geometry: Arc::new(geometry),
+        color: 0x336699,
+    }];
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let pixels = renderer.render(&commands, 128, 128, scale).unwrap();
+        let start = (8.0 * scale) as usize;
+        let end = (40.0 * scale) as usize;
+        for y in 0..128 {
+            for x in 0..128 {
+                let expected = if (start..end).contains(&x) && (start..end).contains(&y) {
+                    255
+                } else {
+                    0
+                };
+                assert_eq!(
+                    pixels[y * 128 + x].a,
+                    expected,
+                    "incorrect coverage at ({x},{y}), device scale {scale}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn multisampled_diagonal_has_partial_coverage_without_expanding_its_area() {
+    use crate::ui::{PathFillRule, PathGeometry, PathGeometryKind};
+    let renderer = GpuOffscreenRenderer::new().expect("headless GPU");
+    let geometry = PathGeometry::new(
+        vec![
+            Point { x: 8.0, y: 8.0 },
+            Point { x: 56.0, y: 8.0 },
+            Point { x: 8.0, y: 40.0 },
+        ],
+        Rect::new(8.0, 8.0, 48.0, 32.0),
+        PathGeometryKind::Fill {
+            rule: PathFillRule::NonZero,
+        },
+        0.1,
+        3,
+    )
+    .unwrap();
+    let commands = [PaintCommand::Path {
+        geometry: Arc::new(geometry),
+        color: 0x336699,
+    }];
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let pixels = renderer.render(&commands, 128, 128, scale).unwrap();
+        let partial = pixels
+            .iter()
+            .filter(|pixel| pixel.a > 0 && pixel.a < 255)
+            .count();
+        assert!(partial >= 20, "no smooth diagonal at device scale {scale}");
+        let covered_area: f64 = pixels.iter().map(|p| f64::from(p.a) / 255.0).sum();
+        let expected_area = 48.0 * 32.0 * 0.5 * f64::from(scale).powi(2);
+        assert!(
+            (covered_area - expected_area).abs() <= 1.0,
+            "coverage area {covered_area} differs from {expected_area} at {scale}"
+        );
+    }
+}
+
+#[test]
+fn multisampled_partial_redraw_matches_fresh_pixels_across_dpi() {
+    use crate::ui::{PathFillRule, PathGeometry, PathGeometryKind};
+    let renderer = GpuOffscreenRenderer::new().expect("headless GPU");
+    let triangle = |x: f32, y: f32, width: f32, height: f32, color| PaintCommand::Path {
+        geometry: Arc::new(
+            PathGeometry::new(
+                vec![
+                    Point { x, y },
+                    Point { x: x + width, y },
+                    Point { x, y: y + height },
+                ],
+                Rect::new(x, y, width, height),
+                PathGeometryKind::Fill {
+                    rule: PathFillRule::NonZero,
+                },
+                0.1,
+                3,
+            )
+            .unwrap(),
+        ),
+        color,
+    };
+    let scenes: Vec<Vec<PaintCommand>> = (0..5)
+        .map(|step| {
+            let mut commands = vec![
+                PaintCommand::Fill {
+                    rect: Rect::new(0.0, 0.0, 96.0, 96.0),
+                    color: 0xff192533,
+                },
+                // Its antialiased edge crosses the damage boundary. Samples outside
+                // damage must survive and must not accumulate another alpha blend.
+                triangle(4.0, 4.0, 85.0, 77.0, 0x8066aaee),
+            ];
+            if step != 2 {
+                commands.push(triangle(21.25 + step as f32, 24.5, 28.0, 31.0, 0x90ee9933));
+            }
+            commands.push(PaintCommand::OverlayFill {
+                rect: Rect::new(10.0, 10.0, 70.0, 70.0),
+                color: 0x3044cc88,
+            });
+            commands
+        })
+        .collect();
+    for scale in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 3.0] {
+        let side = (96.0 * scale).ceil() as u32;
+        let start = (20.0 * scale).floor() as u32;
+        let end = (57.0 * scale).ceil() as u32;
+        let damage = (start, start, end - start, end - start);
+        let mut frames = vec![(scenes[0].as_slice(), None)];
+        for (step, scene) in scenes.iter().enumerate().skip(1) {
+            frames.push((scene.as_slice(), Some(damage)));
+            let partial = renderer
+                .render_sequence(&frames, side, side, scale)
+                .unwrap();
+            let fresh = renderer.render(scene, side, side, scale).unwrap();
+            assert_eq!(
+                partial, fresh,
+                "partial redraw differs at scale {scale}, step {step}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "release-profile MSAA end-to-end render/readback comparison"]
+fn multisample_render_readback_cost() {
+    use crate::ui::{PathFillRule, PathGeometry, PathGeometryKind};
+    let renderer = GpuOffscreenRenderer::new().expect("headless GPU");
+    eprintln!("adapter: {:?}", renderer.graphics.adapter.get_info());
+    let mut commands = vec![PaintCommand::Fill {
+        rect: Rect::new(0.0, 0.0, 1280.0, 720.0),
+        color: 0xff192533,
+    }];
+    // Sixteen dashboard plots, each with two area bands. Keep identical
+    // geometry and overdraw in both sample-count cases.
+    for row in 0..4 {
+        for column in 0..4 {
+            let x = column as f32 * 320.0 + 10.0;
+            let y = row as f32 * 180.0 + 10.0;
+            for (offset, color) in [(0.0, 0xff0077b6), (25.0, 0xffe5a000)] {
+                commands.push(PaintCommand::Path {
+                    geometry: Arc::new(
+                        PathGeometry::new(
+                            vec![
+                                Point { x, y: y + 145.0 },
+                                Point {
+                                    x: x + 295.0,
+                                    y: y + offset,
+                                },
+                                Point {
+                                    x: x + 295.0,
+                                    y: y + 155.0,
+                                },
+                            ],
+                            Rect::new(x, y, 295.0, 155.0),
+                            PathGeometryKind::Fill {
+                                rule: PathFillRule::NonZero,
+                            },
+                            0.1,
+                            3,
+                        )
+                        .unwrap(),
+                    ),
+                    color,
+                });
+            }
+        }
+    }
+    for (width, height, scale) in [(1280, 720, 1.0), (1920, 1080, 1.5), (2560, 1440, 2.0)] {
+        let mut elapsed = [Vec::new(), Vec::new()];
+        for iteration in 0..24 {
+            // Alternate ordering to reduce warm-up and drift bias.
+            for slot in 0..2 {
+                let variant = (iteration + slot) % 2;
+                let start = std::time::Instant::now();
+                let pixels = renderer
+                    .render_sequence_with_antialiasing(
+                        &[(commands.as_slice(), None)],
+                        width,
+                        height,
+                        scale,
+                        variant == 1,
+                    )
+                    .unwrap();
+                std::hint::black_box(pixels);
+                if iteration >= 4 {
+                    elapsed[variant].push(start.elapsed().as_micros());
+                }
+            }
+        }
+        for (variant, times) in elapsed.iter_mut().enumerate() {
+            times.sort_unstable();
+            eprintln!(
+                "render+allocation+readback {width}x{height} samples={} p50_us={} p95_us={} target_bytes={}",
+                if variant == 0 { 1 } else { 4 },
+                times[times.len() / 2],
+                times[times.len() * 95 / 100],
+                u64::from(width) * u64::from(height) * if variant == 0 { 4 } else { 20 }
+            );
         }
     }
 }

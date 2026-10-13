@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 use twinkle_ui::{
-    ActionKind, DragGesture, Point, Rect, SemanticRole, UiId, WheelGesture,
+    ActionKind, DragGesture, Point, Rect, SemanticRole, Size, UiId, WheelGesture,
     backend::{PaintCommand, PathGeometry, PathGeometryKind, PathLineCap, PathLineJoin},
     retained_surface::{
         RetainedSurfaceChanges, RetainedSurfaceHost, RetainedSurfaceInput,
@@ -66,6 +66,18 @@ impl AxisMapper {
         mapped.clamp(range[0].min(range[1]), range[0].max(range[1])) as f32
     }
 
+    fn map_unclamped(&self, value: f64) -> f32 {
+        let (domain, range, transformed) = match self {
+            Self::Linear(scale) => (scale.domain(), scale.range(), value),
+            Self::Log(scale) => {
+                let domain = scale.domain();
+                ([domain[0].ln(), domain[1].ln()], scale.range(), value.ln())
+            }
+        };
+        let t = (transformed - domain[0]) / (domain[1] - domain[0]);
+        (range[0] + t * (range[1] - range[0])) as f32
+    }
+
     fn invert(&self, position: f32) -> f64 {
         match self {
             Self::Linear(scale) => scale.invert(f64::from(position)),
@@ -81,11 +93,25 @@ pub struct ChartHit {
     pub row: crate::RowKey,
     pub series: Option<Arc<str>>,
     pub bounds: Rect,
+    /// Two adjacent half-segments of an area band, in perimeter order.
+    /// `bounds` additionally clips this geometry to the visible plot.
+    pub area_band: Option<Arc<[Point; 6]>>,
     pub revision: u64,
     /// Index into the accepted view's shared inspection-source pool.
     pub source_index: usize,
     /// Exact row position inside that inspection source.
     pub row_index: usize,
+}
+
+// Allocation payload plus Arc's strong/weak counters. Kept separate so line,
+// point, and bar hits do not pay the area-band payload cost.
+const AREA_BAND_BYTES: usize = std::mem::size_of::<[Point; 6]>() + 2 * std::mem::size_of::<usize>();
+
+fn area_band_bytes(hits: &[ChartHit]) -> usize {
+    hits.iter()
+        .filter(|hit| hit.area_band.is_some())
+        .count()
+        .saturating_mul(AREA_BAND_BYTES)
 }
 
 /// Exact accepted datum exposed by pointer or keyboard inspection.
@@ -96,6 +122,39 @@ pub struct ChartInspection {
     pub series: Option<Arc<str>>,
     pub revision: u64,
     pub cells: Vec<crate::ChartTableCell>,
+    /// Ordered, presentation-safe subset selected by the chart tooltip contract.
+    pub display: Vec<ChartTooltipValue>,
+    pub include_data_table_hint: bool,
+    /// Accepted plot allocation for this datum (including its facet, if any).
+    pub plot_bounds: Rect,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartTooltipValue {
+    pub label: Arc<str>,
+    pub formatted: String,
+    pub unit: Option<Arc<str>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChartTooltipFormat {
+    Automatic,
+    Number { decimal_places: u8 },
+    Percent { decimal_places: u8 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartTooltipField {
+    pub column: Arc<str>,
+    pub label: Arc<str>,
+    pub unit: Option<Arc<str>>,
+    pub format: ChartTooltipFormat,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChartTooltipSpec {
+    pub fields: Vec<ChartTooltipField>,
+    pub include_data_table_hint: bool,
 }
 
 /// Immutable, bounded inspection handle for an accepted chart generation.
@@ -151,6 +210,27 @@ impl ChartInspector {
 struct InspectionSource {
     dataset: Arc<crate::Dataset>,
     owned_bytes: usize,
+    layer_index: usize,
+    plot_bounds: Rect,
+}
+
+/// Domain/data stage shared by guide measurement and geometry preparation.
+struct ResolvedLayer {
+    dataset: crate::Dataset,
+    x_coordinates: Vec<Option<f64>>,
+    y_coordinates: Vec<Option<f64>>,
+    all_values: Vec<(usize, f64, f64)>,
+    values: Vec<(usize, f64, f64)>,
+    x_domain: [f64; 2],
+    y_domain: [f64; 2],
+}
+
+#[derive(Default)]
+struct GuideSpace {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -177,9 +257,12 @@ pub struct ChartModel {
     theme: ChartTheme,
     state: ChartState,
     diagnostics: ChartDiagnostics,
+    plot_bounds: Option<Rect>,
     hits: Vec<ChartHit>,
+    area_band_bytes: usize,
     hit_x_order: Vec<usize>,
     inspection_sources: Vec<InspectionSource>,
+    tooltip: Option<ChartTooltipSpec>,
     data_owned: bool,
     renderer_generation: u64,
 }
@@ -201,9 +284,12 @@ impl ChartModel {
             theme,
             state: ChartState::default(),
             diagnostics: ChartDiagnostics::default(),
+            plot_bounds: None,
             hits: Vec::new(),
+            area_band_bytes: 0,
             hit_x_order: Vec::new(),
             inspection_sources: Vec::new(),
+            tooltip: None,
             data_owned: false,
             renderer_generation: 0,
         })
@@ -216,6 +302,49 @@ impl ChartModel {
     pub fn with_state(mut self, state: ChartState) -> Self {
         self.state = state;
         self
+    }
+    pub fn with_tooltip(mut self, tooltip: ChartTooltipSpec) -> Result<Self, ChartError> {
+        if tooltip.fields.len() > self.limits.max_columns {
+            return Err(ChartError::Limit {
+                resource: "tooltip fields",
+                actual: tooltip.fields.len(),
+                limit: self.limits.max_columns,
+            });
+        }
+        let mut total = 0usize;
+        for field in &tooltip.fields {
+            for text in [
+                field.column.as_ref(),
+                field.label.as_ref(),
+                field.unit.as_deref().unwrap_or(""),
+            ] {
+                if text.len() > self.limits.max_label_bytes {
+                    return Err(ChartError::Limit {
+                        resource: "tooltip label bytes",
+                        actual: text.len(),
+                        limit: self.limits.max_label_bytes,
+                    });
+                }
+                total = total.saturating_add(text.len());
+            }
+            if matches!(field.format, ChartTooltipFormat::Number { decimal_places }
+                | ChartTooltipFormat::Percent { decimal_places } if decimal_places > 17)
+            {
+                return Err(ChartError::invalid(
+                    crate::ChartStage::Validate,
+                    "tooltip decimal places must be at most 17",
+                ));
+            }
+        }
+        if total > self.limits.max_total_label_bytes {
+            return Err(ChartError::Limit {
+                resource: "tooltip total label bytes",
+                actual: total,
+                limit: self.limits.max_total_label_bytes,
+            });
+        }
+        self.tooltip = Some(tooltip);
+        Ok(self)
     }
     pub fn replace(
         &mut self,
@@ -246,29 +375,59 @@ impl ChartModel {
         if hit.revision != self.data.revision() {
             return None;
         }
-        let dataset = &self.inspection_sources.get(hit.source_index)?.dataset;
+        let source = self.inspection_sources.get(hit.source_index)?;
+        let dataset = &source.dataset;
         let row = dataset.row(hit.row_index)?;
         if row.key() != &hit.row {
             return None;
         }
+        let cells = dataset
+            .columns()
+            .iter()
+            .map(|column| {
+                let value = column.values[hit.row_index].clone();
+                crate::ChartTableCell {
+                    column: column.name.clone(),
+                    unit: column.unit.clone(),
+                    formatted: crate::table::format_value(&value),
+                    value,
+                }
+            })
+            .collect::<Vec<_>>();
+        let default_tooltip;
+        let tooltip = if let Some(tooltip) = &self.tooltip {
+            tooltip
+        } else {
+            default_tooltip = default_tooltip_spec(
+                self.spec
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.visible)
+                    .nth(source.layer_index),
+            );
+            &default_tooltip
+        };
+        let display = tooltip
+            .fields
+            .iter()
+            .filter_map(|field| {
+                let cell = cells.iter().find(|cell| cell.column == field.column)?;
+                Some(ChartTooltipValue {
+                    label: field.label.clone(),
+                    formatted: format_tooltip_value(&cell.value, field.format),
+                    unit: field.unit.clone().or_else(|| cell.unit.clone()),
+                })
+            })
+            .collect();
         Some(ChartInspection {
             dataset: dataset.id.0.clone(),
             row: row.key().clone(),
             series: hit.series.clone(),
             revision: hit.revision,
-            cells: dataset
-                .columns()
-                .iter()
-                .map(|column| {
-                    let value = column.values[hit.row_index].clone();
-                    crate::ChartTableCell {
-                        column: column.name.clone(),
-                        unit: column.unit.clone(),
-                        formatted: crate::table::format_value(&value),
-                        value,
-                    }
-                })
-                .collect(),
+            cells,
+            display,
+            include_data_table_hint: tooltip.include_data_table_hint,
+            plot_bounds: source.plot_bounds,
         })
     }
     fn nearest_index(&self, point: Point) -> Option<usize> {
@@ -278,8 +437,8 @@ impl ChartModel {
         let start = insertion.saturating_sub(512);
         let end = insertion.saturating_add(512).min(self.hit_x_order.len());
         self.hit_x_order[start..end].iter().copied().min_by(|a, b| {
-            distance(self.hits[*a].bounds, point)
-                .total_cmp(&distance(self.hits[*b].bounds, point))
+            hit_distance(&self.hits[*a], point)
+                .total_cmp(&hit_distance(&self.hits[*b], point))
                 .then_with(|| self.hits[*a].dataset.cmp(&self.hits[*b].dataset))
                 .then_with(|| self.hits[*a].row.cmp(&self.hits[*b].row))
         })
@@ -295,6 +454,7 @@ impl ChartModel {
             Vec<usize>,
             Vec<InspectionSource>,
             ChartDiagnostics,
+            Rect,
         ),
         ChartError,
     > {
@@ -314,7 +474,21 @@ impl ChartModel {
             .saturating_mul(
                 std::mem::size_of::<ChartHit>().saturating_add(std::mem::size_of::<usize>()),
             );
-        let preflight_peak = transient_bytes.saturating_add(indexed_candidate_bytes);
+        let area_candidate_bytes = self
+            .spec
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer.visible
+                    && matches!(layer.mark, Mark::Area { .. })
+                    && channel(&layer.encodings, Channel::Y2).is_some()
+            })
+            .count()
+            .saturating_mul(self.data.row_count())
+            .saturating_mul(AREA_BAND_BYTES);
+        let preflight_peak = transient_bytes
+            .saturating_add(indexed_candidate_bytes)
+            .saturating_add(area_candidate_bytes);
         if preflight_peak > self.limits.max_peak_bytes {
             return Err(ChartError::Limit {
                 resource: "chart preflight peak bytes",
@@ -333,17 +507,78 @@ impl ChartModel {
             }
         }
         let started = Instant::now();
+        let model = self;
+        let mut resolved_layers = if self.spec.facet.is_none() {
+            model
+                .spec
+                .layers
+                .iter()
+                .filter(|layer| layer.visible)
+                .map(|layer| {
+                    if matches!(layer.mark, Mark::Arc { .. }) {
+                        Ok(None)
+                    } else {
+                        model.resolve_layer(layer).map(Some)
+                    }
+                })
+                .collect::<Result<Vec<_>, ChartError>>()?
+        } else {
+            Vec::new()
+        };
+        unify_resolved_domains(&self.spec, &mut resolved_layers);
+        let guides = model.measure_guides(&resolved_layers)?;
         let mut output = RetainedSurfaceOutput {
             measured: input.bounds.size,
             damage: vec![input.bounds],
             ..RetainedSurfaceOutput::default()
         };
-        let right_guide = if self.has_secondary_y_axis() {
-            42.0
+        let fonts = self.theme.typography;
+        let title_size = measured_text(self.spec.title.as_ref(), -fonts.title, true, None);
+        let table_size = measured_text("Data table", -fonts.control, false, None);
+        let chrome_em = measured_text("M", -fonts.body, false, None).height.max(1.0);
+        let chrome_padding = chrome_em * 0.4;
+        let control_padding = measured_text("M", -fonts.control, false, None).height * 0.55;
+        let controls_width = ["+", "−", "Reset"]
+            .iter()
+            .map(|label| {
+                measured_text(label, -fonts.control, false, None).width + control_padding * 2.0
+            })
+            .sum::<f32>();
+        let table_width = table_size.width + chrome_padding * 2.0;
+        let row_height = title_size.height.max(table_size.height) + chrome_padding * 2.0;
+        let controls_wrap = title_size.width + controls_width + table_width + chrome_padding * 3.0
+            > input.bounds.size.width;
+        let header_height = row_height * if controls_wrap { 2.0 } else { 1.0 };
+        let header_height = header_height.min(input.bounds.size.height);
+        let left_guide = guides.left.max(chrome_em * 2.5);
+        let right_guide = guides.right.max(chrome_em * 1.25);
+        let bottom_guide = guides.bottom.max(chrome_em * 2.0);
+        let legend_width = (input.bounds.size.width - chrome_padding * 2.0).max(0.0);
+        let legend_height = if self.spec.legends.is_empty() {
+            0.0
         } else {
-            18.0
-        };
-        let plot = inset(input.bounds, 36.0, 18.0, right_guide, 30.0);
+            legend_item_bounds(
+                &self.legend_labels(&resolved_layers)?,
+                -fonts.label,
+                legend_width,
+            )
+            .last()
+            .map_or(0.0, |rect| rect.origin.y + rect.size.height)
+        }
+        .min((input.bounds.size.height - header_height).max(0.0));
+        let legend_bounds = Rect::new(
+            input.bounds.origin.x + chrome_padding.min(input.bounds.size.width),
+            input.bounds.origin.y + header_height,
+            legend_width,
+            legend_height,
+        );
+        let plot = inset(
+            input.bounds,
+            left_guide,
+            header_height + legend_height + guides.top,
+            right_guide,
+            bottom_guide,
+        );
         output.paint.push(PaintCommand::Fill {
             rect: input.bounds,
             color: self.theme.background,
@@ -353,22 +588,37 @@ impl ChartModel {
             color: self.theme.grid,
             width: 1.0,
         });
-        let table_width = input.bounds.size.width.min(88.0).max(0.0);
+        let table_width = input.bounds.size.width.min(table_width).max(0.0);
+        let controls_y = input.bounds.origin.y
+            + if controls_wrap {
+                row_height.min(input.bounds.size.height)
+            } else {
+                0.0
+            };
         let table_bounds = Rect::new(
             input.bounds.origin.x + input.bounds.size.width - table_width,
-            input.bounds.origin.y,
+            controls_y,
             table_width,
-            input.bounds.size.height.min(24.0).max(0.0),
+            row_height
+                .min((input.bounds.size.height - (controls_y - input.bounds.origin.y)).max(0.0)),
         );
         output.paint.push(PaintCommand::Text {
             bounds: Rect::new(
-                input.bounds.origin.x + 8.0,
-                input.bounds.origin.y + 4.0,
-                (input.bounds.size.width - table_width - 16.0).max(0.0),
-                22.0,
+                input.bounds.origin.x + chrome_padding.min(input.bounds.size.width),
+                input.bounds.origin.y + chrome_padding.min(input.bounds.size.height),
+                (input.bounds.size.width
+                    - if controls_wrap {
+                        chrome_padding * 2.0
+                    } else {
+                        table_width + controls_width + chrome_padding * 3.0
+                    })
+                .max(0.0),
+                title_size
+                    .height
+                    .min((header_height - chrome_padding).max(0.0)),
             ),
             text: self.spec.title.to_string(),
-            scale: 1.0,
+            scale: -fonts.title,
             color: self.theme.foreground,
             align: twinkle_ui::TextAlign::Start,
             bold: true,
@@ -386,7 +636,7 @@ impl ChartModel {
         output.paint.push(PaintCommand::Text {
             bounds: table_bounds,
             text: "Data table".into(),
-            scale: 0.9,
+            scale: -fonts.control,
             color: self.theme.foreground,
             align: twinkle_ui::TextAlign::Center,
             bold: false,
@@ -429,25 +679,20 @@ impl ChartModel {
         if plot.size.width > 1.0 && plot.size.height > 1.0 && self.spec.facet.is_some() {
             self.prepare_facets(plot, input, &mut output, &mut hits, &mut inspection_sources)?;
         } else if plot.size.width > 1.0 && plot.size.height > 1.0 {
-            let shared_model = if self.spec.layers.len() > 1 {
-                let mut model = self.clone();
-                model.spec = Arc::new(spec_with_shared_domains(&self.spec, &self.data));
-                Some(model)
-            } else {
-                None
-            };
-            let model = shared_model.as_ref().unwrap_or(self);
-            for (layer_index, layer) in model
+            for ((layer_index, layer), resolved) in model
                 .spec
                 .layers
                 .iter()
                 .filter(|layer| layer.visible)
                 .enumerate()
+                .zip(resolved_layers)
             {
                 model.prepare_layer(
                     layer_index,
                     layer,
+                    resolved,
                     plot,
+                    legend_bounds,
                     &mut output,
                     &mut hits,
                     &mut inspection_sources,
@@ -458,7 +703,7 @@ impl ChartModel {
             output.paint.push(PaintCommand::Text {
                 bounds: plot,
                 text: "No data".into(),
-                scale: 1.0,
+                scale: -fonts.body,
                 color: self.theme.muted,
                 align: twinkle_ui::TextAlign::Center,
                 bold: false,
@@ -488,6 +733,7 @@ impl ChartModel {
         });
         let index_bytes = hit_x_order.capacity() * std::mem::size_of::<usize>();
         let steady_bytes = hits.capacity() * std::mem::size_of::<ChartHit>()
+            + area_band_bytes(&hits)
             + index_bytes
             + inspection_sources
                 .iter()
@@ -611,7 +857,14 @@ impl ChartModel {
             notices,
             ..self.diagnostics.clone()
         };
-        Ok((output, hits, hit_x_order, inspection_sources, diagnostics))
+        Ok((
+            output,
+            hits,
+            hit_x_order,
+            inspection_sources,
+            diagnostics,
+            plot,
+        ))
     }
 
     fn preparation_scratch_ceiling(&self) -> PreparationScratch {
@@ -654,7 +907,14 @@ impl ChartModel {
             0
         };
         PreparationScratch {
-            coordinate: coordinate_work,
+            coordinate: coordinate_work.saturating_mul(
+                self.spec
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.visible)
+                    .count()
+                    .max(1),
+            ),
             geometry: geometry_work,
             transform: transform_work,
         }
@@ -716,7 +976,24 @@ impl ChartModel {
         let cell_width = plot.size.width / column_values.len().max(1) as f32;
         let cell_height = plot.size.height / row_values.len().max(1) as f32;
         let shared_spec = if facet.scales == crate::FacetScalePolicy::Shared {
-            spec_with_shared_domains(&self.spec, &self.data)
+            let resolved = self
+                .spec
+                .layers
+                .iter()
+                .filter(|layer| layer.visible)
+                .map(|layer| {
+                    if matches!(layer.mark, Mark::Arc { .. }) {
+                        Ok(None)
+                    } else {
+                        self.resolve_layer(layer).map(Some)
+                    }
+                })
+                .collect::<Result<Vec<_>, ChartError>>()?;
+            let mut spec = (*self.spec).clone();
+            for (scale, domain) in resolved_shared_domains(&self.spec, &resolved) {
+                spec.scales[scale].domain = Some(domain);
+            }
+            spec
         } else {
             (*self.spec).clone()
         };
@@ -782,7 +1059,7 @@ impl ChartModel {
                     cell_width,
                     cell_height,
                 );
-                let (mut prepared, mut facet_hits, _, mut facet_sources, _) = submodel.prepare(
+                let (mut prepared, mut facet_hits, _, mut facet_sources, _, _) = submodel.prepare(
                     RetainedSurfaceInput::new(bounds, input.scale_factor, input.revisions),
                 )?;
                 let source_offset = inspection_sources.len();
@@ -834,26 +1111,84 @@ impl ChartModel {
         Ok(())
     }
 
-    fn prepare_layer(
-        &self,
-        layer_index: usize,
-        layer: &crate::Layer,
-        plot: Rect,
-        output: &mut RetainedSurfaceOutput,
-        hits: &mut Vec<ChartHit>,
-        inspection_sources: &mut Vec<InspectionSource>,
-    ) -> Result<(), ChartError> {
-        if let Mark::Arc { inner_radius } = layer.mark {
-            return self.prepare_arc(
-                layer_index,
-                layer,
-                plot,
-                inner_radius,
-                output,
-                hits,
-                inspection_sources,
-            );
+    fn measure_guides(&self, layers: &[Option<ResolvedLayer>]) -> Result<GuideSpace, ChartError> {
+        let scale = -self.theme.typography.label;
+        let gap = measured_text("M", scale, false, None).height * 0.25;
+        let mut space = GuideSpace::default();
+        for (layer, resolved) in self
+            .spec
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .zip(layers)
+        {
+            let Some(resolved) = resolved else { continue };
+            if resolved.all_values.is_empty() {
+                continue;
+            }
+            for axis in &self.spec.axes {
+                let axis_channel = layer
+                    .encodings
+                    .iter()
+                    .find(|encoding| {
+                        matches!(encoding.channel, Channel::X | Channel::Y)
+                            && encoding.scale.as_deref() == Some(axis.scale.as_ref())
+                    })
+                    .map(|encoding| encoding.channel);
+                let Some(axis_channel) = axis_channel else {
+                    continue;
+                };
+                let domain = if axis_channel == Channel::X {
+                    resolved.x_domain
+                } else {
+                    resolved.y_domain
+                };
+                let scale_spec = self.spec.scales.iter().find(|s| s.name == axis.scale);
+                let mapper = AxisMapper::new(domain, [0.0, 1.0], scale_spec)?;
+                let count = axis
+                    .tick_count
+                    .unwrap_or(5)
+                    .clamp(2, self.limits.max_ticks_per_axis);
+                let mut ticks = Size::default();
+                for i in 0..count {
+                    let start = mapper.map(domain[0]);
+                    let end = mapper.map(domain[1]);
+                    let value =
+                        mapper.invert(start + (end - start) * i as f32 / (count - 1) as f32);
+                    let size = measured_text(
+                        &format_tick(value, axis.unit.as_deref()),
+                        scale,
+                        false,
+                        None,
+                    );
+                    ticks.width = ticks.width.max(size.width);
+                    ticks.height = ticks.height.max(size.height);
+                }
+                let title = axis
+                    .title
+                    .as_ref()
+                    .map(|title| measured_text(title, scale, true, None));
+                if axis_channel == Channel::X {
+                    space.bottom = space
+                        .bottom
+                        .max(gap * 2.0 + ticks.height + title.map_or(0.0, |s| gap + s.height));
+                } else {
+                    let width = ticks.width.max(title.map_or(0.0, |s| s.width)) + gap * 2.0;
+                    if self.y_axis_ordinal(&axis.scale) == 0 {
+                        space.left = space.left.max(width);
+                    } else {
+                        space.right = space.right.max(width);
+                    }
+                    space.top = space
+                        .top
+                        .max(ticks.height * 0.5 + title.map_or(0.0, |s| s.height + gap));
+                }
+            }
         }
+        Ok(space)
+    }
+
+    fn resolve_layer(&self, layer: &crate::Layer) -> Result<ResolvedLayer, ChartError> {
         let x = channel(&layer.encodings, Channel::X).ok_or_else(|| {
             ChartError::invalid(crate::ChartStage::Geometry, "mark requires x encoding")
         })?;
@@ -877,11 +1212,6 @@ impl ChartModel {
             transformed = crate::execute_transforms(source, &layer.transforms, &self.limits)?;
             &transformed
         };
-        let inspection_source = register_inspection_source(
-            inspection_sources,
-            dataset,
-            self.data_owned || !layer.transforms.is_empty(),
-        );
         let x_column =
             dataset
                 .column(&x.field.column)
@@ -941,13 +1271,6 @@ impl ChartModel {
                     .map(|(x, y)| (index, x, y))
             })
             .collect();
-        if layer_index == 0 {
-            // Keep controls available when controlled state hides every series.
-            self.prepare_legends(plot, series_column, output)?;
-        }
-        if all_values.is_empty() {
-            return Ok(());
-        }
         let values: Vec<(usize, f64, f64)> = all_values
             .iter()
             .copied()
@@ -1058,6 +1381,103 @@ impl ChartModel {
                 y_domain = normalized_domain(domain);
             }
         }
+        Ok(ResolvedLayer {
+            dataset: dataset.clone(),
+            x_coordinates,
+            y_coordinates,
+            all_values,
+            values,
+            x_domain,
+            y_domain,
+        })
+    }
+
+    fn prepare_layer(
+        &self,
+        layer_index: usize,
+        layer: &crate::Layer,
+        resolved: Option<ResolvedLayer>,
+        plot: Rect,
+        legend_bounds: Rect,
+        output: &mut RetainedSurfaceOutput,
+        hits: &mut Vec<ChartHit>,
+        inspection_sources: &mut Vec<InspectionSource>,
+    ) -> Result<(), ChartError> {
+        if let Mark::Arc { inner_radius } = layer.mark {
+            return self.prepare_arc(
+                layer_index,
+                layer,
+                plot,
+                inner_radius,
+                output,
+                hits,
+                inspection_sources,
+            );
+        }
+        let ResolvedLayer {
+            dataset,
+            x_coordinates,
+            y_coordinates,
+            all_values,
+            values,
+            x_domain,
+            y_domain,
+        } = resolved.expect("Cartesian layer was resolved before layout");
+        let dataset = &dataset;
+        let x = channel(&layer.encodings, Channel::X).expect("resolved x encoding");
+        let y = channel(&layer.encodings, Channel::Y).expect("resolved y encoding");
+        let x_scale = x.scale.as_deref();
+        let y_scale = y.scale.as_deref();
+        let inspection_source = register_inspection_source(
+            inspection_sources,
+            dataset,
+            self.data_owned || !layer.transforms.is_empty(),
+            layer_index,
+            plot,
+        );
+        let x_column =
+            dataset
+                .column(&x.field.column)
+                .ok_or_else(|| ChartError::MissingColumn {
+                    dataset: x.field.dataset.to_string(),
+                    column: x.field.column.to_string(),
+                })?;
+        let y_column =
+            dataset
+                .column(&y.field.column)
+                .ok_or_else(|| ChartError::MissingColumn {
+                    dataset: y.field.dataset.to_string(),
+                    column: y.field.column.to_string(),
+                })?;
+        let y2_column = channel(&layer.encodings, Channel::Y2)
+            .map(|encoding| {
+                dataset
+                    .column(&encoding.field.column)
+                    .ok_or_else(|| ChartError::MissingColumn {
+                        dataset: encoding.field.dataset.to_string(),
+                        column: encoding.field.column.to_string(),
+                    })
+            })
+            .transpose()?;
+        let x2_column = channel(&layer.encodings, Channel::X2)
+            .map(|encoding| {
+                dataset
+                    .column(&encoding.field.column)
+                    .ok_or_else(|| ChartError::MissingColumn {
+                        dataset: encoding.field.dataset.to_string(),
+                        column: encoding.field.column.to_string(),
+                    })
+            })
+            .transpose()?;
+        let series_column = channel(&layer.encodings, Channel::Series)
+            .and_then(|encoding| dataset.column(&encoding.field.column));
+        if layer_index == 0 {
+            // Keep controls available when controlled state hides every series.
+            self.prepare_legends(legend_bounds, series_column, output)?;
+        }
+        if all_values.is_empty() {
+            return Ok(());
+        }
         let categorical_x_count = x_column
             .values
             .iter()
@@ -1137,6 +1557,10 @@ impl ChartModel {
             x: x_mapper.map(x),
             y: y_mapper.map(y),
         };
+        let map_unclamped = |x: f64, y: f64| Point {
+            x: x_mapper.map_unclamped(x),
+            y: y_mapper.map_unclamped(y),
+        };
         let values = values
             .into_iter()
             .filter(|(_, x, y)| in_domain(*x, x_domain) && in_domain(*y, y_domain))
@@ -1153,10 +1577,14 @@ impl ChartModel {
             output,
         )?;
         let mut series_groups = series_groups(dataset, &layer.encodings, &self.state);
+        let continuous_mark = matches!(layer.mark, Mark::Line { .. } | Mark::Area { .. });
         for rows in &mut series_groups {
             rows.retain(|index| {
-                x_coordinates[*index].is_some_and(|value| in_domain(value, x_domain))
-                    && y_coordinates[*index].is_some_and(|value| in_domain(value, y_domain))
+                // Keep missing samples in continuous series: their position
+                // separates path segments rather than joining across a gap.
+                continuous_mark
+                    || (x_coordinates[*index].is_some_and(|value| in_domain(value, x_domain))
+                        && y_coordinates[*index].is_some_and(|value| in_domain(value, y_domain)))
             });
         }
         let color = self.theme.series_cue(layer_index).color;
@@ -1172,7 +1600,7 @@ impl ChartModel {
                     let mut markers = Vec::new();
                     for index in rows.iter().copied() {
                         match (x_coordinates[index], y_coordinates[index]) {
-                            (Some(x), Some(y)) => segment.push(map(x, y)),
+                            (Some(x), Some(y)) => segment.push(map_unclamped(x, y)),
                             _ => {
                                 let reduced = reduce_extrema(
                                     &interpolate_points(&segment, *interpolation),
@@ -1193,6 +1621,7 @@ impl ChartModel {
                         markers.extend(reduced);
                     }
                     let series_color = self.theme.series_cue(layer_index + series_index).color;
+                    let triangles = clip_triangles_to_rect(&triangles, plot);
                     if !triangles.is_empty() {
                         output.paint.push(path_command(
                             triangles,
@@ -1226,11 +1655,11 @@ impl ChartModel {
                             ) else {
                                 continue;
                             };
-                            let top0 = map(x0, y0);
-                            let top1 = map(x1, y1);
-                            let bottom0 = map(x0, base0);
-                            let bottom1 = map(x1, base1);
-                            triangles.extend([top0, bottom0, top1, top1, bottom0, bottom1]);
+                            let top0 = map_unclamped(x0, y0);
+                            let top1 = map_unclamped(x1, y1);
+                            let bottom0 = map_unclamped(x0, base0);
+                            let bottom1 = map_unclamped(x1, base1);
+                            triangles.extend(band_triangles(top0, bottom0, top1, bottom1));
                         }
                     } else {
                         y_mapper.validate(*baseline)?;
@@ -1239,7 +1668,7 @@ impl ChartModel {
                         let mut segment = Vec::new();
                         for index in rows.iter().copied() {
                             match (x_coordinates[index], y_coordinates[index]) {
-                                (Some(x), Some(y)) => segment.push(map(x, y)),
+                                (Some(x), Some(y)) => segment.push(map_unclamped(x, y)),
                                 _ => {
                                     triangles.extend(area_triangles(
                                         &reduce_extrema(&segment, max_points),
@@ -1254,12 +1683,123 @@ impl ChartModel {
                             baseline,
                         ));
                     }
+                    let triangles = clip_triangles_to_rect(&triangles, plot);
                     if !triangles.is_empty() {
                         output.paint.push(fill_path_command(
                             triangles,
                             self.theme.series_cue(layer_index + series_index).color,
                             rows.len().max(2),
                         )?);
+                    }
+                    for (position, index) in rows.iter().copied().enumerate() {
+                        if let Some(base_column) = y2_column {
+                            let sample = |row: usize| -> Option<(Point, Point)> {
+                                let x = x_coordinates[row]?;
+                                Some((
+                                    map_unclamped(x, y_coordinates[row]?),
+                                    map_unclamped(x, coordinate(&base_column.values[row], row)?),
+                                ))
+                            };
+                            let Some((top, bottom)) = sample(index) else {
+                                continue;
+                            };
+                            let midpoint = |a: Point, b: Point| Point {
+                                x: a.x + (b.x - a.x) * 0.5,
+                                y: a.y + (b.y - a.y) * 0.5,
+                            };
+                            let previous = position
+                                .checked_sub(1)
+                                .and_then(|i| sample(rows[i]))
+                                .unwrap_or((top, bottom));
+                            let next = rows
+                                .get(position + 1)
+                                .and_then(|i| sample(*i))
+                                .unwrap_or((top, bottom));
+                            let band = [
+                                midpoint(previous.0, top),
+                                top,
+                                midpoint(top, next.0),
+                                midpoint(bottom, next.1),
+                                bottom,
+                                midpoint(previous.1, bottom),
+                            ];
+                            let min_x = band
+                                .iter()
+                                .map(|p| p.x)
+                                .fold(f32::INFINITY, f32::min)
+                                .max(plot.origin.x);
+                            let max_x = band
+                                .iter()
+                                .map(|p| p.x)
+                                .fold(f32::NEG_INFINITY, f32::max)
+                                .min(plot.origin.x + plot.size.width);
+                            let min_y = band
+                                .iter()
+                                .map(|p| p.y)
+                                .fold(f32::INFINITY, f32::min)
+                                .max(plot.origin.y);
+                            let max_y = band
+                                .iter()
+                                .map(|p| p.y)
+                                .fold(f32::NEG_INFINITY, f32::max)
+                                .min(plot.origin.y + plot.size.height);
+                            if max_x > min_x && max_y > min_y {
+                                self.push_hit(
+                                    dataset,
+                                    inspection_source,
+                                    index,
+                                    series_column,
+                                    Rect::new(min_x, min_y, max_x - min_x, max_y - min_y),
+                                    hits,
+                                );
+                                hits.last_mut().unwrap().area_band = Some(Arc::new(band));
+                            }
+                            continue;
+                        }
+                        let (Some(x), Some(y)) = (x_coordinates[index], y_coordinates[index])
+                        else {
+                            continue;
+                        };
+                        let center_x = x_mapper.map_unclamped(x);
+                        let previous_x = position
+                            .checked_sub(1)
+                            .and_then(|position| x_coordinates[rows[position]])
+                            .map(|value| x_mapper.map_unclamped(value));
+                        let next_x = rows
+                            .get(position + 1)
+                            .and_then(|index| x_coordinates[*index])
+                            .map(|value| x_mapper.map_unclamped(value));
+                        let left = previous_x
+                            .map_or(plot.origin.x, |previous| (previous + center_x) * 0.5);
+                        let right = next_x.map_or(plot.origin.x + plot.size.width, |next| {
+                            (center_x + next) * 0.5
+                        });
+                        let base = y2_column
+                            .and_then(|column| coordinate(&column.values[index], index))
+                            .unwrap_or(*baseline);
+                        let top_y = y_mapper
+                            .map_unclamped(y)
+                            .clamp(plot.origin.y, plot.origin.y + plot.size.height);
+                        let base_y = y_mapper
+                            .map_unclamped(base)
+                            .clamp(plot.origin.y, plot.origin.y + plot.size.height);
+                        let left = left.clamp(plot.origin.x, plot.origin.x + plot.size.width);
+                        let right = right.clamp(plot.origin.x, plot.origin.x + plot.size.width);
+                        if right > left && (top_y - base_y).abs() > f32::EPSILON {
+                            self.push_hit(
+                                dataset,
+                                inspection_source,
+                                index,
+                                series_column,
+                                Rect::new(
+                                    left,
+                                    top_y.min(base_y),
+                                    right - left,
+                                    (top_y - base_y).abs(),
+                                ),
+                                hits,
+                            );
+                        }
                     }
                 }
             }
@@ -1539,7 +2079,7 @@ impl ChartModel {
                     output.paint.push(PaintCommand::Text {
                         bounds,
                         text: format_data_value(&text_column.values[*index]),
-                        scale: 0.8,
+                        scale: -self.theme.typography.label,
                         color,
                         align: twinkle_ui::TextAlign::Start,
                         bold: false,
@@ -1562,10 +2102,7 @@ impl ChartModel {
                 )));
             }
         }
-        if matches!(
-            layer.mark,
-            Mark::Line { .. } | Mark::Area { .. } | Mark::Point { .. }
-        ) {
+        if matches!(layer.mark, Mark::Line { .. } | Mark::Point { .. }) {
             for (index, x, y) in values {
                 let p = map(x, y);
                 self.push_hit(
@@ -1579,6 +2116,52 @@ impl ChartModel {
             }
         }
         Ok(())
+    }
+
+    fn legend_labels(
+        &self,
+        resolved: &[Option<ResolvedLayer>],
+    ) -> Result<Vec<Arc<str>>, ChartError> {
+        let Some((layer_index, encoding)) = self
+            .spec
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .enumerate()
+            .find_map(|(index, layer)| {
+                channel(&layer.encodings, Channel::Series).map(|encoding| (index, encoding))
+            })
+        else {
+            return Ok(Vec::new());
+        };
+        let dataset = resolved
+            .get(layer_index)
+            .and_then(Option::as_ref)
+            .map(|layer| &layer.dataset)
+            .or_else(|| self.data.dataset(&encoding.field.dataset))
+            .ok_or_else(|| ChartError::MissingDataset(encoding.field.dataset.to_string()))?;
+        let column =
+            dataset
+                .column(&encoding.field.column)
+                .ok_or_else(|| ChartError::MissingColumn {
+                    dataset: encoding.field.dataset.to_string(),
+                    column: encoding.field.column.to_string(),
+                })?;
+        let mut labels = Vec::<Arc<str>>::new();
+        for value in column.values.iter() {
+            let label = Arc::<str>::from(format_data_value(value));
+            if !labels.contains(&label) {
+                labels.push(label);
+                if labels.len() > self.limits.max_series {
+                    return Err(ChartError::Limit {
+                        resource: "series",
+                        actual: labels.len(),
+                        limit: self.limits.max_series,
+                    });
+                }
+            }
+        }
+        Ok(labels)
     }
 
     fn prepare_legends(
@@ -1607,43 +2190,54 @@ impl ChartModel {
                 limit: self.limits.max_series,
             });
         }
-        let row_height = 20.0;
-        let width = plot.size.width.min(130.0);
+        let label_scale = -self.theme.typography.label;
+        let em = measured_text("M", label_scale, false, None).height.max(1.0);
+        let block_padding = em * 0.25;
+        let swatch = em * 0.65;
+        let gap = em * 0.35;
+        let allocations = legend_item_bounds(&labels, label_scale, plot.size.width);
         let toggleable = self.spec.legends.iter().any(|legend| legend.toggleable);
-        for (index, label) in labels.into_iter().enumerate() {
-            let y = plot.origin.y + index as f32 * row_height;
-            if y + row_height > plot.origin.y + plot.size.height {
+        for (index, (label, allocation)) in labels.into_iter().zip(allocations).enumerate() {
+            if allocation.origin.y + allocation.size.height > plot.size.height {
                 break;
             }
             let bounds = Rect::new(
-                plot.origin.x + plot.size.width - width,
-                y,
-                width,
-                row_height,
+                plot.origin.x + allocation.origin.x,
+                plot.origin.y + allocation.origin.y,
+                allocation.size.width,
+                allocation.size.height,
             );
+            let y = bounds.origin.y;
+            let width = bounds.size.width;
+            let row_height = bounds.size.height;
             let visible = self
                 .state
                 .visible_series
                 .as_ref()
                 .is_none_or(|series| series.contains(&label));
             output.paint.push(PaintCommand::RoundedFill {
-                rect: Rect::new(bounds.origin.x + 2.0, y + 5.0, 10.0, 10.0),
+                rect: Rect::new(
+                    bounds.origin.x + block_padding,
+                    y + (row_height - swatch) * 0.5,
+                    swatch,
+                    swatch,
+                ),
                 color: if visible {
                     self.theme.series_cue(index).color
                 } else {
                     self.theme.missing
                 },
-                radius: 2.0,
+                radius: swatch * 0.2,
             });
             output.paint.push(PaintCommand::Text {
                 bounds: Rect::new(
-                    bounds.origin.x + 16.0,
+                    bounds.origin.x + block_padding + swatch + gap,
                     y,
-                    (width - 16.0).max(0.0),
+                    (width - block_padding * 2.0 - swatch - gap).max(0.0),
                     row_height,
                 ),
                 text: label.to_string(),
-                scale: 0.75,
+                scale: label_scale,
                 color: self.theme.foreground,
                 align: twinkle_ui::TextAlign::Start,
                 bold: false,
@@ -1693,6 +2287,10 @@ impl ChartModel {
         output: &mut RetainedSurfaceOutput,
     ) -> Result<(), ChartError> {
         for axis in &self.spec.axes {
+            let text_scale = -self.theme.typography.label;
+            let line_height = measured_text("M", text_scale, false, None).height;
+            let gap = line_height * 0.25;
+            let mut last_label: Option<Rect> = None;
             let count = axis
                 .tick_count
                 .unwrap_or(5)
@@ -1724,20 +2322,27 @@ impl ChartModel {
                             color: self.theme.grid,
                         });
                     }
-                    let width = plot.size.width.min(60.0);
+                    let text = format_tick(value, axis.unit.as_deref());
+                    let size = measured_text(&text, text_scale, false, None);
+                    let width = plot.size.width.min(size.width);
                     let origin = (x - width / 2.0).clamp(
                         plot.origin.x,
                         (plot.origin.x + plot.size.width - width).max(plot.origin.x),
                     );
+                    let bounds = Rect::new(
+                        origin,
+                        plot.origin.y + plot.size.height + gap,
+                        width,
+                        size.height,
+                    );
+                    if last_label.is_some_and(|last| rects_overlap(last, bounds, gap)) {
+                        continue;
+                    }
+                    last_label = Some(bounds);
                     output.paint.push(PaintCommand::Text {
-                        bounds: Rect::new(
-                            origin,
-                            plot.origin.y + plot.size.height + 3.0,
-                            width,
-                            18.0,
-                        ),
-                        text: format_tick(value, axis.unit.as_deref()),
-                        scale: 0.75,
+                        bounds,
+                        text,
+                        scale: text_scale,
                         color: self.theme.muted,
                         align: twinkle_ui::TextAlign::Center,
                         bold: false,
@@ -1753,14 +2358,27 @@ impl ChartModel {
                             color: self.theme.grid,
                         });
                     }
-                    output.paint.push(PaintCommand::Text {
-                        bounds: if secondary_y {
-                            Rect::new(plot.origin.x + plot.size.width + 4.0, y - 9.0, 34.0, 18.0)
+                    let text = format_tick(value, axis.unit.as_deref());
+                    let size = measured_text(&text, text_scale, false, None);
+                    let label_y = y - size.height * 0.5;
+                    let bounds = Rect::new(
+                        if secondary_y {
+                            plot.origin.x + plot.size.width + gap
                         } else {
-                            Rect::new((plot.origin.x - 34.0).max(0.0), y - 9.0, 30.0, 18.0)
+                            plot.origin.x - size.width - gap
                         },
-                        text: format_tick(value, axis.unit.as_deref()),
-                        scale: 0.7,
+                        label_y,
+                        size.width,
+                        size.height,
+                    );
+                    if last_label.is_some_and(|last| rects_overlap(last, bounds, gap)) {
+                        continue;
+                    }
+                    last_label = Some(bounds);
+                    output.paint.push(PaintCommand::Text {
+                        bounds,
+                        text,
+                        scale: text_scale,
                         color: self.theme.muted,
                         align: if secondary_y {
                             twinkle_ui::TextAlign::Start
@@ -1773,26 +2391,32 @@ impl ChartModel {
                 }
             }
             if let Some(title) = &axis.title {
+                let size = measured_text(title, text_scale, true, None);
                 output.paint.push(PaintCommand::Text {
                     bounds: if is_x {
                         Rect::new(
                             plot.origin.x,
-                            plot.origin.y + plot.size.height + 16.0,
+                            plot.origin.y + plot.size.height + line_height + gap * 2.0,
                             plot.size.width,
-                            12.0,
+                            size.height,
                         )
                     } else if secondary_y {
                         Rect::new(
-                            plot.origin.x + plot.size.width + 4.0,
-                            plot.origin.y,
-                            34.0,
-                            14.0,
+                            plot.origin.x + plot.size.width + gap,
+                            plot.origin.y - size.height - gap - line_height * 0.5,
+                            size.width,
+                            size.height,
                         )
                     } else {
-                        Rect::new((plot.origin.x - 34.0).max(0.0), plot.origin.y, 30.0, 14.0)
+                        Rect::new(
+                            plot.origin.x - size.width - gap,
+                            plot.origin.y - size.height - gap - line_height * 0.5,
+                            size.width,
+                            size.height,
+                        )
                     },
                     text: title.to_string(),
-                    scale: 0.7,
+                    scale: text_scale,
                     color: self.theme.foreground,
                     align: if is_x {
                         twinkle_ui::TextAlign::Center
@@ -1841,6 +2465,7 @@ impl ChartModel {
                                 x,
                                 plot.origin.y,
                                 self.theme.foreground,
+                                -self.theme.typography.label,
                             );
                         }
                     } else if y_scale == Some(scale.as_ref()) {
@@ -1858,6 +2483,7 @@ impl ChartModel {
                                 plot.origin.x,
                                 y,
                                 self.theme.foreground,
+                                -self.theme.typography.label,
                             );
                         }
                     }
@@ -1891,6 +2517,7 @@ impl ChartModel {
                                 a.min(b),
                                 plot.origin.y,
                                 self.theme.foreground,
+                                -self.theme.typography.label,
                             );
                         }
                     } else if y_scale == Some(scale.as_ref()) {
@@ -1915,6 +2542,7 @@ impl ChartModel {
                                 plot.origin.x,
                                 a.min(b),
                                 self.theme.foreground,
+                                -self.theme.typography.label,
                             );
                         }
                     }
@@ -1926,7 +2554,15 @@ impl ChartModel {
                         x: x_mapper.map(*x),
                         y: y_mapper.map(*y),
                     };
-                    annotation_label(output, plot, text, point.x, point.y, self.theme.foreground);
+                    annotation_label(
+                        output,
+                        plot,
+                        text,
+                        point.x,
+                        point.y,
+                        self.theme.foreground,
+                        -self.theme.typography.label,
+                    );
                 }
             }
         }
@@ -1965,18 +2601,6 @@ impl ChartModel {
             == Some(layer_index)
     }
 
-    fn has_secondary_y_axis(&self) -> bool {
-        self.spec.axes.iter().any(|axis| {
-            self.y_axis_ordinal(axis.scale.as_ref()) > 0
-                && self.spec.layers.iter().any(|layer| {
-                    layer.encodings.iter().any(|encoding| {
-                        matches!(encoding.channel, Channel::Y | Channel::Y2)
-                            && encoding.scale.as_deref() == Some(axis.scale.as_ref())
-                    })
-                })
-        })
-    }
-
     fn prepare_arc(
         &self,
         layer_index: usize,
@@ -2000,8 +2624,13 @@ impl ChartModel {
             .data
             .dataset(&value.field.dataset)
             .ok_or_else(|| ChartError::MissingDataset(value.field.dataset.to_string()))?;
-        let inspection_source =
-            register_inspection_source(inspection_sources, dataset, self.data_owned);
+        let inspection_source = register_inspection_source(
+            inspection_sources,
+            dataset,
+            self.data_owned,
+            layer_index,
+            plot,
+        );
         let column =
             dataset
                 .column(&value.field.column)
@@ -2087,6 +2716,7 @@ impl ChartModel {
                 center.x + label_radius * middle.cos(),
                 center.y + label_radius * middle.sin(),
                 self.theme.foreground,
+                -self.theme.typography.label,
             );
             self.push_hit(
                 dataset,
@@ -2124,6 +2754,7 @@ impl ChartModel {
             row: key.clone(),
             series: series_column.map(|column| Arc::from(format_data_value(&column.values[row]))),
             bounds,
+            area_band: None,
             revision: self.data.revision(),
             source_index,
             row_index: row,
@@ -2138,7 +2769,9 @@ impl RetainedSurfaceModel for ChartModel {
         _changes: RetainedSurfaceChanges,
     ) -> Result<RetainedSurfaceOutput, String> {
         match self.prepare(input) {
-            Ok((output, hits, hit_x_order, inspection_sources, diagnostics)) => {
+            Ok((output, hits, hit_x_order, inspection_sources, diagnostics, plot)) => {
+                self.plot_bounds = Some(plot);
+                self.area_band_bytes = area_band_bytes(&hits);
                 self.hits = hits;
                 self.hit_x_order = hit_x_order;
                 self.inspection_sources = inspection_sources;
@@ -2158,6 +2791,8 @@ impl RetainedSurfaceModel for ChartModel {
                 self.renderer_generation = self.renderer_generation.saturating_add(1)
             }
             RetainedSurfaceLifecycle::Detached | RetainedSurfaceLifecycle::Destroyed => {
+                self.plot_bounds = None;
+                self.area_band_bytes = 0;
                 self.hits.clear();
                 self.hits.shrink_to_fit();
                 self.hit_x_order.clear();
@@ -2170,6 +2805,7 @@ impl RetainedSurfaceModel for ChartModel {
     }
     fn retained_bytes(&self) -> usize {
         self.hits.capacity() * std::mem::size_of::<ChartHit>()
+            + self.area_band_bytes
             + self.hit_x_order.capacity() * std::mem::size_of::<usize>()
             + self.inspection_sources.capacity() * std::mem::size_of::<InspectionSource>()
             + self
@@ -2184,11 +2820,15 @@ fn register_inspection_source(
     sources: &mut Vec<InspectionSource>,
     dataset: &crate::Dataset,
     owned: bool,
+    layer_index: usize,
+    plot_bounds: Rect,
 ) -> usize {
     let index = sources.len();
     sources.push(InspectionSource {
         dataset: Arc::new(dataset.clone()),
         owned_bytes: owned.then(|| dataset_owned_bytes(dataset)).unwrap_or(0),
+        layer_index,
+        plot_bounds,
     });
     index
 }
@@ -2309,6 +2949,11 @@ impl ChartView {
     }
     pub fn diagnostics(&self) -> &ChartDiagnostics {
         self.host.model().diagnostics()
+    }
+    /// Plot allocation of the accepted preparation, excluding chart chrome.
+    /// Coordinates use the same space as the retained surface input bounds.
+    pub fn plot_bounds(&self) -> Option<Rect> {
+        self.host.model().plot_bounds
     }
     /// Ownership counters from the retained-surface admission boundary.
     ///
@@ -2581,7 +3226,13 @@ impl ChartView {
             ChartProjectionAction::Event(event) => message(event),
         });
         if let Some(pointer_message) = bindings.pointer_move {
-            element = element.on_pointer_move(pointer_message);
+            element = element
+                .on_pointer_move(pointer_message)
+                .pointer_coordinates(
+                    snapshot
+                        .input
+                        .map_or(Point::default(), |input| input.bounds.origin),
+                );
         }
         if let Some(wheel_message) = bindings.wheel {
             element = element.on_wheel(wheel_message);
@@ -2622,19 +3273,47 @@ impl ChartView {
 
 fn add_viewport_controls(snapshot: &mut RetainedSurfaceSnapshot, theme: &ChartTheme) {
     let Some(input) = snapshot.input else { return };
-    let height = input.bounds.size.height.min(24.0).max(0.0);
-    let available = (input.bounds.size.width - 88.0).max(0.0);
-    let widths = [28.0_f32, 28.0, 48.0];
+    let table_left = snapshot
+        .output
+        .interactions
+        .iter()
+        .find(|interaction| interaction.id.as_str() == "chart/table")
+        .map_or(
+            input.bounds.origin.x + input.bounds.size.width,
+            |interaction| interaction.bounds.origin.x,
+        );
+    let table_top = snapshot
+        .output
+        .interactions
+        .iter()
+        .find(|interaction| interaction.id.as_str() == "chart/table")
+        .map_or(input.bounds.origin.y, |interaction| {
+            interaction.bounds.origin.y
+        });
+    let scale = -theme.typography.control;
+    let em = measured_text("M", scale, false, None).height.max(1.0);
+    let inline_padding = em * 0.55;
+    let labels = [
+        ("chart/zoom-in", "+", "Zoom in"),
+        ("chart/zoom-out", "−", "Zoom out"),
+        ("chart/zoom-reset", "Reset", "Reset zoom"),
+    ];
+    let widths = labels
+        .map(|(_, label, _)| measured_text(label, scale, false, None).width + inline_padding * 2.0);
+    let available = (table_left - input.bounds.origin.x).max(0.0);
     let total = widths.iter().sum::<f32>().min(available);
-    let mut x = input.bounds.origin.x + available - total;
-    for (id, label, accessible, desired_width) in [
-        ("chart/zoom-in", "+", "Zoom in", widths[0]),
-        ("chart/zoom-out", "−", "Zoom out", widths[1]),
-        ("chart/zoom-reset", "Reset", "Reset zoom", widths[2]),
-    ] {
-        let remaining = input.bounds.origin.x + available - x;
-        let width = desired_width.min(remaining).max(0.0);
-        let bounds = Rect::new(x, input.bounds.origin.y, width, height);
+    let mut x = table_left - total;
+    let height = snapshot
+        .output
+        .interactions
+        .iter()
+        .find(|interaction| interaction.id.as_str() == "chart/table")
+        .map_or(em + inline_padding, |interaction| {
+            interaction.bounds.size.height
+        });
+    for ((id, label, accessible), desired_width) in labels.into_iter().zip(widths) {
+        let width = desired_width.min((table_left - x).max(0.0));
+        let bounds = Rect::new(x, table_top, width, height);
         x += width;
         if width <= 0.0 || height <= 0.0 {
             continue;
@@ -2651,7 +3330,7 @@ fn add_viewport_controls(snapshot: &mut RetainedSurfaceSnapshot, theme: &ChartTh
         snapshot.output.paint.push(PaintCommand::Text {
             bounds,
             text: label.into(),
-            scale: 0.9,
+            scale,
             color: theme.foreground,
             align: twinkle_ui::TextAlign::Center,
             bold: false,
@@ -2681,23 +3360,180 @@ fn add_viewport_controls(snapshot: &mut RetainedSurfaceSnapshot, theme: &ChartTh
 }
 
 fn inspection_label(inspection: &ChartInspection) -> String {
-    let mut parts = Vec::with_capacity(inspection.cells.len().min(6) + 1);
-    if let Some(series) = &inspection.series {
-        parts.push(format!("series: {series}"));
+    let mut parts = inspection
+        .display
+        .iter()
+        .map(|value| {
+            value.unit.as_deref().map_or_else(
+                || format!("{}: {}", value.label, value.formatted),
+                |unit| format!("{}: {} {unit}", value.label, value.formatted),
+            )
+        })
+        .collect::<Vec<_>>();
+    if inspection.include_data_table_hint && inspection.cells.len() > inspection.display.len() {
+        parts.push("More details in data table".into());
     }
-    parts.extend(inspection.cells.iter().take(6).map(|cell| {
-        cell.unit.as_deref().map_or_else(
-            || format!("{}: {}", cell.column, cell.formatted),
-            |unit| format!("{}: {} {unit}", cell.column, cell.formatted),
-        )
-    }));
-    if inspection.cells.len() > 6 {
-        parts.push(format!(
-            "+{} more fields in data table",
-            inspection.cells.len() - 6
-        ));
+    parts.join("\n")
+}
+
+fn default_tooltip_spec(layer: Option<&crate::Layer>) -> ChartTooltipSpec {
+    let mut fields = Vec::new();
+    if let Some(layer) = layer {
+        for channel in [
+            Channel::Series,
+            Channel::X,
+            Channel::Y,
+            Channel::Size,
+            Channel::Fill,
+        ] {
+            let Some(encoding) = layer
+                .encodings
+                .iter()
+                .find(|encoding| encoding.channel == channel)
+            else {
+                continue;
+            };
+            let mut column = encoding.field.column.clone();
+            let mut label = column.replace('_', " ");
+            for transform in &layer.transforms {
+                if let crate::Transform::Stack { value, .. } = transform
+                    && column.as_ref() == format!("{value}_end")
+                {
+                    column = Arc::from(format!("{value}_raw"));
+                    label = value.replace('_', " ");
+                }
+            }
+            if fields
+                .iter()
+                .any(|field: &ChartTooltipField| field.column == column)
+            {
+                continue;
+            }
+            fields.push(ChartTooltipField {
+                column,
+                label: Arc::from(label),
+                unit: None,
+                format: ChartTooltipFormat::Automatic,
+            });
+        }
     }
-    parts.join(" · ").chars().take(512).collect()
+    ChartTooltipSpec {
+        fields,
+        include_data_table_hint: true,
+    }
+}
+
+fn format_tooltip_value(value: &DataValue, format: ChartTooltipFormat) -> String {
+    match (value, format) {
+        (DataValue::Number(value), ChartTooltipFormat::Number { decimal_places }) => {
+            format!(
+                "{value:.precision$}",
+                precision = usize::from(decimal_places)
+            )
+        }
+        (DataValue::Number(value), ChartTooltipFormat::Percent { decimal_places }) => {
+            format!(
+                "{:.precision$}%",
+                value * 100.0,
+                precision = usize::from(decimal_places)
+            )
+        }
+        _ => crate::table::format_value(value),
+    }
+}
+
+fn rects_overlap(a: Rect, b: Rect, gap: f32) -> bool {
+    a.origin.x < b.origin.x + b.size.width + gap
+        && b.origin.x < a.origin.x + a.size.width + gap
+        && a.origin.y < b.origin.y + b.size.height + gap
+        && b.origin.y < a.origin.y + a.size.height + gap
+}
+
+fn legend_item_bounds(labels: &[Arc<str>], scale: f32, width: f32) -> Vec<Rect> {
+    let em = measured_text("M", scale, false, None).height.max(1.0);
+    let row_height = em * 1.5;
+    let mut x = 0.0;
+    let mut row = 0usize;
+    labels
+        .iter()
+        .map(|label| {
+            // The same swatch, gap, and padding used by prepare_legends.
+            let item_width = (measured_text(label, scale, false, None).width + em * 1.5).min(width);
+            if x > 0.0 && x + item_width > width {
+                row += 1;
+                x = 0.0;
+            }
+            let bounds = Rect::new(x, row as f32 * row_height, item_width, row_height);
+            x += item_width + em * 0.5;
+            bounds
+        })
+        .collect()
+}
+
+fn measured_text(text: &str, scale: f32, bold: bool, wrap_width: Option<f32>) -> Size {
+    let measured = twinkle_ui::measure_text(
+        text,
+        scale,
+        bold,
+        wrap_width.is_some(),
+        None,
+        None,
+        wrap_width.unwrap_or(f32::INFINITY).max(0.0),
+    );
+    Size::new(
+        measured
+            .width
+            .min(wrap_width.unwrap_or(f32::INFINITY).max(0.0)),
+        measured.height,
+    )
+}
+
+/// Keep complete fields in priority order; if even the first does not fit,
+/// show a measured ellipsis. Exact selected values remain in semantics/table.
+fn fit_tooltip(text: &str, scale: f32, available: Size) -> Option<(String, Size)> {
+    if available.width <= 0.0 || available.height <= 0.0 {
+        return None;
+    }
+    let measure = |text: &str| {
+        twinkle_ui::measure_text(text, scale, false, true, None, None, available.width)
+    };
+    let fits = |size: Size| size.width <= available.width && size.height <= available.height;
+    let full = measure(text);
+    if fits(full) {
+        return Some((text.to_owned(), full));
+    }
+    let mut prefix = text;
+    while let Some((head, _)) = prefix.rsplit_once('\n') {
+        prefix = head;
+        let candidate = format!("{prefix}\n…");
+        let size = measure(&candidate);
+        if fits(size) {
+            return Some((candidate, size));
+        }
+    }
+    let ellipsis = measure("…");
+    if !fits(ellipsis) {
+        return None;
+    }
+    let boundaries: Vec<usize> = prefix
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(prefix.len()))
+        .collect();
+    let mut low = 0;
+    let mut high = boundaries.len();
+    while low + 1 < high {
+        let middle = (low + high) / 2;
+        let candidate = format!("{}…", &prefix[..boundaries[middle]]);
+        if fits(measure(&candidate)) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    let text = format!("{}…", &prefix[..boundaries[low]]);
+    let size = measure(&text);
+    Some((text, size))
 }
 
 /// Project one passive, plot-bounded exact-value inspector into an accepted snapshot.
@@ -2714,18 +3550,50 @@ pub fn project_inspection_overlay(
     {
         return false;
     }
-    let Some(input) = snapshot.input else {
+    let Some(_input) = snapshot.input else {
         return false;
     };
-    let text = inspection_label(detail);
-    let width = input.bounds.size.width.min(300.0).max(0.0);
-    let height = input.bounds.size.height.min(52.0).max(0.0);
-    let x = (hit.bounds.origin.x + hit.bounds.size.width + 8.0)
-        .min(input.bounds.origin.x + input.bounds.size.width - width)
-        .max(input.bounds.origin.x);
-    let y = (hit.bounds.origin.y - height - 8.0)
-        .min(input.bounds.origin.y + input.bounds.size.height - height)
-        .max(input.bounds.origin.y);
+    let plot = detail.plot_bounds;
+    let accessible_text = inspection_label(detail);
+    let scale = -theme.typography.body;
+    let em = measured_text("M", scale, false, None).height.max(1.0);
+    let padding = em * 0.4;
+    let gap = em * 0.5;
+    let readable_width = measured_text(&"0".repeat(40), scale, false, None).width;
+    let natural = measured_text(&accessible_text, scale, false, None);
+    let content_width = natural
+        .width
+        .min(readable_width)
+        .min((plot.size.width - padding * 2.0).max(0.0));
+    let Some((text, content)) = fit_tooltip(
+        &accessible_text,
+        scale,
+        Size::new(content_width, (plot.size.height - padding * 2.0).max(0.0)),
+    ) else {
+        return false;
+    };
+    let width = (content.width + padding * 2.0).min(plot.size.width);
+    let height = (content.height + padding * 2.0).min(plot.size.height);
+    let plot_right = plot.origin.x + plot.size.width;
+    let plot_bottom = plot.origin.y + plot.size.height;
+    let right = hit.bounds.origin.x + hit.bounds.size.width + gap;
+    let left = hit.bounds.origin.x - width - gap;
+    let x = if right + width <= plot_right {
+        right
+    } else if left >= plot.origin.x {
+        left
+    } else {
+        right.clamp(plot.origin.x, plot_right - width)
+    };
+    let below = hit.bounds.origin.y + hit.bounds.size.height + gap;
+    let above = hit.bounds.origin.y - height - gap;
+    let y = if below + height <= plot_bottom {
+        below
+    } else if above >= plot.origin.y {
+        above
+    } else {
+        below.clamp(plot.origin.y, plot_bottom - height)
+    };
     let bounds = Rect::new(x, y, width, height);
     snapshot.output.paint.push(PaintCommand::Fill {
         rect: bounds,
@@ -2737,9 +3605,9 @@ pub fn project_inspection_overlay(
         width: 1.0,
     });
     snapshot.output.paint.push(PaintCommand::Text {
-        bounds: inset(bounds, 6.0, 6.0, 6.0, 6.0),
+        bounds: inset(bounds, padding, padding, padding, padding),
         text: text.clone(),
-        scale: 1.0,
+        scale,
         color: theme.foreground,
         align: twinkle_ui::TextAlign::Start,
         bold: false,
@@ -2752,7 +3620,7 @@ pub fn project_inspection_overlay(
             id: UiId::from("chart/inspection"),
             bounds,
             role: SemanticRole::Tooltip,
-            label: Some(text),
+            label: Some(accessible_text),
             state: Some(format!("row {}; exact accepted values", detail.row.0)),
             protected: false,
         });
@@ -2790,7 +3658,7 @@ fn chart_error_snapshot(
                         title_height,
                     ),
                     text: truncate(title),
-                    scale: 1.0,
+                    scale: -theme.typography.title,
                     color: theme.foreground,
                     align: twinkle_ui::TextAlign::Start,
                     bold: true,
@@ -2804,7 +3672,7 @@ fn chart_error_snapshot(
                         error_height,
                     ),
                     text: truncate(error),
-                    scale: 1.0,
+                    scale: -theme.typography.body,
                     color: theme.selection,
                     align: twinkle_ui::TextAlign::Start,
                     bold: false,
@@ -2949,56 +3817,71 @@ fn stable_id_fragment(value: &str) -> String {
     encoded
 }
 
-fn spec_with_shared_domains(spec: &ChartSpec, data: &ChartData) -> ChartSpec {
-    let mut shared = spec.clone();
-    for scale in &mut shared.scales {
+// Resolve shared position scales from the same transformed values, visibility,
+// baselines, and annotations used by geometry. Never rescan the raw source here.
+fn resolved_shared_domains(
+    spec: &ChartSpec,
+    resolved: &[Option<ResolvedLayer>],
+) -> Vec<(usize, [f64; 2])> {
+    let mut domains = Vec::new();
+    for (index, scale) in spec.scales.iter().enumerate() {
         if scale.domain.is_some() {
             continue;
         }
-        let mut values = Vec::new();
-        for encoding in shared
+        let mut combined: Option<[f64; 2]> = None;
+        for (layer, resolved) in spec
             .layers
             .iter()
-            .flat_map(|layer| layer.encodings.iter())
-            .filter(|encoding| encoding.scale.as_deref() == Some(scale.name.as_ref()))
+            .filter(|layer| layer.visible)
+            .zip(resolved)
         {
-            let Some(column) = data
-                .dataset(&encoding.field.dataset)
-                .and_then(|dataset| dataset.column(&encoding.field.column))
-            else {
-                continue;
-            };
-            values.extend(column.values.iter().filter_map(|value| match value {
-                DataValue::Number(value) if value.is_finite() => Some(*value),
-                DataValue::Timestamp(value) => Some(*value as f64),
-                _ => None,
-            }));
-        }
-        for layer in &shared.layers {
-            let baseline_channel = match layer.mark {
-                Mark::Area { baseline, .. } => Some((Channel::Y, baseline as f64)),
-                Mark::Bar {
-                    orientation: crate::Orientation::Vertical,
-                } => Some((Channel::Y, 0.0)),
-                Mark::Bar {
-                    orientation: crate::Orientation::Horizontal,
-                } => Some((Channel::X, 0.0)),
-                _ => None,
-            };
-            if let Some((channel, baseline)) = baseline_channel
-                && layer.encodings.iter().any(|encoding| {
-                    encoding.channel == channel
-                        && encoding.scale.as_deref() == Some(scale.name.as_ref())
-                })
-            {
-                values.push(baseline);
+            let Some(resolved) = resolved else { continue };
+            for (position, domain) in [
+                (Channel::X, resolved.x_domain),
+                (Channel::Y, resolved.y_domain),
+            ] {
+                if channel(&layer.encodings, position)
+                    .is_some_and(|encoding| encoding.scale.as_deref() == Some(scale.name.as_ref()))
+                {
+                    combined = Some(match combined {
+                        Some(previous) => [previous[0].min(domain[0]), previous[1].max(domain[1])],
+                        None => domain,
+                    });
+                }
             }
         }
-        if !values.is_empty() {
-            scale.domain = Some(extent(values.into_iter()));
+        if let Some(domain) = combined {
+            domains.push((index, domain));
         }
     }
-    shared
+    domains
+}
+
+fn unify_resolved_domains(spec: &ChartSpec, resolved: &mut [Option<ResolvedLayer>]) {
+    if resolved.len() <= 1 {
+        return;
+    }
+    for (index, domain) in resolved_shared_domains(spec, resolved) {
+        let name = spec.scales[index].name.as_ref();
+        for (layer, resolved) in spec
+            .layers
+            .iter()
+            .filter(|layer| layer.visible)
+            .zip(resolved.iter_mut())
+        {
+            let Some(resolved) = resolved else { continue };
+            for (position, target) in [
+                (Channel::X, &mut resolved.x_domain),
+                (Channel::Y, &mut resolved.y_domain),
+            ] {
+                if channel(&layer.encodings, position)
+                    .is_some_and(|encoding| encoding.scale.as_deref() == Some(name))
+                {
+                    *target = domain;
+                }
+            }
+        }
+    }
 }
 
 fn annotation_label(
@@ -3008,9 +3891,11 @@ fn annotation_label(
     x: f32,
     y: f32,
     color: u32,
+    scale: f32,
 ) {
-    let width = plot.size.width.min(140.0);
-    let height = plot.size.height.min(20.0);
+    let measured = measured_text(label, scale, false, None);
+    let width = plot.size.width.min(measured.width);
+    let height = plot.size.height.min(measured.height);
     if width <= 0.0 || height <= 0.0 {
         return;
     }
@@ -3025,7 +3910,7 @@ fn annotation_label(
     output.paint.push(PaintCommand::Text {
         bounds: Rect::new(origin_x, origin_y, width, height),
         text: label.to_owned(),
-        scale: 0.75,
+        scale,
         color,
         align: twinkle_ui::TextAlign::Start,
         bold: false,
@@ -3104,6 +3989,8 @@ fn in_domain(value: f64, domain: [f64; 2]) -> bool {
     value >= domain[0].min(domain[1]) && value <= domain[0].max(domain[1])
 }
 fn inset(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
+    let left = left.max(0.0).min(rect.size.width.max(0.0));
+    let top = top.max(0.0).min(rect.size.height.max(0.0));
     Rect::new(
         rect.origin.x + left,
         rect.origin.y + top,
@@ -3111,6 +3998,36 @@ fn inset(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
         (rect.size.height - top - bottom).max(0.0),
     )
 }
+fn hit_distance(hit: &ChartHit, point: Point) -> f32 {
+    let bounds_distance = distance(hit.bounds, point);
+    let Some(vertices) = &hit.area_band else {
+        return bounds_distance;
+    };
+    let mut inside = false;
+    let mut edge_distance = f32::INFINITY;
+    for i in 0..vertices.len() {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % vertices.len()];
+        if (a.y > point.y) != (b.y > point.y)
+            && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x
+        {
+            inside = !inside;
+        }
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let length_squared = dx * dx + dy * dy;
+        let t = if length_squared > 0.0 {
+            (((point.x - a.x) * dx + (point.y - a.y) * dy) / length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let ex = point.x - (a.x + t * dx);
+        let ey = point.y - (a.y + t * dy);
+        edge_distance = edge_distance.min(ex * ex + ey * ey);
+    }
+    bounds_distance.max(if inside { 0.0 } else { edge_distance.sqrt() })
+}
+
 fn distance(rect: Rect, point: Point) -> f32 {
     let x = point
         .x
@@ -3162,25 +4079,121 @@ fn stroke_polyline(points: &[Point], width: f32) -> Vec<Point> {
 fn area_triangles(points: &[Point], baseline: f32) -> Vec<Point> {
     let mut triangles = Vec::with_capacity(points.len().saturating_sub(1) * 6);
     for pair in points.windows(2) {
-        triangles.extend([
+        triangles.extend(band_triangles(
             pair[0],
             Point {
                 x: pair[0].x,
                 y: baseline,
             },
             pair[1],
-            pair[1],
-            Point {
-                x: pair[0].x,
-                y: baseline,
-            },
             Point {
                 x: pair[1].x,
                 y: baseline,
             },
-        ]);
+        ));
     }
     triangles
+}
+
+fn band_triangles(top0: Point, bottom0: Point, top1: Point, bottom1: Point) -> [Point; 6] {
+    let height0 = f64::from(top0.y) - f64::from(bottom0.y);
+    let height1 = f64::from(top1.y) - f64::from(bottom1.y);
+    if (height0 < 0.0 && height1 > 0.0) || (height0 > 0.0 && height1 < 0.0) {
+        // A sign-changing band is a bow tie, not a convex quad. Its two
+        // lobes meet where the interpolated edges cross; the usual diagonal
+        // would fill outside the band and blend overlapping triangles twice.
+        let t = height0 / (height0 - height1);
+        let crossing = Point {
+            x: (f64::from(top0.x) + (f64::from(top1.x) - f64::from(top0.x)) * t) as f32,
+            y: (f64::from(top0.y) + (f64::from(top1.y) - f64::from(top0.y)) * t) as f32,
+        };
+        [top0, bottom0, crossing, crossing, top1, bottom1]
+    } else {
+        [top0, bottom0, top1, top1, bottom0, bottom1]
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ClipEdge {
+    Left(f32),
+    Right(f32),
+    Top(f32),
+    Bottom(f32),
+}
+
+fn clip_triangles_to_rect(triangles: &[Point], bounds: Rect) -> Vec<Point> {
+    let edges = [
+        ClipEdge::Left(bounds.origin.x),
+        ClipEdge::Right(bounds.origin.x + bounds.size.width),
+        ClipEdge::Top(bounds.origin.y),
+        ClipEdge::Bottom(bounds.origin.y + bounds.size.height),
+    ];
+    let mut clipped = Vec::with_capacity(triangles.len());
+    // A convex triangle gains at most one vertex per clipping plane:
+    // four rectangle planes therefore need at most seven vertices.
+    let mut polygon = [Point::default(); 7];
+    let mut scratch = [Point::default(); 7];
+    for triangle in triangles.chunks_exact(3) {
+        polygon[..3].copy_from_slice(triangle);
+        let mut length = 3;
+        for edge in edges {
+            length = clip_polygon_edge(&polygon[..length], edge, &mut scratch);
+            std::mem::swap(&mut polygon, &mut scratch);
+            if length == 0 {
+                break;
+            }
+        }
+        if length >= 3 {
+            for index in 1..length - 1 {
+                clipped.extend([polygon[0], polygon[index], polygon[index + 1]]);
+            }
+        }
+    }
+    clipped
+}
+
+fn clip_polygon_edge(polygon: &[Point], edge: ClipEdge, result: &mut [Point; 7]) -> usize {
+    let inside = |point: Point| match edge {
+        ClipEdge::Left(x) => point.x >= x,
+        ClipEdge::Right(x) => point.x <= x,
+        ClipEdge::Top(y) => point.y >= y,
+        ClipEdge::Bottom(y) => point.y <= y,
+    };
+    let intersection = |from: Point, to: Point| match edge {
+        ClipEdge::Left(x) | ClipEdge::Right(x) => {
+            let t = (x - from.x) / (to.x - from.x);
+            Point {
+                x,
+                y: from.y + (to.y - from.y) * t,
+            }
+        }
+        ClipEdge::Top(y) | ClipEdge::Bottom(y) => {
+            let t = (y - from.y) / (to.y - from.y);
+            Point {
+                x: from.x + (to.x - from.x) * t,
+                y,
+            }
+        }
+    };
+    let Some(mut previous) = polygon.last().copied() else {
+        return 0;
+    };
+    let mut previous_inside = inside(previous);
+    let mut length = 0;
+    for current in polygon.iter().copied() {
+        let current_inside = inside(current);
+        if current_inside != previous_inside {
+            result[length] = intersection(previous, current);
+            length += 1;
+        }
+        if current_inside {
+            result[length] = current;
+            length += 1;
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    length
 }
 
 fn interpolate_points(points: &[Point], interpolation: crate::Interpolation) -> Vec<Point> {
@@ -3436,6 +4449,475 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn undersized_allocations_keep_chrome_bounds_nonnegative_and_inside() {
+        let mut view = ChartView::new(model()).unwrap();
+        for width in [1.0, 5.0, 20.0, 40.0, 112.0, 260.0] {
+            for height in [1.0, 5.0, 20.0, 40.0, 84.0] {
+                for scale in [1.0, 1.25, 1.5, 2.0] {
+                    let allocation = Rect::new(17.0, 23.0, width, height);
+                    view.update(RetainedSurfaceInput::new(
+                        allocation,
+                        scale,
+                        Default::default(),
+                    ))
+                    .unwrap();
+                    let mut snapshot = view.snapshot().clone();
+                    add_viewport_controls(&mut snapshot, &ChartTheme::default());
+                    let check = |rect: Rect| {
+                        assert!(
+                            rect.size.width >= 0.0 && rect.size.height >= 0.0,
+                            "negative {rect:?}"
+                        );
+                        assert!(
+                            rect.origin.x >= allocation.origin.x
+                                && rect.origin.y >= allocation.origin.y,
+                            "origin {rect:?}"
+                        );
+                        assert!(
+                            rect.origin.x + rect.size.width <= allocation.origin.x + width + 0.0001,
+                            "horizontal {rect:?} in {allocation:?}"
+                        );
+                        assert!(
+                            rect.origin.y + rect.size.height
+                                <= allocation.origin.y + height + 0.0001,
+                            "vertical {rect:?} in {allocation:?}"
+                        );
+                    };
+                    for command in &snapshot.output.paint {
+                        match command {
+                            PaintCommand::Fill { rect, .. }
+                            | PaintCommand::Stroke { rect, .. }
+                            | PaintCommand::RoundedFill { rect, .. } => check(*rect),
+                            PaintCommand::Text { bounds, .. } => check(*bounds),
+                            _ => {}
+                        }
+                    }
+                    for interaction in &snapshot.output.interactions {
+                        check(interaction.bounds);
+                    }
+                    for semantic in &snapshot.output.semantics {
+                        check(semantic.bounds);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legend_measurement_uses_the_same_transformed_series_as_paint() {
+        let mut model = model();
+        let mut spec = (*model.spec).clone();
+        spec.layers[0].transforms.push(crate::Transform::Bin {
+            field: "x".into(),
+            output: "bucket".into(),
+            options: crate::BinOptions {
+                start: 0.0,
+                end: 2.0,
+                count: 2,
+                density: false,
+            },
+        });
+        spec.layers[0].encodings.push(Encoding {
+            channel: Channel::Series,
+            field: FieldRef::new("d", "bucket"),
+            scale: None,
+        });
+        spec.legends.push(crate::Legend {
+            scale: Arc::from("x"),
+            title: None,
+            toggleable: true,
+        });
+        model.replace(Arc::new(spec), model.data.clone()).unwrap();
+        let mut view = ChartView::new(model).unwrap();
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            view.update(RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 260.0, 180.0),
+                scale,
+                Default::default(),
+            ))
+            .unwrap();
+            let legends: Vec<_> = view
+                .snapshot()
+                .output
+                .semantics
+                .iter()
+                .filter(|semantic| semantic.id.as_str().starts_with("chart/legend/"))
+                .collect();
+            assert_eq!(legends.len(), 2);
+            for legend in legends {
+                assert!(
+                    legend.bounds.origin.y + legend.bounds.size.height
+                        <= view.plot_bounds().unwrap().origin.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inspection_uses_its_own_layer_and_accepted_plot_not_paint_order() {
+        let mut model = model();
+        let mut spec = (*model.spec).clone();
+        let mut second = spec.layers[0].clone();
+        for encoding in &mut second.encodings {
+            if encoding.channel == Channel::X {
+                encoding.field.column = Arc::from("y");
+            }
+            if encoding.channel == Channel::Y {
+                encoding.field.column = Arc::from("x");
+            }
+        }
+        spec.layers.push(second);
+        model.replace(Arc::new(spec), model.data.clone()).unwrap();
+        let mut view = ChartView::new(model).unwrap();
+        view.update(RetainedSurfaceInput::new(
+            Rect::new(20.0, 30.0, 640.0, 400.0),
+            1.25,
+            Default::default(),
+        ))
+        .unwrap();
+        let hit = view
+            .hits()
+            .iter()
+            .find(|hit| hit.source_index == 1)
+            .unwrap();
+        let detail = view.inspection(hit).unwrap();
+        assert_eq!(
+            detail
+                .display
+                .iter()
+                .map(|field| field.label.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["y", "x"]
+        );
+        assert_eq!(detail.plot_bounds, view.plot_bounds().unwrap());
+        let mut snapshot = view.snapshot().clone();
+        snapshot.output.paint.insert(
+            0,
+            PaintCommand::Stroke {
+                rect: Rect::new(21.0, 31.0, 2.0, 2.0),
+                color: 0,
+                width: 1.0,
+            },
+        );
+        assert!(project_inspection_overlay(
+            &mut snapshot,
+            hit,
+            &detail,
+            &ChartTheme::default()
+        ));
+        let tooltip = snapshot.output.semantics.last().unwrap();
+        let plot = detail.plot_bounds;
+        assert!(
+            tooltip.bounds.origin.x >= plot.origin.x && tooltip.bounds.origin.y >= plot.origin.y
+        );
+        assert!(
+            tooltip.bounds.origin.x + tooltip.bounds.size.width <= plot.origin.x + plot.size.width
+        );
+        assert!(
+            tooltip.bounds.origin.y + tooltip.bounds.size.height
+                <= plot.origin.y + plot.size.height
+        );
+    }
+
+    #[test]
+    fn signed_band_pixels_and_inspection_match_the_analytic_strip() {
+        let top0 = Point { x: 4.0, y: 12.0 };
+        let top1 = Point { x: 12.0, y: 4.0 };
+        let bottom0 = Point { x: 4.0, y: 8.0 };
+        let bottom1 = Point { x: 12.0, y: 8.0 };
+        let crossing = Point { x: 8.0, y: 8.0 };
+        let bounds = Rect::new(4.0, 4.0, 8.0, 8.0);
+        let command = path_command(
+            band_triangles(top0, bottom0, top1, bottom1).to_vec(),
+            bounds,
+            0xff0077bb,
+            6,
+        )
+        .unwrap();
+        let hit = ChartHit {
+            dataset: Arc::from("signed"),
+            row: crate::RowKey::from("row"),
+            series: None,
+            bounds,
+            area_band: Some(Arc::new([top0, crossing, top1, bottom1, crossing, bottom0])),
+            revision: 1,
+            source_index: 0,
+            row_index: 0,
+        };
+        let contains = |x: f64, y: f64, scale: f64| {
+            (4.0 * scale..=12.0 * scale).contains(&x)
+                && y >= (16.0 * scale - x).min(8.0 * scale)
+                && y <= (16.0 * scale - x).max(8.0 * scale)
+        };
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let mut renderer = twinkle_ui::SoftwareRenderer::new_pixel_buffer(32, 32, scale);
+            renderer.render(std::slice::from_ref(&command));
+            for y in 0..32 {
+                for x in 0..32 {
+                    let inside = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+                        .into_iter()
+                        .filter(|(dx, dy)| contains(x as f64 + dx, y as f64 + dy, f64::from(scale)))
+                        .count();
+                    let expected = (255.0 * inside as f32 / 4.0).round() as u8;
+                    assert_eq!(
+                        renderer.pixels()[y * 32 + x].a,
+                        expected,
+                        "signed band pixel ({x},{y}) at {scale}"
+                    );
+                    let point = Point {
+                        x: (x as f32 + 0.5) / scale,
+                        y: (y as f32 + 0.5) / scale,
+                    };
+                    assert_eq!(
+                        hit_distance(&hit, point) < 0.0001,
+                        contains(x as f64 + 0.5, y as f64 + 0.5, f64::from(scale))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signed_area_bands_split_at_the_interpolated_edge_crossing() {
+        for baseline in [0.0, 3.0] {
+            for direction in [-1.0, 1.0] {
+                let top0 = Point {
+                    x: 0.0,
+                    y: baseline + direction * 4.0,
+                };
+                let bottom0 = Point {
+                    x: 0.0,
+                    y: baseline,
+                };
+                let top1 = Point {
+                    x: 8.0,
+                    y: baseline - direction * 4.0,
+                };
+                let bottom1 = Point {
+                    x: 8.0,
+                    y: baseline,
+                };
+                let triangles = band_triangles(top0, bottom0, top1, bottom1);
+                assert_eq!(
+                    triangles[2],
+                    Point {
+                        x: 4.0,
+                        y: baseline
+                    }
+                );
+                assert_eq!(triangles[3], triangles[2]);
+                let area: f32 = triangles
+                    .chunks_exact(3)
+                    .map(|p| {
+                        ((p[1].x - p[0].x) * (p[2].y - p[0].y)
+                            - (p[1].y - p[0].y) * (p[2].x - p[0].x))
+                            .abs()
+                            * 0.5
+                    })
+                    .sum();
+                assert_eq!(area, 16.0);
+                assert_eq!(area_triangles(&[top0, top1], baseline), triangles);
+            }
+        }
+        // A varying stack baseline must be interpolated too, not replaced
+        // by zero at the sign change.
+        let triangles = band_triangles(
+            Point { x: 0.0, y: 8.0 },
+            Point { x: 0.0, y: 2.0 },
+            Point { x: 8.0, y: 2.0 },
+            Point { x: 8.0, y: 4.0 },
+        );
+        assert_eq!(triangles[2], Point { x: 6.0, y: 3.5 });
+    }
+
+    #[test]
+    fn triangle_clipping_preserves_coverage_and_stays_inside_all_four_planes() {
+        let bounds = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let area = |triangles: &[Point]| {
+            triangles
+                .chunks_exact(3)
+                .map(|p| {
+                    ((p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[1].y - p[0].y) * (p[2].x - p[0].x))
+                        .abs()
+                        * 0.5
+                })
+                .sum::<f32>()
+        };
+        let enclosing = [
+            Point { x: -30.0, y: -30.0 },
+            Point { x: 60.0, y: -30.0 },
+            Point { x: -30.0, y: 60.0 },
+        ];
+        let clipped = clip_triangles_to_rect(&enclosing, bounds);
+        assert!((area(&clipped) - 100.0).abs() < 1e-4);
+        // Deterministic stress includes reversed winding and degenerate edges.
+        let mut seed = 7u32;
+        for _ in 0..10_000 {
+            let mut point = || {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let x = (seed % 61) as f32 - 25.0;
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                Point {
+                    x,
+                    y: (seed % 61) as f32 - 25.0,
+                }
+            };
+            let triangle = [point(), point(), point()];
+            let clipped = clip_triangles_to_rect(&triangle, bounds);
+            assert!(clipped.len() <= 15);
+            for p in &clipped {
+                assert!(p.x >= -1e-4 && p.x <= 10.0001 && p.y >= -1e-4 && p.y <= 10.0001);
+            }
+            assert!(area(&clipped) <= area(&triangle) + 0.001);
+        }
+    }
+
+    #[test]
+    fn tooltip_contract_honors_hint_formatting_and_space() {
+        let tooltip = ChartTooltipSpec {
+            fields: vec![ChartTooltipField {
+                column: Arc::from("y"),
+                label: Arc::from("Revenue"),
+                unit: Some(Arc::from("USD")),
+                format: ChartTooltipFormat::Number { decimal_places: 2 },
+            }],
+            include_data_table_hint: false,
+        };
+        let mut view = ChartView::new(model().with_tooltip(tooltip.clone()).unwrap()).unwrap();
+        view.update(RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 400.0, 240.0),
+            1.0,
+            Default::default(),
+        ))
+        .unwrap();
+        let mut detail = view.inspection(&view.hits()[0]).unwrap();
+        assert_eq!(detail.cells.len(), 2); // exact record is not pruned
+        assert_eq!(inspection_label(&detail), "Revenue: 2.00 USD");
+        detail.include_data_table_hint = true;
+        assert!(inspection_label(&detail).contains("data table"));
+        let text = "Revenue: 2.00 USD\nRegion: North\nMore details in data table";
+        let available = Size::new(180.0, measured_text("M", -12.0, false, None).height * 2.0);
+        let (fitted, size) = fit_tooltip(text, -12.0, available).unwrap();
+        assert_eq!(fitted, "Revenue: 2.00 USD\n…");
+        assert!(size.width <= available.width && size.height <= available.height);
+        assert!(fit_tooltip(text, -12.0, Size::new(1.0, 1.0)).is_none());
+        let mut invalid = tooltip;
+        invalid.fields[0].format = ChartTooltipFormat::Number {
+            decimal_places: 255,
+        };
+        assert!(model().with_tooltip(invalid).is_err());
+    }
+
+    #[test]
+    fn missing_samples_do_not_join_continuous_segments() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            DatasetId::from("d"),
+            (0..5)
+                .map(|i| RowKey::from(format!("r{i}")))
+                .collect::<Vec<_>>(),
+            vec![
+                Column::new(
+                    "x",
+                    (0..5)
+                        .map(|i| DataValue::Number(i as f64))
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new(
+                    "y",
+                    vec![
+                        DataValue::Number(1.0),
+                        DataValue::Number(2.0),
+                        DataValue::Null,
+                        DataValue::Number(2.0),
+                        DataValue::Number(1.0),
+                    ],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(1, vec![dataset], &limits).unwrap());
+        let mut view =
+            ChartView::new(ChartModel::new(model().spec.clone(), data, limits).unwrap()).unwrap();
+        view.update(RetainedSurfaceInput::new(
+            Rect::new(0.0, 0.0, 800.0, 400.0),
+            1.0,
+            Default::default(),
+        ))
+        .unwrap();
+        let plot = view.plot_bounds().unwrap();
+        let middle = plot.origin.x + plot.size.width * 0.5;
+        let mut triangles = 0;
+        for command in &view.snapshot().output.paint {
+            if let PaintCommand::Path { geometry, .. } = command {
+                for triangle in geometry.triangles().chunks_exact(3) {
+                    triangles += 1;
+                    assert!(
+                        triangle.iter().all(|p| p.x < middle)
+                            || triangle.iter().all(|p| p.x > middle)
+                    );
+                }
+            }
+        }
+        assert!(triangles > 0);
+    }
+
+    #[test]
+    fn typography_uses_logical_pixels_for_layout_at_every_device_scale() {
+        let bounds = Rect::new(41.0, 73.0, 800.0, 500.0);
+        let mut reference = None;
+        let mut theme = ChartTheme::default();
+        theme.typography.title = 27.0;
+        theme.typography.control = 18.0;
+        theme.typography.body = 16.0;
+        theme.typography.label = 15.0;
+        let mut view = ChartView::new(model().with_theme(theme).unwrap()).unwrap();
+        // Reuse the retained view to exercise moving a window between displays,
+        // including returning to an earlier scale without a content revision.
+        for device_scale in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 1.25, 1.0] {
+            view.update(RetainedSurfaceInput::new(
+                bounds,
+                device_scale,
+                Default::default(),
+            ))
+            .unwrap();
+            let title = view
+                .snapshot()
+                .output
+                .paint
+                .iter()
+                .find_map(|command| match command {
+                    PaintCommand::Text {
+                        text,
+                        bounds,
+                        scale,
+                        ..
+                    } if text == "Trend" => {
+                        assert_eq!(*scale, -27.0);
+                        Some(*bounds)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                title.size.height,
+                measured_text("Trend", -27.0, true, None).height
+            );
+            let plot = view.plot_bounds().unwrap();
+            assert!(title.origin.y + title.size.height <= plot.origin.y);
+            let layout = (title, plot);
+            if let Some(reference) = reference {
+                assert_eq!(
+                    layout, reference,
+                    "device scale {device_scale} changed logical layout"
+                );
+            } else {
+                reference = Some(layout);
+            }
+        }
+    }
+
     #[test]
     fn prepares_bounded_path_and_semantics() {
         let mut view = ChartView::new(model()).unwrap();
@@ -3710,6 +5192,25 @@ mod tests {
             delta_x: 0.0,
             delta_y: -8.0,
         };
+        // The host delivers window coordinates. The reusable chart must
+        // translate through its final allocation before querying retained hits.
+        let shifted = twinkle_ui::UiFrame::layout(
+            view.element_with_pointer("shifted-chart", Message::Chart, pointer)
+                .unwrap(),
+            Rect::new(73.0, 129.0, bounds.size.width, bounds.size.height),
+        );
+        assert_eq!(
+            shifted
+                .handle_event(
+                    &mut twinkle_ui::UiStateStore::default(),
+                    twinkle_ui::UiEvent::PointerMoved(Point {
+                        x: point.x + 73.0,
+                        y: point.y + 129.0,
+                    }),
+                )
+                .messages,
+            vec![Message::Pointer(point)],
+        );
         let wheel_outcome = frame.handle_event(
             &mut twinkle_ui::UiStateStore::default(),
             twinkle_ui::UiEvent::Scroll {
@@ -4067,6 +5568,154 @@ mod tests {
                 .count(),
             2
         );
+
+        let mut hit_view = ChartView::new(
+            ChartModel::new(
+                Arc::new(crate::Recipes::stacked_area(
+                    "Hit areas",
+                    FieldRef::new("d", "x"),
+                    FieldRef::new("d", "series"),
+                    FieldRef::new("d", "value"),
+                    false,
+                )),
+                data.clone(),
+                limits.clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        hit_view.update(input).unwrap();
+        let plot = hit_view.plot_bounds().unwrap();
+        // A raw-value line sharing the stack's y scale must not shrink the
+        // stack from its total of seven to the raw column's maximum of four.
+        let mut layered = crate::Recipes::stacked_area(
+            "Shared transformed domain",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "series"),
+            FieldRef::new("d", "value"),
+            false,
+        );
+        let mut raw_line = layered.layers[0].clone();
+        raw_line.mark =
+            crate::Recipes::line("Raw", FieldRef::new("d", "x"), FieldRef::new("d", "value"))
+                .layers[0]
+                .mark
+                .clone();
+        raw_line.transforms.clear();
+        raw_line
+            .encodings
+            .retain(|encoding| encoding.channel != Channel::Y2);
+        raw_line
+            .encodings
+            .iter_mut()
+            .find(|encoding| encoding.channel == Channel::Y)
+            .unwrap()
+            .field
+            .column = Arc::from("value");
+        layered.layers.push(raw_line);
+        let layered_model =
+            ChartModel::new(Arc::new(layered), data.clone(), limits.clone()).unwrap();
+        let mut resolved = layered_model
+            .spec
+            .layers
+            .iter()
+            .map(|layer| layered_model.resolve_layer(layer).map(Some))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(resolved[0].as_ref().unwrap().y_domain, [0.0, 7.0]);
+        assert_eq!(resolved[1].as_ref().unwrap().y_domain, [1.0, 4.0]);
+        unify_resolved_domains(&layered_model.spec, &mut resolved);
+        assert!(
+            resolved
+                .iter()
+                .all(|layer| layer.as_ref().unwrap().y_domain == [0.0, 7.0])
+        );
+        let mut layered_view = ChartView::new(layered_model).unwrap();
+        layered_view.update(input).unwrap();
+        for (single, layered) in hit_view.hits().iter().zip(layered_view.hits()) {
+            assert_eq!(single.bounds, layered.bounds);
+            assert_eq!(single.area_band, layered.area_band);
+        }
+        // Domain x=[0,2], y=[0,7]. The boundary is y=1+x;
+        // neither sample's rectangular hit region describes its slope.
+        for (x, y, expected_series, expected_row) in [
+            (0.4, 1.3, "one", "r0"),
+            (0.4, 1.5, "two", "r1"),
+            (0.6, 1.5, "one", "r2"),
+            (0.6, 1.7, "two", "r3"),
+            (1.6, 2.5, "one", "r4"),
+            (1.6, 2.7, "two", "r5"),
+        ] {
+            let point = Point {
+                x: plot.origin.x + x / 2.0 * plot.size.width,
+                y: plot.origin.y + (1.0 - y / 7.0) * plot.size.height,
+            };
+            let hit = hit_view.nearest(point).unwrap();
+            assert_eq!(hit.series.as_deref(), Some(expected_series), "at {x},{y}");
+            assert_eq!(hit.row, RowKey::from(expected_row), "at {x},{y}");
+            assert_eq!(hit_distance(hit, point), 0.0);
+        }
+        let south = hit_view
+            .hits()
+            .iter()
+            .find(|hit| hit.row == RowKey::from("r3"))
+            .unwrap();
+        let point_inside_south_band = Point {
+            x: south.bounds.origin.x + south.bounds.size.width * 0.5,
+            y: south.bounds.origin.y + south.bounds.size.height * 0.5,
+        };
+        assert_eq!(
+            hit_view
+                .nearest(point_inside_south_band)
+                .map(|hit| &hit.row),
+            Some(&RowKey::from("r3"))
+        );
+
+        let viewport_area = crate::Recipes::stacked_area(
+            "Viewport areas",
+            FieldRef::new("d", "x"),
+            FieldRef::new("d", "series"),
+            FieldRef::new("d", "value"),
+            false,
+        );
+        let mut viewport_view = ChartView::new(
+            ChartModel::new(Arc::new(viewport_area), data, limits)
+                .unwrap()
+                .with_state(crate::ChartState {
+                    viewport: Some(crate::Viewport {
+                        x: Some([-0.1, 2.1]),
+                        y: Some([0.0, 4.0]),
+                    }),
+                    ..crate::ChartState::default()
+                }),
+        )
+        .unwrap();
+        let snapshot = viewport_view.update(input).unwrap();
+        let paths = snapshot
+            .output
+            .paint
+            .iter()
+            .filter_map(|command| match command {
+                PaintCommand::Path { geometry, .. } => Some(geometry),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(paths.len(), 2);
+        let right_edges = paths
+            .iter()
+            .map(|path| path.bounds().origin.x + path.bounds().size.width)
+            .collect::<Vec<_>>();
+        assert!((right_edges[0] - right_edges[1]).abs() < 0.01);
+        assert!(
+            paths
+                .iter()
+                .all(|path| path.triangles().iter().all(|point| {
+                    point.x >= input.bounds.origin.x
+                        && point.x <= input.bounds.origin.x + input.bounds.size.width
+                        && point.y >= input.bounds.origin.y
+                        && point.y <= input.bounds.origin.y + input.bounds.size.height
+                }))
+        );
     }
 
     #[test]
@@ -4111,7 +5760,7 @@ mod tests {
         let mut view = ChartView::new(model).unwrap();
         let snapshot = view
             .update(RetainedSurfaceInput::new(
-                Rect::new(0.0, 0.0, 180.0, 100.0),
+                Rect::new(0.0, 0.0, 180.0, 180.0),
                 1.25,
                 twinkle_ui::retained_surface::RetainedSurfaceRevisions {
                     content: 12,
@@ -4962,6 +6611,25 @@ mod tests {
                 ChartView::new(ChartModel::new(Arc::new(spec), data, limits.clone()).unwrap())
                     .unwrap();
             view.update(input).unwrap();
+            let first_plot = view.inspection(&view.hits()[0]).unwrap().plot_bounds;
+            let second_plot = view.inspection(&view.hits()[2]).unwrap().plot_bounds;
+            assert!(first_plot.origin.x + first_plot.size.width <= second_plot.origin.x);
+            for hit in view.hits() {
+                let detail = view.inspection(hit).unwrap();
+                let mut snapshot = view.snapshot().clone();
+                assert!(project_inspection_overlay(
+                    &mut snapshot,
+                    hit,
+                    &detail,
+                    &ChartTheme::default()
+                ));
+                let tooltip = snapshot.output.semantics.last().unwrap().bounds;
+                assert!(tooltip.origin.x >= detail.plot_bounds.origin.x);
+                assert!(
+                    tooltip.origin.x + tooltip.size.width
+                        <= detail.plot_bounds.origin.x + detail.plot_bounds.size.width
+                );
+            }
             (
                 view.hits().to_vec(),
                 view.snapshot().output.semantics.clone(),
@@ -5309,18 +6977,55 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(titles.len(), 2, "shared guides render exactly once");
+        let plot = view.plot_bounds().unwrap();
+        assert!(titles.iter().any(|(text, bounds)| *text == "Revenue"
+            && bounds.origin.x + bounds.size.width <= plot.origin.x));
         assert!(
-            titles
-                .iter()
-                .any(|(text, bounds)| *text == "Revenue" && bounds.origin.x < 36.0)
-        );
-        assert!(
-            titles
-                .iter()
-                .any(|(text, bounds)| *text == "Rate" && bounds.origin.x > 358.0)
+            titles.iter().any(|(text, bounds)| *text == "Rate"
+                && bounds.origin.x >= plot.origin.x + plot.size.width)
         );
 
         let mut unlabeled = valid_spec.clone();
+        for size in [12.0, 18.0, 27.0] {
+            let mut theme = ChartTheme::default();
+            theme.typography.label = size;
+            let input = RetainedSurfaceInput::new(
+                Rect::new(17.0, 31.0, 900.0, 450.0),
+                1.25,
+                Default::default(),
+            );
+            view.update_theme(theme, input).unwrap();
+            let plot = view.plot_bounds().unwrap();
+            let mut guide_bounds = Vec::new();
+            for command in &view.snapshot().output.paint {
+                if let PaintCommand::Text {
+                    text,
+                    bounds,
+                    scale,
+                    bold,
+                    ..
+                } = command
+                    && (text == "Revenue"
+                        || text == "Rate"
+                        || text.ends_with("USD")
+                        || text.ends_with("percent"))
+                {
+                    let measured = measured_text(text, *scale, *bold, None);
+                    assert!(
+                        bounds.size.width >= measured.width
+                            && bounds.size.height >= measured.height
+                    );
+                    assert!(!rects_overlap(*bounds, plot, 0.0));
+                    assert!(
+                        guide_bounds
+                            .iter()
+                            .all(|other| !rects_overlap(*other, *bounds, 0.0))
+                    );
+                    guide_bounds.push(*bounds);
+                }
+            }
+            assert!(guide_bounds.len() >= 6);
+        }
         let right_axis = unlabeled
             .axes
             .iter_mut()

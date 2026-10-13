@@ -120,6 +120,9 @@ impl LogScale {
     pub const fn range(&self) -> [f64; 2] {
         self.range
     }
+    pub const fn domain(&self) -> [f64; 2] {
+        self.domain
+    }
 }
 
 impl ContinuousScale for LogScale {

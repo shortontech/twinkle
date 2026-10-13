@@ -3956,6 +3956,7 @@ dependencies = [
 name = "twinkle-charts"
 version = "0.1.0"
 dependencies = [
+ "image",
  "proptest",
  "twinkle-testkit",
  "twinkle-ui",

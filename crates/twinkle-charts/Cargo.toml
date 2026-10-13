@@ -11,6 +11,7 @@ description = "Bounded, composable native charts for Twinkle"
 twinkle-ui = { path = "../twinkle", version = "0.2.0" }
 
 [dev-dependencies]
+image.workspace = true
 proptest.workspace = true
 twinkle-testkit = { path = "../twinkle-testkit", version = "0.2.0" }
 

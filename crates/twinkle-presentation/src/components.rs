@@ -4137,13 +4137,18 @@ impl PanelNode {
                     if let Some(action) = inspect_action
                         && !projected.inspector.is_empty()
                     {
-                        element = element.on_pointer_move_seeded(
-                            Message::from_plugin_scoped(
-                                PluginMessage::ChartInspect(action, projected.inspector.clone()),
-                                layout_scope.as_deref(),
-                            ),
-                            Message::pointer,
-                        );
+                        element = element
+                            .on_pointer_move_seeded(
+                                Message::from_plugin_scoped(
+                                    PluginMessage::ChartInspect(
+                                        action,
+                                        projected.inspector.clone(),
+                                    ),
+                                    layout_scope.as_deref(),
+                                ),
+                                Message::pointer,
+                            )
+                            .pointer_coordinates(twinkle::Point::default());
                     }
                     if let Some(action) = pan_action {
                         element = element.on_drag(
@@ -5590,9 +5595,16 @@ impl RetainedPanelTree {
                                 update_box_scalars(typed, source)?;
                             } else if matches!(typed, PanelNode::Surface { .. }) {
                                 update_surface_scalars(typed, source)?;
-                            } else if matches!(property.as_str(), "width" | "height")
-                                && matches!(typed, PanelNode::Chart(_))
-                            {
+                            } else if matches!(property.as_str(), "width" | "height") && {
+                                #[cfg(feature = "charts")]
+                                {
+                                    matches!(typed, PanelNode::Chart(_))
+                                }
+                                #[cfg(not(feature = "charts"))]
+                                {
+                                    false
+                                }
+                            } {
                                 #[cfg(feature = "charts")]
                                 if let PanelNode::Chart(chart) = typed {
                                     chart.resize(source)?;

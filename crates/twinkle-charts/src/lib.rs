@@ -24,15 +24,15 @@ pub use export::{
 };
 pub use interaction::{ChartNavigation, NavigationCommand, PanZoomPolicy, ViewportCommand};
 pub use model::{
-    ChartHit, ChartInputBindings, ChartInspection, ChartInspector, ChartModel, ChartView,
-    project_inspection_overlay,
+    ChartHit, ChartInputBindings, ChartInspection, ChartInspector, ChartModel, ChartTooltipField,
+    ChartTooltipFormat, ChartTooltipSpec, ChartTooltipValue, ChartView, project_inspection_overlay,
 };
 pub use scale::{BandScale, ContinuousScale, LinearScale, LogScale, ScaleValue};
 pub use spec::*;
 pub use table::{
     ChartTable, ChartTableCell, ChartTableEvent, ChartTableFilter, ChartTablePage, ChartTableRow,
 };
-pub use theme::{ChartTheme, SeriesCue};
+pub use theme::{ChartTheme, ChartTypography, SeriesCue};
 pub use time::{CalendarTick, TimeScale, TimeTickInterval, TimeZonePolicy};
 pub use transform::{
     AggregateOp, BinOptions, MissingPolicy, StackMode, Transform, execute_transforms,

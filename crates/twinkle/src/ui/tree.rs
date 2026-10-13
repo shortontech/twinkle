@@ -99,6 +99,7 @@ struct HitRegion<Message> {
     pointer_move_mapper: Option<fn(Point) -> Message>,
     pointer_move_seed: Option<Message>,
     seeded_pointer_move_mapper: Option<fn(Message, Point) -> Message>,
+    pointer_coordinate_origin: Option<Point>,
     wheel_mapper: Option<fn(WheelGesture) -> Message>,
     wheel_seed: Option<Message>,
     seeded_wheel_mapper: Option<fn(Message, WheelGesture) -> Message>,
@@ -1198,6 +1199,12 @@ impl<Message: Clone> UiFrame<Message> {
                         && self.is_descendant_or_self(&hit.id, id)
                 })
             })?;
+        let position = hit
+            .pointer_coordinate_origin
+            .map_or(position, |origin| Point {
+                x: position.x - hit.target_bounds.origin.x + origin.x,
+                y: position.y - hit.target_bounds.origin.y + origin.y,
+            });
         hit.seeded_pointer_move_mapper
             .zip(hit.pointer_move_seed.as_ref())
             .map(|(map, seed)| map(seed.clone(), position))
@@ -1772,6 +1779,7 @@ impl<Message: Clone> UiFrame<Message> {
                 pointer_move_mapper: None,
                 pointer_move_seed: None,
                 seeded_pointer_move_mapper: None,
+                pointer_coordinate_origin: None,
 
                 wheel_mapper: None,
                 wheel_seed: None,

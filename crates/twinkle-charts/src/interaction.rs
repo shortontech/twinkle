@@ -303,6 +303,7 @@ mod tests {
             row: RowKey::from(key),
             series: None,
             bounds: twinkle_ui::Rect::new(x, 0.0, 4.0, 4.0),
+            area_band: None,
             revision: 7,
             source_index: 0,
             row_index: 0,

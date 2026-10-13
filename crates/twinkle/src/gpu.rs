@@ -200,6 +200,9 @@ impl cosmic_text::Renderer for SampleDecorations<'_> {
 pub struct SoftwareRasterDiagnostics {
     pub framebuffer_live_bytes: usize,
     pub framebuffer_peak_bytes: usize,
+    /// Temporary per-path sample coverage; never retained between paths.
+    pub path_coverage_peak_bytes: usize,
+    pub path_coverage_allocated_bytes: u64,
     pub damage_hints_accepted: u64,
     pub damage_hints_fell_back: u64,
     pub full_repaints: u64,
@@ -768,6 +771,56 @@ impl SoftwareRenderer {
         if source.a == 0 {
             return;
         }
+        if triangles.is_empty() {
+            return;
+        }
+        let left = triangles
+            .iter()
+            .map(|p| p.x * self.scale)
+            .fold(f32::INFINITY, f32::min);
+        let top = triangles
+            .iter()
+            .map(|p| p.y * self.scale)
+            .fold(f32::INFINITY, f32::min);
+        let right = triangles
+            .iter()
+            .map(|p| p.x * self.scale)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = triangles
+            .iter()
+            .map(|p| p.y * self.scale)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let Some(coverage_bounds) =
+            intersection(Rect::new(left, top, right - left, bottom - top), clip).and_then(
+                |bounds| {
+                    intersection(
+                        bounds,
+                        Rect::new(0.0, 0.0, self.width as f32, self.height as f32),
+                    )
+                },
+            )
+        else {
+            return;
+        };
+        let mask_x = coverage_bounds.origin.x.floor() as u32;
+        let mask_y = coverage_bounds.origin.y.floor() as u32;
+        let mask_width =
+            (coverage_bounds.origin.x + coverage_bounds.size.width).ceil() as u32 - mask_x;
+        let mask_height =
+            (coverage_bounds.origin.y + coverage_bounds.size.height).ceil() as u32 - mask_y;
+        // Four sample bits per pixel, bounded to this path's clipped extent.
+        // Union coverage before blending: shared tessellation edges are not
+        // independent translucent paint operations. Peak scratch is one byte
+        // per covered framebuffer pixel and is released after each path.
+        let mut coverage = vec![0_u8; mask_width as usize * mask_height as usize];
+        self.raster_stats.path_coverage_peak_bytes = self
+            .raster_stats
+            .path_coverage_peak_bytes
+            .max(coverage.capacity());
+        self.raster_stats.path_coverage_allocated_bytes = self
+            .raster_stats
+            .path_coverage_allocated_bytes
+            .saturating_add(coverage.capacity() as u64);
         const SAMPLES: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
         for triangle in triangles.chunks_exact(3) {
             let points = [
@@ -799,34 +852,39 @@ impl SoftwareRenderer {
                 points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max)
                     - points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min),
             );
-            let Some(bounds) = intersection(bounds, clip) else {
+            let Some(bounds) = intersection(bounds, coverage_bounds) else {
                 continue;
             };
-            self.for_pixels(bounds, |renderer, x, y| {
-                let inside = SAMPLES
-                    .iter()
-                    .filter(|(ox, oy)| {
-                        let p = Point {
-                            x: x as f32 + ox,
-                            y: y as f32 + oy,
-                        };
-                        let edges = [
-                            edge(points[0], points[1], p),
-                            edge(points[1], points[2], p),
-                            edge(points[2], points[0], p),
-                        ];
-                        edges.iter().all(|value| *value >= 0.0)
-                            || edges.iter().all(|value| *value <= 0.0)
-                    })
-                    .count();
-                if inside != 0 {
-                    let mut covered = source;
-                    covered.a =
-                        (f32::from(source.a) * inside as f32 / SAMPLES.len() as f32).round() as u8;
-                    renderer.blend(x, y, covered);
+            self.for_pixels(bounds, |_, x, y| {
+                let mut samples = 0_u8;
+                for (sample_index, (ox, oy)) in SAMPLES.iter().enumerate() {
+                    let p = Point {
+                        x: x as f32 + ox,
+                        y: y as f32 + oy,
+                    };
+                    let edges = [
+                        edge(points[0], points[1], p),
+                        edge(points[1], points[2], p),
+                        edge(points[2], points[0], p),
+                    ];
+                    if edges.iter().all(|value| *value >= 0.0)
+                        || edges.iter().all(|value| *value <= 0.0)
+                    {
+                        samples |= 1 << sample_index;
+                    }
                 }
+                coverage[((y - mask_y) * mask_width + x - mask_x) as usize] |= samples;
             });
         }
+        self.for_pixels(coverage_bounds, |renderer, x, y| {
+            let inside = coverage[((y - mask_y) * mask_width + x - mask_x) as usize].count_ones();
+            if inside != 0 {
+                let mut covered = source;
+                covered.a =
+                    (f32::from(source.a) * inside as f32 / SAMPLES.len() as f32).round() as u8;
+                renderer.blend(x, y, covered);
+            }
+        });
     }
 
     fn fill_round(&mut self, rect: Rect, radius: f32, corners: u8, color: Color, clip: Rect) {
@@ -1830,6 +1888,58 @@ mod tests {
         command_intersects_clip,
     };
     use crate::backend::{PathFillRule, PathGeometry, PathGeometryKind};
+
+    #[test]
+    fn path_tessellation_edges_do_not_leave_seams_or_accumulate_alpha() {
+        let geometry = Arc::new(
+            PathGeometry::new(
+                vec![
+                    Point { x: 4.0, y: 4.0 },
+                    Point { x: 20.0, y: 4.0 },
+                    Point { x: 20.0, y: 20.0 },
+                    Point { x: 4.0, y: 4.0 },
+                    Point { x: 20.0, y: 20.0 },
+                    Point { x: 4.0, y: 20.0 },
+                ],
+                Rect::new(4.0, 4.0, 16.0, 16.0),
+                PathGeometryKind::Fill {
+                    rule: PathFillRule::NonZero,
+                },
+                0.1,
+                6,
+            )
+            .unwrap(),
+        );
+        for scale in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 3.0] {
+            for (color, alpha) in [(0xffff0000, 255), (0x80ff0000, 128)] {
+                let mut renderer = SoftwareRenderer::new_pixel_buffer(72, 72, scale);
+                renderer.render(&[PaintCommand::Path {
+                    geometry: geometry.clone(),
+                    color,
+                }]);
+                let mask_side = (16.0 * scale) as usize;
+                assert_eq!(
+                    renderer
+                        .software_raster_diagnostics()
+                        .path_coverage_peak_bytes,
+                    mask_side * mask_side
+                );
+                for y in 0..72 {
+                    for x in 0..72 {
+                        let inside = x >= (4.0 * scale) as usize
+                            && x < (20.0 * scale) as usize
+                            && y >= (4.0 * scale) as usize
+                            && y < (20.0 * scale) as usize;
+                        assert_eq!(
+                            renderer.pixels()[y * 72 + x].a,
+                            if inside { alpha } else { 0 },
+                            "tessellation seam/overdraw at ({x},{y}), scale {scale}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn shared_path_triangles_render_with_fractional_edge_coverage() {

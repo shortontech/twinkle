@@ -1624,6 +1624,7 @@ struct ElementEvents<Message> {
     pointer_move_mapper: Option<fn(Point) -> Message>,
     pointer_move_seed: Option<Message>,
     seeded_pointer_move_mapper: Option<fn(Message, Point) -> Message>,
+    pointer_coordinate_origin: Option<Point>,
     wheel_mapper: Option<fn(WheelGesture) -> Message>,
     wheel_seed: Option<Message>,
     seeded_wheel_mapper: Option<fn(Message, WheelGesture) -> Message>,
@@ -1648,6 +1649,7 @@ impl<Message> Default for ElementEvents<Message> {
             pointer_move_mapper: None,
             pointer_move_seed: None,
             seeded_pointer_move_mapper: None,
+            pointer_coordinate_origin: None,
             wheel_mapper: None,
             wheel_seed: None,
             seeded_wheel_mapper: None,
@@ -1764,6 +1766,12 @@ impl<Message> Element<Message> {
         self.events
             .as_ref()
             .and_then(|events| events.pointer_move_seed.as_ref())
+    }
+
+    pub(crate) fn declared_pointer_coordinate_origin(&self) -> Option<Point> {
+        self.events
+            .as_ref()
+            .and_then(|events| events.pointer_coordinate_origin)
     }
 
     pub(crate) fn declared_seeded_pointer_move_mapper(
@@ -2211,6 +2219,14 @@ impl<Message> Element<Message> {
         self
     }
 
+    /// Deliver pointer motion relative to this target's allocation, offset by
+    /// `origin`. Retained surfaces use their accepted geometry origin here.
+    /// The frame performs translation using final layout and scroll positions.
+    pub fn pointer_coordinates(mut self, origin: Point) -> Self {
+        self.events_mut().pointer_coordinate_origin = Some(origin);
+        self
+    }
+
     /// Emit hit-tested pointer motion using target-specific typed seed data.
     /// This is the scoped/callback-bearing counterpart to [`Self::on_pointer_move`].
     pub fn on_pointer_move_seeded(
@@ -2395,6 +2411,7 @@ impl<Message> Element<Message> {
                 pointer_move_mapper: None,
                 pointer_move_seed: None,
                 seeded_pointer_move_mapper: None,
+                pointer_coordinate_origin: events.pointer_coordinate_origin,
                 wheel_mapper: None,
                 wheel_seed: None,
                 seeded_wheel_mapper: None,
@@ -2952,7 +2969,12 @@ pub(crate) fn shape_plain_text(
     })
 }
 
-pub(crate) fn measure_text(
+/// Measure text with the same shaping and cached font metrics used by painting.
+///
+/// Retained graphical consumers can use this without constructing UI elements.
+/// `scale` follows `PaintCommand::Text`: negative values specify an exact logical
+/// font size. `max_width` is a logical width; infinity means unconstrained.
+pub fn measure_text(
     text: &str,
     scale: f32,
     bold: bool,

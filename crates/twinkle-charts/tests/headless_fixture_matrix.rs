@@ -76,6 +76,21 @@ fn fixture_data(revision: u64) -> Arc<ChartData> {
                     .map(|index| DataValue::Category(Arc::from(format!("series-{index}"))))
                     .collect::<Vec<_>>(),
             ),
+            // Area bands require at least two samples per series. Retain the
+            // twelve distinct `series` values above for palette exhaustion,
+            // but use a complete four-by-three grid for stacked-area fixtures.
+            Column::new(
+                "stack_x",
+                (0..categories.len())
+                    .map(|index| DataValue::Number((index / 3) as f64))
+                    .collect::<Vec<_>>(),
+            ),
+            Column::new(
+                "stack_series",
+                (0..categories.len())
+                    .map(|index| DataValue::Category(Arc::from(format!("series-{}", index % 3))))
+                    .collect::<Vec<_>>(),
+            ),
             Column::new(
                 "facet",
                 (0..categories.len())
@@ -100,9 +115,15 @@ fn with_series(mut spec: ChartSpec) -> ChartSpec {
 fn fixtures() -> Vec<(&'static str, ChartSpec)> {
     let mut step = with_series(Recipes::line(
         "Multi-series step line",
-        field("x"),
+        field("stack_x"),
         field("value"),
     ));
+    step.layers[0]
+        .encodings
+        .iter_mut()
+        .find(|encoding| encoding.channel == Channel::Series)
+        .unwrap()
+        .field = field("stack_series");
     step.layers[0].mark = Mark::Line {
         interpolation: Interpolation::StepAfter,
         points: true,
@@ -144,8 +165,8 @@ fn fixtures() -> Vec<(&'static str, ChartSpec)> {
             "stacked-area",
             Recipes::stacked_area(
                 "Stacked area",
-                field("x"),
-                field("series"),
+                field("stack_x"),
+                field("stack_series"),
                 field("value"),
                 false,
             ),
@@ -154,8 +175,8 @@ fn fixtures() -> Vec<(&'static str, ChartSpec)> {
             "normalized-area",
             Recipes::stacked_area(
                 "Normalized area",
-                field("x"),
-                field("series"),
+                field("stack_x"),
+                field("stack_series"),
                 field("value"),
                 true,
             ),
@@ -282,6 +303,26 @@ fn every_family_is_deterministic_across_theme_size_and_scale_matrix() {
                     let second = render();
                     assert_eq!(first, second, "nondeterministic fixture {fixture_name}");
                     assert!(!first.0.paint.is_empty(), "no paint for {fixture_name}");
+                    if width > 112.0
+                        && matches!(
+                            fixture_name,
+                            "stacked-area" | "normalized-area" | "line-step-multi"
+                        )
+                    {
+                        assert_eq!(
+                            first
+                                .0
+                                .paint
+                                .iter()
+                                .filter(|command| matches!(
+                                    command,
+                                    twinkle_ui::backend::PaintCommand::Path { .. }
+                                ))
+                                .count(),
+                            3,
+                            "{fixture_name} must exercise all three continuous series"
+                        );
+                    }
                     assert!(
                         first.0.semantics.iter().any(|record| {
                             record.role == SemanticRole::GraphicalCustomControl
@@ -378,27 +419,35 @@ fn every_family_software_and_gpu_rasters_agree_within_declared_tolerance() {
 #[test]
 #[ignore = "pinned full software raster golden matrix; run explicitly for renderer admission"]
 fn every_family_matches_pinned_software_raster_goldens() {
+    // Opt-in artifacts make changed golden hashes visually auditable. This
+    // never updates expected hashes and writes only to the requested directory.
+    let artifact_directory =
+        std::env::var_os("TWINKLE_CHART_GOLDEN_ARTIFACTS").map(std::path::PathBuf::from);
+    let selected_fixture = std::env::var("TWINKLE_CHART_GOLDEN_FIXTURE").ok();
+    if let Some(directory) = &artifact_directory {
+        std::fs::create_dir_all(directory).unwrap();
+    }
     const EXPECTED: &[(&str, u64)] = &[
-        ("line", 0x2c48ee104684b694),
-        ("line-step-multi", 0xf4c0e24f250281e6),
-        ("area", 0xebbe186fb835ce12),
-        ("stacked-area", 0x870aec46ea0d512a),
-        ("normalized-area", 0x5d9d111c767bdd55),
-        ("bar", 0x7641045b1150adb3),
-        ("horizontal-bar", 0x0c220513978f0485),
-        ("grouped-bar", 0x42f538c397a730aa),
-        ("stacked-bar", 0x6726e42c4fa88ad9),
-        ("normalized-horizontal-bar", 0x697e67cea533f3f2),
-        ("scatter", 0xe817830a45f05c5c),
-        ("bubble", 0x79866ca1fa706522),
-        ("pie", 0x24787436005e4495),
-        ("donut", 0x52f6f8b0f8135f34),
-        ("histogram", 0x948cb6025af4c0be),
-        ("heatmap", 0x2456d6035e14665a),
-        ("sparkline", 0x3f02ac88f8799847),
-        ("combo", 0xeb41b2df3fdf1d22),
-        ("shared-facet", 0x960556bde5ad9cac),
-        ("independent-facet", 0x679d5ac2386dc25b),
+        ("line", 0xc9e1cdbedd74605b),
+        ("line-step-multi", 0xcd9d7eb27a650e56),
+        ("area", 0x71fe70ea3b22de03),
+        ("stacked-area", 0x80c732b9d4c40ff7),
+        ("normalized-area", 0x40f3b3e4f32573da),
+        ("bar", 0x907040e38bdbd22e),
+        ("horizontal-bar", 0x5242ff4d36f0fdb7),
+        ("grouped-bar", 0x91a2dc00fc5b854f),
+        ("stacked-bar", 0x7786e14e79553e0e),
+        ("normalized-horizontal-bar", 0x933a8193dc55ad4b),
+        ("scatter", 0xc4386f2e37ca0c13),
+        ("bubble", 0x588614d9daa02b2b),
+        ("pie", 0xc3e0de48aed33b3b),
+        ("donut", 0xae0f52b2eef66dab),
+        ("histogram", 0xccd3f441f0ff0505),
+        ("heatmap", 0xb2191cbb1d43f56e),
+        ("sparkline", 0xd6d4f446c56746d8),
+        ("combo", 0x175d9750594bd837),
+        ("shared-facet", 0x07bd35afd9c000a7),
+        ("independent-facet", 0xf160d848e4581029),
     ];
     fn mix(hash: &mut u64, bytes: &[u8]) {
         for byte in bytes {
@@ -417,6 +466,12 @@ fn every_family_matches_pinned_software_raster_goldens() {
     let sizes = [(112.0_f32, 84.0_f32), (960.0, 540.0)];
     let mut observed = Vec::new();
     for (fixture_name, spec) in fixtures() {
+        if selected_fixture
+            .as_deref()
+            .is_some_and(|selected| selected != fixture_name)
+        {
+            continue;
+        }
         let mut digest = 0xcbf29ce484222325_u64;
         mix(&mut digest, fixture_name.as_bytes());
         for (theme_index, theme) in themes.iter().enumerate() {
@@ -443,6 +498,17 @@ fn every_family_matches_pinned_software_raster_goldens() {
                     let mut renderer =
                         twinkle_ui::SoftwareRenderer::new_pixel_buffer(width, height, scale);
                     renderer.render(commands);
+                    if let Some(directory) = &artifact_directory {
+                        let rgba: Vec<u8> = renderer
+                            .pixels()
+                            .iter()
+                            .flat_map(|pixel| [pixel.r, pixel.g, pixel.b, pixel.a])
+                            .collect();
+                        image::save_buffer(
+                            directory.join(format!("{fixture_name}-theme{theme_index}-{logical_width}x{logical_height}-scale{scale}.png")),
+                            &rgba, width, height, image::ColorType::Rgba8,
+                        ).unwrap();
+                    }
                     mix(&mut digest, &(theme_index as u64).to_le_bytes());
                     mix(&mut digest, &width.to_le_bytes());
                     mix(&mut digest, &height.to_le_bytes());
@@ -455,7 +521,20 @@ fn every_family_matches_pinned_software_raster_goldens() {
         }
         observed.push((fixture_name, digest));
     }
-    assert_eq!(observed, EXPECTED);
+    assert!(
+        !observed.is_empty(),
+        "unknown or empty golden fixture selection"
+    );
+    let expected: Vec<_> = EXPECTED
+        .iter()
+        .copied()
+        .filter(|(name, _)| {
+            selected_fixture
+                .as_deref()
+                .is_none_or(|selected| selected == *name)
+        })
+        .collect();
+    assert_eq!(observed, expected);
 }
 
 #[test]

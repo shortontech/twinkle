@@ -453,6 +453,7 @@ pub(super) fn emit_element<Message: Clone>(
                 pointer_move_mapper: element.declared_pointer_move_mapper(),
                 pointer_move_seed: element.declared_pointer_move_seed().cloned(),
                 seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
+                pointer_coordinate_origin: element.declared_pointer_coordinate_origin(),
 
                 wheel_mapper: element.declared_wheel_mapper(),
                 wheel_seed: element.declared_wheel_seed().cloned(),
@@ -487,6 +488,7 @@ pub(super) fn emit_element<Message: Clone>(
             pointer_move_mapper: element.declared_pointer_move_mapper(),
             pointer_move_seed: element.declared_pointer_move_seed().cloned(),
             seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
+            pointer_coordinate_origin: element.declared_pointer_coordinate_origin(),
             wheel_mapper: element.declared_wheel_mapper(),
             wheel_seed: element.declared_wheel_seed().cloned(),
             seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
@@ -532,6 +534,7 @@ pub(super) fn emit_element<Message: Clone>(
                 pointer_move_mapper: element.declared_pointer_move_mapper(),
                 pointer_move_seed: element.declared_pointer_move_seed().cloned(),
                 seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
+                pointer_coordinate_origin: element.declared_pointer_coordinate_origin(),
 
                 wheel_mapper: element.declared_wheel_mapper(),
                 wheel_seed: element.declared_wheel_seed().cloned(),
@@ -565,6 +568,7 @@ pub(super) fn emit_element<Message: Clone>(
             pointer_move_mapper: element.declared_pointer_move_mapper(),
             pointer_move_seed: element.declared_pointer_move_seed().cloned(),
             seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
+            pointer_coordinate_origin: element.declared_pointer_coordinate_origin(),
 
             wheel_mapper: element.declared_wheel_mapper(),
             wheel_seed: element.declared_wheel_seed().cloned(),
@@ -603,6 +607,7 @@ pub(super) fn emit_element<Message: Clone>(
             pointer_move_mapper: element.declared_pointer_move_mapper(),
             pointer_move_seed: element.declared_pointer_move_seed().cloned(),
             seeded_pointer_move_mapper: element.declared_seeded_pointer_move_mapper(),
+            pointer_coordinate_origin: element.declared_pointer_coordinate_origin(),
             wheel_mapper: element.declared_wheel_mapper(),
             wheel_seed: element.declared_wheel_seed().cloned(),
             seeded_wheel_mapper: element.declared_seeded_wheel_mapper(),
@@ -685,6 +690,7 @@ pub(super) fn emit_element<Message: Clone>(
                 pointer_move_mapper: None,
                 pointer_move_seed: None,
                 seeded_pointer_move_mapper: None,
+                pointer_coordinate_origin: None,
 
                 wheel_mapper: None,
                 wheel_seed: None,
@@ -947,6 +953,7 @@ pub(super) fn emit_element<Message: Clone>(
                             pointer_move_mapper: None,
                             pointer_move_seed: None,
                             seeded_pointer_move_mapper: None,
+                            pointer_coordinate_origin: None,
 
                             wheel_mapper: None,
                             wheel_seed: None,
@@ -1466,6 +1473,7 @@ pub(super) fn emit_element<Message: Clone>(
                             pointer_move_mapper: None,
                             pointer_move_seed: None,
                             seeded_pointer_move_mapper: None,
+                            pointer_coordinate_origin: None,
 
                             wheel_mapper: None,
                             wheel_seed: None,
