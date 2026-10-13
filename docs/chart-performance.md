@@ -172,3 +172,11 @@ feedback objects, never owns or closes winit's display, and is dropped before
 its surface/window owner. This feature provides compositor display evidence,
 not GPU execution timestamps. Earlier uninstrumented measurements in this
 file retain their original unavailable-presentation boundary.
+
+Categorical axis guides now use the admitted category labels, preserving source
+order and thinning labels to the requested tick budget. Guide measurement and
+painting use the same labels; linear numeric ticks are computed from the domain
+in f64 so label values do not acquire f32 mapping noise. Initial native frames
+capture their application correlation, including zero-warm-up benchmarks.
+`NativeFrameSubmission::present_call_duration` reports CPU time inside the native
+presenter call, independently of end-to-end deadline latency.

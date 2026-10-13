@@ -1891,6 +1891,8 @@ pub struct NativeFrameSubmission {
     pub correlation: Option<NativeFrameCorrelation>,
     pub frame_generation: u64,
     pub submitted_at: Instant,
+    /// CPU duration inside the native presenter call; not GPU execution time.
+    pub present_call_duration: Duration,
     pub backend: &'static str,
     pub scale_factor: f32,
     pub physical_size: (u32, u32),
@@ -2300,7 +2302,7 @@ impl<A: Application> UiHost<A> {
 
     /// Constructs a host against an explicit monotonic origin for deterministic
     /// scheduling tests and embedded adapters that already own the clock.
-    pub fn new_at(application: A, width: u32, height: u32, now: Instant) -> Self {
+    pub fn new_at(mut application: A, width: u32, height: u32, now: Instant) -> Self {
         let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
         let mut state = UiStateStore::default();
         let context = ViewContext::from_host(bounds, &state, None::<&UiFrame<A::Message>>);
@@ -2314,6 +2316,7 @@ impl<A: Application> UiHost<A> {
             .poll_interval_controller(&crate::ControllerSnapshot::default())
             .map(|interval| now + interval);
         let resources = tree.resource_diagnostics();
+        let native_correlation = application.take_frame_correlation();
         Self {
             tree_remote_access_protected: application.remote_access_protected(),
             application,
@@ -2325,7 +2328,7 @@ impl<A: Application> UiHost<A> {
             scale_factor: 1.0,
             input_dispatcher: FocusedInputDispatcher::default(),
             frame_generation: 1,
-            native_correlation: None,
+            native_correlation,
             pointer_icon: PointerIcon::Default,
             overlay_failures,
             next_application_deadline,
@@ -5145,6 +5148,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 frame_generation,
             })?;
         }
+        let native_present_started = Instant::now();
         let result = presenter.present(
             frame.logical_size.0,
             size.width,
@@ -5154,6 +5158,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         );
         self.authoritative_unchanged_present = false;
         result?;
+        let present_call_duration = native_present_started.elapsed();
         crate::pipeline_trace::event!({"event": "gpu_present_end", "frame_generation": host.frame_generation,
             "presenter_call_us": crate::pipeline_trace::micros(_presenter_started),
             "boundary": "CPU presenter call including nested attribution writes; excludes compositor display"});
@@ -5163,6 +5168,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                     correlation,
                     frame_generation,
                     submitted_at: Instant::now(),
+                    present_call_duration,
                     backend: "gpu",
                     scale_factor: self.scale,
                     physical_size: (size.width, size.height),
@@ -5213,7 +5219,9 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 })
                 .map_err(std::io::Error::other)?;
         }
+        let native_present_started = Instant::now();
         buffer.present()?;
+        let present_call_duration = native_present_started.elapsed();
         crate::pipeline_trace::event!({
             "event": "software_present", "surface": self.native_host_generation,
             "revision": result.revision, "physical_width": result.width, "physical_height": result.height,
@@ -5229,6 +5237,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                     correlation: self.raster_correlation,
                     frame_generation: self.raster_frame_generation,
                     submitted_at: Instant::now(),
+                    present_call_duration,
                     backend: "software",
                     scale_factor: self.scale,
                     physical_size: (size.width, size.height),
@@ -5763,6 +5772,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         }
         self.host = Some(host);
         self.window = Some(window.clone());
+        #[allow(unused_mut)] // Mutated only with optional Linux Wayland feedback.
         let mut presentation_supported = false;
         #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
         if let (Ok(display), Ok(native_window)) =
@@ -6139,6 +6149,36 @@ fn is_clipboard_paste(input: &twinkle_input::InputEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_frame_captures_application_correlation_before_native_submission() {
+        struct Tagged(u64);
+        impl Application for Tagged {
+            type Message = u64;
+            fn update(&mut self, message: u64) {
+                self.0 = message;
+            }
+            fn view(&self, _: ViewContext) -> impl crate::View<u64> {
+                crate::Text::new(self.0.to_string())
+            }
+            fn take_frame_correlation(&mut self) -> Option<crate::NativeFrameCorrelation> {
+                Some(crate::NativeFrameCorrelation {
+                    mount: 42,
+                    generation: self.0,
+                })
+            }
+        }
+        let mut host = UiHost::new(Tagged(7), 200, 100);
+        let captured = host.native_correlation;
+        assert_eq!(captured.unwrap().generation, 7);
+        host.application_mut().update(8);
+        host.step(HostBatch {
+            application_changed: true,
+            ..Default::default()
+        });
+        assert_eq!(host.native_correlation.unwrap().generation, 8);
+        assert_eq!(captured.unwrap().generation, 7);
+    }
+
     use crate::ui::ComponentBuilderExt;
     static SYNTHETIC_INGRESS_ORDER: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(1);

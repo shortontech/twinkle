@@ -1150,17 +1150,11 @@ impl ChartModel {
                     .unwrap_or(5)
                     .clamp(2, self.limits.max_ticks_per_axis);
                 let mut ticks = Size::default();
-                for i in 0..count {
-                    let start = mapper.map(domain[0]);
-                    let end = mapper.map(domain[1]);
-                    let value =
-                        mapper.invert(start + (end - start) * i as f32 / (count - 1) as f32);
-                    let size = measured_text(
-                        &format_tick(value, axis.unit.as_deref()),
-                        scale,
-                        false,
-                        None,
-                    );
+                let column = channel(&layer.encodings, axis_channel)
+                    .and_then(|encoding| resolved.dataset.column(&encoding.field.column))
+                    .expect("resolved axis column");
+                for (_, text) in axis_ticks(column, domain, &mapper, count, axis.unit.as_deref()) {
+                    let size = measured_text(&text, scale, false, None);
                     ticks.width = ticks.width.max(size.width);
                     ticks.height = ticks.height.max(size.height);
                 }
@@ -1574,6 +1568,8 @@ impl ChartModel {
             y_scale,
             &x_mapper,
             &y_mapper,
+            x_column,
+            y_column,
             output,
         )?;
         let mut series_groups = series_groups(dataset, &layer.encodings, &self.state);
@@ -2304,6 +2300,8 @@ impl ChartModel {
         y_scale: Option<&str>,
         x_mapper: &AxisMapper,
         y_mapper: &AxisMapper,
+        x_column: &crate::Column,
+        y_column: &crate::Column,
         output: &mut RetainedSurfaceOutput,
     ) -> Result<(), ChartError> {
         for axis in &self.spec.axes {
@@ -2330,19 +2328,22 @@ impl ChartModel {
             } else {
                 continue;
             };
-            for index in 0..count {
-                let t = index as f32 / (count - 1) as f32;
+            let ticks = axis_ticks(
+                if is_x { x_column } else { y_column },
+                domain,
+                if is_x { x_mapper } else { y_mapper },
+                count,
+                axis.unit.as_deref(),
+            );
+            for (value, text) in ticks {
                 if is_x {
-                    let start = x_mapper.map(domain[0]);
-                    let x = start + (x_mapper.map(domain[1]) - start) * t;
-                    let value = x_mapper.invert(x);
+                    let x = x_mapper.map(value);
                     if axis.grid {
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(x, plot.origin.y, 1.0, plot.size.height),
                             color: self.theme.grid,
                         });
                     }
-                    let text = format_tick(value, axis.unit.as_deref());
                     let size = measured_text(&text, text_scale, false, None);
                     let width = plot.size.width.min(size.width);
                     let origin = (x - width / 2.0).clamp(
@@ -2369,16 +2370,13 @@ impl ChartModel {
                         wrap: false,
                     });
                 } else {
-                    let start = y_mapper.map(domain[0]);
-                    let y = start + (y_mapper.map(domain[1]) - start) * t;
-                    let value = y_mapper.invert(y);
+                    let y = y_mapper.map(value);
                     if axis.grid {
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(plot.origin.x, y, plot.size.width, 1.0),
                             color: self.theme.grid,
                         });
                     }
-                    let text = format_tick(value, axis.unit.as_deref());
                     let size = measured_text(&text, text_scale, false, None);
                     let label_y = y - size.height * 0.5;
                     let bounds = Rect::new(
@@ -3758,6 +3756,55 @@ fn include_domain_value(
         domain[0] = domain[0].min(value);
         domain[1] = domain[1].max(value);
     }
+}
+
+fn axis_ticks(
+    column: &crate::Column,
+    domain: [f64; 2],
+    mapper: &AxisMapper,
+    count: usize,
+    unit: Option<&str>,
+) -> Vec<(f64, String)> {
+    if column
+        .values
+        .iter()
+        .all(|v| matches!(v, DataValue::Category(_) | DataValue::Null))
+        && column
+            .values
+            .iter()
+            .any(|v| matches!(v, DataValue::Category(_)))
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        let labels = column
+            .values
+            .iter()
+            .filter_map(DataValue::category)
+            .filter(|label| seen.insert(*label))
+            .enumerate()
+            .filter(|(index, _)| in_domain(*index as f64, domain))
+            .map(|(index, label)| (index as f64, label.to_owned()))
+            .collect::<Vec<_>>();
+        if labels.len() <= count {
+            return labels;
+        }
+        return (0..count)
+            .map(|i| labels[i * (labels.len() - 1) / (count - 1)].clone())
+            .collect();
+    }
+    (0..count)
+        .map(|i| {
+            let fraction = i as f64 / (count - 1) as f64;
+            let value = if matches!(mapper, AxisMapper::Log(_)) {
+                mapper.invert(
+                    mapper.map(domain[0])
+                        + (mapper.map(domain[1]) - mapper.map(domain[0])) * fraction as f32,
+                )
+            } else {
+                domain[0] + (domain[1] - domain[0]) * fraction
+            };
+            (value, format_tick(value, unit))
+        })
+        .collect()
 }
 
 fn format_tick(value: f64, unit: Option<&str>) -> String {
@@ -5864,6 +5911,60 @@ mod tests {
             })
             .collect();
         assert_eq!(radii, vec![5.0, 10.0]);
+    }
+
+    #[test]
+    fn categorical_guides_paint_source_labels_and_numeric_ticks_avoid_float_noise() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            "sources",
+            vec![RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new(
+                    "source",
+                    vec![
+                        DataValue::Category("source-0042".into()),
+                        DataValue::Category("source-0007".into()),
+                    ],
+                ),
+                Column::new(
+                    "value",
+                    vec![DataValue::Number(1.0), DataValue::Number(2.0)],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(1, vec![dataset], &limits).unwrap());
+        let mut spec = crate::Recipes::horizontal_bar(
+            "Sources",
+            FieldRef::new("sources", "source"),
+            FieldRef::new("sources", "value"),
+        );
+        spec.axes.push(crate::Axis {
+            scale: "y".into(),
+            title: None,
+            unit: None,
+            tick_count: Some(5),
+            grid: false,
+        });
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        let input =
+            RetainedSurfaceInput::new(Rect::new(0.0, 0.0, 600.0, 300.0), 1.0, Default::default());
+        let paint = &view.update(input).unwrap().output.paint;
+        for label in ["source-0042", "source-0007"] {
+            assert!(
+                paint
+                    .iter()
+                    .any(|p| matches!(p,PaintCommand::Text{text,..} if text==label))
+            );
+        }
+        let column = Column::new("v", vec![DataValue::Number(445500.0)]);
+        let mapper = AxisMapper::new([0.0, 445500.0], [0.0, 100.0], None).unwrap();
+        assert_eq!(
+            axis_ticks(&column, [0.0, 445500.0], &mapper, 5, None)[1].1,
+            "111375"
+        );
     }
 
     #[test]
