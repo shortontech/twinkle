@@ -189,3 +189,11 @@ Native submission timestamps are captured immediately when the present call
 returns, before attribution output. The Wayland guest queue retains cloned
 window/display owners until its own proxies and queue are gone, including
 exceptional teardown paths.
+
+### Generated chart subtree invalidation
+
+A long-running consumer exposed stale output reuse above `with_layout_child`
+callbacks. Such nodes now mark their entire ancestry unsafe for bulk resolved
+and independent output reuse. A regression repeatedly changes generated content
+and identities, asserting current paint plus bounded hit/message counts. This
+preserves responsive generated chart content instead of reusing old descendants.

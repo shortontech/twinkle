@@ -702,10 +702,12 @@ fn kind_tag(kind: &Kind) -> KindTag {
 }
 
 fn node_independent_output_reuse_safe<Message>(element: &Element<Message>) -> bool {
-    !matches!(
-        element.kind,
-        Kind::VerticalScroll { .. } | Kind::Dropdown(_)
-    ) && !matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
+    element.declared_layout_child().is_none()
+        && !matches!(
+            element.kind,
+            Kind::VerticalScroll { .. } | Kind::Dropdown(_)
+        )
+        && !matches!(element.style.overflow_x, Overflow::Scroll | Overflow::Auto)
         && !matches!(element.style.overflow_y, Overflow::Scroll | Overflow::Auto)
         && element.style.proximity_magnification.is_none()
 }
@@ -2338,11 +2340,11 @@ impl RetainedNodeArena {
             .iter()
             .map(|child| self.nodes[child].subtree_nodes)
             .sum::<usize>();
-        let subtree_bulk_resolved_reuse_safe =
-            !matches!(kind, KindTag::Grid | KindTag::Scroll | KindTag::Dropdown)
-                && children
-                    .iter()
-                    .all(|child| self.nodes[child].subtree_bulk_resolved_reuse_safe);
+        let subtree_bulk_resolved_reuse_safe = element.declared_layout_child().is_none()
+            && !matches!(kind, KindTag::Grid | KindTag::Scroll | KindTag::Dropdown)
+            && children
+                .iter()
+                .all(|child| self.nodes[child].subtree_bulk_resolved_reuse_safe);
         let subtree_independent_output_reuse_safe = node_independent_output_reuse_safe(element)
             && children
                 .iter()

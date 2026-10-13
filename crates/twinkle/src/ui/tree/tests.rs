@@ -8799,3 +8799,58 @@ fn layout_child_intrinsic_hint_never_executes_during_measurement() {
     let _ = UiFrame::layout(element, Rect::new(0.0, 0.0, 320.0, 180.0));
     assert_eq!(builds.get(), 1);
 }
+
+#[test]
+fn generated_layout_descendants_refresh_without_accumulating_old_interactions() {
+    let counter = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let build = || {
+        let counter = counter.clone();
+        Column::new().id("outer").child(
+            Grid::fixed(1).id("grid").child(
+                Container::new()
+                    .id("dynamic")
+                    .width(160.0)
+                    .height(90.0)
+                    .into_element()
+                    .with_layout_child_preferred(Size::new(160.0, 90.0), move |_| {
+                        Button::new(counter.get(), format!("Tick {}", counter.get()))
+                            .id(format!("generated-{}", counter.get()))
+                            .into_element()
+                    }),
+            ),
+        )
+    };
+    let bounds = Rect::new(0.0, 0.0, 320.0, 180.0);
+    let mut state = UiStateStore::default();
+    let mut frame = UiFrame::resolve(build(), FrameRequest::new(bounds, &mut state));
+    let initial = frame.resource_diagnostics();
+    for tick in 1..30 {
+        counter.set(tick);
+        frame = UiFrame::resolve_against_reusing(
+            build(),
+            FrameRequest::new(bounds, &mut state),
+            &mut frame,
+        );
+        let resources = frame.resource_diagnostics();
+        assert_eq!(
+            resources.hit_target_count, initial.hit_target_count,
+            "hit records grew at tick {tick}"
+        );
+        assert_eq!(
+            resources.message_binding_count, initial.message_binding_count,
+            "message records grew at tick {tick}"
+        );
+        assert!(
+            frame
+                .commands
+                .iter()
+                .any(|p| matches!(p,PaintCommand::Text{text,..} if text==&format!("Tick {tick}")))
+        );
+        assert!(
+            !frame
+                .commands
+                .iter()
+                .any(|p| matches!(p,PaintCommand::Text{text,..} if text=="Tick 0"))
+        );
+    }
+}
