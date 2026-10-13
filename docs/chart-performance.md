@@ -180,3 +180,7 @@ in f64 so label values do not acquire f32 mapping noise. Initial native frames
 capture their application correlation, including zero-warm-up benchmarks.
 `NativeFrameSubmission::present_call_duration` reports CPU time inside the native
 presenter call, independently of end-to-end deadline latency.
+
+Controlled line/area legend toggles preserve the palette slots of hidden series,
+so remaining series keep their original colors and agree with the legend. State
+updates still require an advanced retained content revision from the application.

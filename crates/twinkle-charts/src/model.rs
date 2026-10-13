@@ -4013,13 +4013,6 @@ fn series_groups(
     let mut groups: Vec<Vec<usize>> = Vec::new();
     for (index, value) in column.values.iter().enumerate() {
         let label = Arc::<str>::from(format_data_value(value));
-        if state
-            .visible_series
-            .as_ref()
-            .is_some_and(|visible| !visible.contains(&label))
-        {
-            continue;
-        }
         let key = match value {
             DataValue::Null => "null".to_owned(),
             DataValue::Number(value) => format!("n:{:016x}", value.to_bits()),
@@ -4031,7 +4024,15 @@ fn series_groups(
             groups.push(Vec::new());
             groups.len() - 1
         });
-        groups[group].push(index);
+        // Reserve every admitted series' palette slot even when hidden, so a
+        // controlled legend toggle cannot recolor the remaining line/area data.
+        if state
+            .visible_series
+            .as_ref()
+            .is_none_or(|visible| visible.contains(&label))
+        {
+            groups[group].push(index);
+        }
     }
     groups
 }
@@ -5911,6 +5912,103 @@ mod tests {
             })
             .collect();
         assert_eq!(radii, vec![5.0, 10.0]);
+    }
+
+    #[test]
+    fn hiding_first_series_preserves_remaining_paint_and_legend_colors() {
+        let limits = ChartLimits::default();
+        let data = Arc::new(
+            ChartData::new(
+                1,
+                vec![
+                    Dataset::new(
+                        "d",
+                        vec![
+                            RowKey::from("a0"),
+                            RowKey::from("b0"),
+                            RowKey::from("a1"),
+                            RowKey::from("b1"),
+                        ],
+                        vec![
+                            Column::new(
+                                "x",
+                                vec![
+                                    DataValue::Number(0.0),
+                                    DataValue::Number(0.0),
+                                    DataValue::Number(1.0),
+                                    DataValue::Number(1.0),
+                                ],
+                            ),
+                            Column::new(
+                                "y",
+                                vec![
+                                    DataValue::Number(1.0),
+                                    DataValue::Number(2.0),
+                                    DataValue::Number(1.5),
+                                    DataValue::Number(2.5),
+                                ],
+                            ),
+                            Column::new(
+                                "series",
+                                vec![
+                                    DataValue::Category("A".into()),
+                                    DataValue::Category("B".into()),
+                                    DataValue::Category("A".into()),
+                                    DataValue::Category("B".into()),
+                                ],
+                            ),
+                        ],
+                    )
+                    .unwrap(),
+                ],
+                &limits,
+            )
+            .unwrap(),
+        );
+        let mut spec =
+            crate::Recipes::line("Series", FieldRef::new("d", "x"), FieldRef::new("d", "y"));
+        spec.layers[0].encodings.push(crate::Encoding {
+            channel: Channel::Series,
+            field: FieldRef::new("d", "series"),
+            scale: None,
+        });
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        let input = |content| {
+            RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 600.0, 300.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content,
+                    ..Default::default()
+                },
+            )
+        };
+        let colors = |paint: &[PaintCommand]| {
+            paint
+                .iter()
+                .filter_map(|p| match p {
+                    PaintCommand::Path { color, .. } => Some(*color),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = colors(&view.update(input(1)).unwrap().output.paint);
+        let after = colors(
+            &view
+                .update_state(
+                    ChartState {
+                        visible_series: Some([Arc::from("B")].into_iter().collect()),
+                        ..Default::default()
+                    },
+                    input(2),
+                )
+                .unwrap()
+                .output
+                .paint,
+        );
+        assert_eq!(before.len(), 2);
+        assert_eq!(after, vec![before[1]]);
     }
 
     #[test]
