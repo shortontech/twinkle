@@ -3,6 +3,7 @@
 use crate::{NativeFrameCorrelation, NativeFramePresentation};
 use std::{
     ffi::c_void,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use wayland_client::{
@@ -28,11 +29,20 @@ pub(crate) struct Feedback {
     queue: EventQueue<State>,
     state: State,
     surface: wl_surface::WlSurface,
+    // Keep foreign owners alive even when exceptional teardown skips runtime stop.
+    _window: Arc<dyn winit::window::Window>,
+    _display: winit::event_loop::OwnedDisplayHandle,
 }
 impl Feedback {
     /// SAFETY: both pointers must be winit-owned live objects from the same
-    /// display, and this guest queue must be dropped before either owner.
-    pub unsafe fn new(display: *mut c_void, surface: *mut c_void) -> Result<Self, String> {
+    /// display, with the passed owner handles corresponding to those pointers.
+    /// Owner handles are retained until the guest queue has been destroyed.
+    pub unsafe fn new(
+        display: *mut c_void,
+        surface: *mut c_void,
+        display_owner: winit::event_loop::OwnedDisplayHandle,
+        window_owner: Arc<dyn winit::window::Window>,
+    ) -> Result<Self, String> {
         let backend = unsafe { Backend::from_foreign_display(display.cast()) };
         let connection = Connection::from_backend(backend);
         let id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), surface.cast()) }
@@ -50,6 +60,8 @@ impl Feedback {
             queue,
             state,
             surface,
+            _window: window_owner,
+            _display: display_owner,
         })
     }
     pub fn supported(&self) -> bool {

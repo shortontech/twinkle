@@ -5158,7 +5158,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         );
         self.authoritative_unchanged_present = false;
         result?;
-        let present_call_duration = native_present_started.elapsed();
+        let submitted_at = Instant::now();
+        let present_call_duration = submitted_at.duration_since(native_present_started);
         crate::pipeline_trace::event!({"event": "gpu_present_end", "frame_generation": host.frame_generation,
             "presenter_call_us": crate::pipeline_trace::micros(_presenter_started),
             "boundary": "CPU presenter call including nested attribution writes; excludes compositor display"});
@@ -5167,7 +5168,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 .native_frame_submitted(NativeFrameSubmission {
                     correlation,
                     frame_generation,
-                    submitted_at: Instant::now(),
+                    submitted_at,
                     present_call_duration,
                     backend: "gpu",
                     scale_factor: self.scale,
@@ -5221,7 +5222,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         }
         let native_present_started = Instant::now();
         buffer.present()?;
-        let present_call_duration = native_present_started.elapsed();
+        let submitted_at = Instant::now();
+        let present_call_duration = submitted_at.duration_since(native_present_started);
         crate::pipeline_trace::event!({
             "event": "software_present", "surface": self.native_host_generation,
             "revision": result.revision, "physical_width": result.width, "physical_height": result.height,
@@ -5236,7 +5238,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
                 .native_frame_submitted(NativeFrameSubmission {
                     correlation: self.raster_correlation,
                     frame_generation: self.raster_frame_generation,
-                    submitted_at: Instant::now(),
+                    submitted_at,
                     present_call_duration,
                     backend: "software",
                     scale_factor: self.scale,
@@ -5789,6 +5791,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                     crate::wayland_presentation::Feedback::new(
                         display.display.as_ptr(),
                         native_window.surface.as_ptr(),
+                        self.display.clone(),
+                        window.clone(),
                     )
                 } {
                     Ok(feedback) => {

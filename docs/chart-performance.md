@@ -184,3 +184,8 @@ presenter call, independently of end-to-end deadline latency.
 Controlled line/area legend toggles preserve the palette slots of hidden series,
 so remaining series keep their original colors and agree with the legend. State
 updates still require an advanced retained content revision from the application.
+
+Native submission timestamps are captured immediately when the present call
+returns, before attribution output. The Wayland guest queue retains cloned
+window/display owners until its own proxies and queue are gone, including
+exceptional teardown paths.
