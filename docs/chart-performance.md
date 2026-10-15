@@ -1,17 +1,20 @@
 # Native chart release measurements
 
+Benchmark sources live in the sibling `twinkle-apps/benchmarks/` repository.
+Commands below assume it is checked out at `../twinkle-apps`.
+
 These are Twinkle's own chart admission measurements, not comparisons with
 other UI frameworks. Run the checked-in serial harness with:
 
 ```sh
-cargo run --release -p twinkle-charts --example measure
+cargo run --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features charts --bin twinkle-chart-measure
 ```
 
 For allocator-instrumented admission evidence, run the exact same workloads
-through the workbench wrapper:
+through the standalone benchmark wrapper:
 
 ```sh
-cargo run --release -p twinkle-workbench \
+cargo run --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks \
   --features charts,pipeline-allocator --bin twinkle-chart-admission
 ```
 
@@ -87,12 +90,12 @@ inspection of the first chart, then controlled zoom of that chart. Build with
 attribution and run it against a real GPU backend, then validate the trace:
 
 ```sh
-cargo build --release -p twinkle-workbench \
+cargo build --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks \
   --features charts,pipeline-attribution,pipeline-allocator \
   --bin twinkle-chart-dashboard
 TWINKLE_RENDERER=gpu TWINKLE_PIPELINE_TRACE=/tmp/twinkle-chart-gpu.jsonl \
-  timeout 4s target/release/twinkle-chart-dashboard --gpu-admission
-python3 scripts/summarize_chart_gpu_admission.py \
+  timeout 4s ../twinkle-apps/target/release/twinkle-chart-dashboard --gpu-admission
+python3 ../twinkle-apps/benchmarks/scripts/summarize_chart_gpu_admission.py \
   /tmp/twinkle-chart-gpu.jsonl
 ```
 

@@ -41,7 +41,7 @@ let mut chart = ChartView::new(ChartModel::new(spec, data, limits)?)?;
 
 See `examples/dashboard.rs` for complete data construction, recipes, controlled
 series state, native preparation, accessible table access, CSV, and raster export.
-The serial release admission harness is `examples/measure.rs`; its pinned
+The serial release admission harness is `twinkle-apps/benchmarks/twinkle/src/bin/chart_workloads/measure.rs`; its pinned
 reference results and exact scope are documented in
 [`../../docs/chart-performance.md`](../../docs/chart-performance.md).
 
@@ -204,8 +204,8 @@ reviewable while avoiding hundreds of redundant binary fixture files.
 
 ```text
 cargo run -p twinkle-charts --example dashboard
-cargo run --release -p twinkle-charts --example measure
-cargo run -p twinkle-workbench --features charts --bin twinkle-chart-dashboard
+cargo run --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features charts --bin twinkle-chart-measure
+cargo run --manifest-path ../twinkle-apps/Cargo.toml -p twinkle-benchmarks --features charts --bin twinkle-chart-dashboard
 ```
 
 The optional workbench dashboard is an external stateful consumer of the public

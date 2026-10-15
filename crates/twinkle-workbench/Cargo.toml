@@ -16,36 +16,13 @@ name = "twinkle-jsx-preview"
 path = "src/bin/twinkle_jsx_preview.rs"
 required-features = ["jsx"]
 
-[[bin]]
-name = "twinkle-pipeline-bench"
-path = "src/bin/twinkle_pipeline_bench.rs"
-required-features = ["jsx"]
-
-[[bin]]
-name = "twinkle-chart-dashboard"
-path = "src/bin/twinkle_chart_dashboard.rs"
-required-features = ["charts"]
-
-[[bin]]
-name = "twinkle-chart-admission"
-path = "src/bin/twinkle_chart_admission.rs"
-required-features = ["charts", "pipeline-allocator"]
-
-[[bin]]
-name = "twinkle-compound-admission"
-path = "src/bin/twinkle_compound_admission.rs"
-required-features = ["jsx"]
-
 [features]
-pipeline-allocator = ["jsx"]
-pipeline-attribution = ["twinkle/pipeline-attribution", "twinkle-jsx-runtime?/pipeline-attribution"]
 default = []
-jsx = ["dep:twinkle-jsx-runtime", "dep:twinkle-redux-jsx", "dep:twinkle-presentation", "dep:twinkle-protocol", "dep:serde_json"]
+jsx = ["dep:twinkle-jsx-runtime", "dep:twinkle-presentation", "dep:twinkle-protocol", "dep:serde_json"]
 charts = ["dep:twinkle-charts", "twinkle-presentation?/charts"]
 
 [dependencies]
 twinkle-jsx-runtime = { version = "0.2.0", path = "../twinkle-jsx-runtime", optional = true }
-twinkle-redux-jsx = { version = "0.1.0", path = "../twinkle-redux-jsx", optional = true }
 twinkle-presentation = { version = "0.2.0", path = "../twinkle-presentation", features = ["jsx"], optional = true }
 twinkle-protocol = { version = "0.2.0", path = "../twinkle-protocol", optional = true }
 serde_json = { workspace = true, optional = true }

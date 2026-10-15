@@ -4103,7 +4103,6 @@ dependencies = [
  "twinkle-jsx-runtime",
  "twinkle-presentation",
  "twinkle-protocol",
- "twinkle-redux-jsx",
  "twinkle-testkit",
  "twinkle-ui",
 ]

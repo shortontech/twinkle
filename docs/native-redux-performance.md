@@ -1,11 +1,14 @@
 # Native Redux performance record
 
+Benchmark sources live in the sibling `twinkle-apps/benchmarks/` repository.
+Commands below assume it is checked out at `../twinkle-apps`.
+
 Baseline measured on 2026-10-12 at repository revision `20b4c11` plus the
 completed, uncommitted specification 0024 implementation. Host: Linux 7.0 x86-64, AMD
 Ryzen 9 5900X; Rust/Cargo 1.99.0. The command was:
 
 ```sh
-cargo run --release -p twinkle-redux --example measure
+cargo run --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --bin twinkle-redux-measure
 ```
 
 Each scenario records 10,000 complete operations with `Instant`, after the
@@ -27,7 +30,7 @@ not evidence of a speedup over another implementation.
 | Store plus observer retirement | 110 | 120 |
 
 The harness is intentionally dependency-free and lives at
-`crates/twinkle-redux/examples/measure.rs`. Run it on the release target used
+`../twinkle-apps/benchmarks/twinkle/src/bin/twinkle_redux_measure.rs`. Run it on the release target used
 for shipping; scheduler noise, allocator choice, power state, and hardware make
 cross-machine comparison invalid.
 
@@ -35,7 +38,7 @@ The separate adapter harness includes V8 calls, Redux graph admission, selector
 reconciliation, and the full prepare/finalize/after-accept boundary:
 
 ```sh
-cargo run --release -p twinkle-redux-jsx --example measure
+cargo run --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features jsx --bin twinkle-redux-jsx-measure
 ```
 
 It uses 1,000 samples for the first three scenarios and 250 for the dispatch
@@ -49,7 +52,7 @@ a platform renderer/frame boundary.
 | Unrelated selected slice | 92 | 209 |
 | 100-dispatch burst | 472 | 653 |
 
-The existing workbench supplies the end-to-end renderer comparison. All four
+The standalone `twinkle-benchmarks` package supplies the end-to-end renderer comparison. All four
 runs use 1,000 measured turns after 10 warmups, an 800x720 viewport, the release
 profile, and the same retained-presentation/native-frame path. The Redux
 variants replace the external snapshot source with `createStore`, `Provider`,
@@ -58,13 +61,13 @@ store prepare/finalize/after-accept, retained-tree admission, and `UiHost` frame
 work. Run each test separately to avoid benchmark contention:
 
 ```sh
-cargo test --release -p twinkle-workbench --features jsx --test blocks_admission \
+cargo test --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features jsx --test blocks_admission \
   blocks_shaped_jsx_updates_emit_end_to_end_release_distribution -- --ignored --nocapture
-cargo test --release -p twinkle-workbench --features jsx --test blocks_admission \
+cargo test --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features jsx --test blocks_admission \
   redux_blocks_updates_emit_end_to_end_release_distribution -- --ignored --nocapture
-cargo test --release -p twinkle-workbench --features jsx --test blocks_admission \
+cargo test --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features jsx --test blocks_admission \
   rich_accessible_form_updates_emit_end_to_end_release_distribution -- --ignored --nocapture
-cargo test --release -p twinkle-workbench --features jsx --test blocks_admission \
+cargo test --manifest-path ../twinkle-apps/Cargo.toml --release -p twinkle-benchmarks --features jsx --test blocks_admission \
   redux_rich_form_updates_emit_end_to_end_release_distribution -- --ignored --nocapture
 ```
 

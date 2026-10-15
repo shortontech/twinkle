@@ -142,7 +142,7 @@ Run the complete public Rust consumer and the optional live workbench dashboard:
 
 ```sh
 cargo run -p twinkle-charts --example dashboard
-cargo run -p twinkle-workbench --features charts --bin twinkle-chart-dashboard
+cargo run --manifest-path ../twinkle-apps/Cargo.toml -p twinkle-benchmarks --features charts --bin twinkle-chart-dashboard
 ```
 
 For TSX hosts, enable `twinkle-presentation/charts` and use the typed `Chart`
