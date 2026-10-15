@@ -132,3 +132,68 @@ GPU execution-completion and compositor display timestamps remain unavailable on
 the current window-presenter boundary and are not inferred from submission time.
 This limits claims about physical display latency, but no longer leaves raster
 agreement or the specified CPU-side warm-frame budget unmeasured.
+
+## Application-owned benchmark attribution
+
+Applications may publish a payload-free `NativeFrameCorrelation` through
+`Application::take_frame_correlation`. The standalone native runtime now calls
+`Application::native_frame_submitted` after a successful GPU presenter call or
+software buffer present. `NativeFrameSubmission` carries the correlation captured
+with that frame, its native frame generation, an `Instant` acknowledgement,
+actual backend, scale factor, and physical surface size. Software raster results
+that are dirty, stale, or mismatched in size do not produce an acknowledgement.
+Applications can use missing correlation generations to detect coalesced frames;
+this callback does not disable the runtime's coalescing policy.
+
+This evidence ends at CPU submission. GPU completion and compositor presentation
+remain unavailable; neither refresh cadence nor this callback proves display.
+
+Explicit heatmap color domains now remain fixed across snapshot extrema changes.
+Explicit bubble size domains map normalized value to marker area (10 logical-pixel
+maximum radius), with a 2-pixel minimum radius so zero-size entities remain
+inspectable. Implicit domains retain their existing maximum-relative behavior.
+
+### Optional Wayland compositor feedback
+
+Enable `twinkle-ui/wayland-presentation` on Linux to attach a guest event queue to
+the standalone winit-owned Wayland display and surface. Where the compositor
+advertises `wp_presentation` with `CLOCK_MONOTONIC`, the runtime requests feedback
+before each native present commit and delivers `NativeFramePresentation` through
+`Application::native_frame_presented`. It also announces capability through
+`native_presentation_supported`. Feedback contains the captured correlation,
+actual reported presentation time mapped to Rust `Instant`, callback observation
+time, refresh interval, display sequence, and explicit discarded-frame state.
+
+Timestamp mapping samples Linux CLOCK_MONOTONIC and Instant back to back; its
+uncertainty is the sampling overhead, not event-loop callback delay. Future or
+invalid timestamps remain unavailable. Unsupported clocks and non-Wayland
+surfaces remain unsupported. The guest queue is bounded to 128 outstanding
+feedback objects, never owns or closes winit's display, and is dropped before
+its surface/window owner. This feature provides compositor display evidence,
+not GPU execution timestamps. Earlier uninstrumented measurements in this
+file retain their original unavailable-presentation boundary.
+
+Categorical axis guides now use the admitted category labels, preserving source
+order and thinning labels to the requested tick budget. Guide measurement and
+painting use the same labels; linear numeric ticks are computed from the domain
+in f64 so label values do not acquire f32 mapping noise. Initial native frames
+capture their application correlation, including zero-warm-up benchmarks.
+`NativeFrameSubmission::present_call_duration` reports CPU time inside the native
+presenter call, independently of end-to-end deadline latency.
+
+Controlled line/area legend toggles preserve the palette slots of hidden series,
+so remaining series keep their original colors and agree with the legend. State
+updates still require an advanced retained content revision from the application.
+
+Native submission timestamps are captured immediately when the present call
+returns, before attribution output. The Wayland guest queue retains cloned
+window/display owners until its own proxies and queue are gone, including
+exceptional teardown paths.
+
+### Generated chart subtree invalidation
+
+A long-running consumer exposed stale output reuse above `with_layout_child`
+callbacks. Such nodes now mark their entire ancestry unsafe for bulk resolved
+and independent output reuse. A regression repeatedly changes generated content
+and identities, asserting current paint plus bounded hit/message counts. This
+preserves responsive generated chart content instead of reusing old descendants.

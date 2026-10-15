@@ -1,5 +1,8 @@
 use crate::{ControllerSource, HostedControllerSource};
-#[cfg(feature = "gpu-presenter")]
+#[cfg(any(
+    feature = "gpu-presenter",
+    all(target_os = "linux", feature = "wayland-presentation")
+))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
     any::Any,
@@ -854,6 +857,19 @@ pub trait Application: Sized {
     fn take_frame_correlation(&mut self) -> Option<NativeFrameCorrelation> {
         None
     }
+
+    /// Observe a completed native presenter call for the captured frame identity.
+    /// This is CPU submission acknowledgement, never compositor presentation or
+    /// GPU completion. The callback does not trigger a declarative rebuild.
+    fn native_frame_submitted(&mut self, _submission: NativeFrameSubmission) {}
+
+    /// Whether this standalone surface can deliver compositor presentation
+    /// timestamps. Presently optional Linux Wayland CLOCK_MONOTONIC feedback.
+    fn native_presentation_supported(&mut self, _supported: bool) {}
+
+    /// Real compositor feedback for a captured frame, including discarded frames.
+    /// A missing timestamp is never proof of presentation.
+    fn native_frame_presented(&mut self, _presentation: NativeFramePresentation) {}
 
     /// Drains the complete set of stable declared element IDs changed by the
     /// next non-structural view update. `None` requests conservative full-tree
@@ -1837,8 +1853,11 @@ pub struct HostFailure {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Generations identifying the accepted frame and its accessibility projection.
 pub struct HostChangeToken {
+    /// Generation of the accepted native frame.
     pub frame_generation: u64,
+    /// Generation of the accepted accessibility projection.
     pub semantic_generation: u64,
     /// Incremental declaration that produced this frame, when one was
     /// admitted during the host step. Presenters carry this unchanged so
@@ -1850,28 +1869,89 @@ pub struct HostChangeToken {
 /// its admitted declaration generation to native frame diagnostics.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct NativeFrameCorrelation {
+    /// Application mount identity captured when the declaration was admitted.
     pub mount: u64,
+    /// Declaration generation within that mount.
     pub generation: u64,
 }
 
+/// Compositor presentation evidence. A discarded frame has no presentation
+/// timestamp; an unavailable/invalid clock mapping also leaves it absent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeFramePresentation {
+    /// Application correlation captured for the frame, if one was supplied.
+    pub correlation: Option<NativeFrameCorrelation>,
+    /// Native frame generation associated with this feedback.
+    pub frame_generation: u64,
+    /// Mapped monotonic compositor timestamp, absent for discarded or unmappable feedback.
+    pub presented_at: Option<Instant>,
+    /// Host monotonic time when compositor feedback was processed.
+    pub observed_at: Instant,
+    /// Whether the compositor discarded the frame without presenting it.
+    pub discarded: bool,
+    /// Reported display refresh interval, when available.
+    pub refresh_interval: Option<Duration>,
+    /// Compositor presentation sequence, when available.
+    pub sequence: Option<u64>,
+}
+
+/// CPU-side submission evidence delivered only after a successful native present
+/// call. Correlation is captured with the submitted frame, not read from newer
+/// application state when a software worker finishes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeFrameSubmission {
+    /// Application correlation captured with the submitted frame.
+    pub correlation: Option<NativeFrameCorrelation>,
+    /// Native frame generation submitted to the presenter.
+    pub frame_generation: u64,
+    /// Host monotonic time immediately after the successful presenter call.
+    pub submitted_at: Instant,
+    /// CPU duration inside the native presenter call; not GPU execution time.
+    pub present_call_duration: Duration,
+    /// Presenter backend identifier, currently `gpu` or `software`.
+    pub backend: &'static str,
+    /// Logical-to-physical scale used for the submitted surface.
+    pub scale_factor: f32,
+    /// Submitted surface width and height in physical pixels.
+    pub physical_size: (u32, u32),
+}
+
 #[derive(Clone, Debug, PartialEq)]
+/// Accepted host-step results, emitted work, failures and scheduling information.
 pub struct HostEventOutcome {
+    /// Whether the step changed accepted host or application state.
     pub changed: bool,
+    /// How the host handled the incoming event.
     pub disposition: crate::EventDisposition,
+    /// Combined invalidation requested by accepted work.
     pub invalidation: Invalidation,
+    /// Application messages delivered during this step.
     pub messages: Vec<MessageEvidence>,
+    /// Effects produced while processing accepted messages.
     pub effects: Vec<EffectEvidence>,
+    /// Host admission or execution failures reported during the step.
     pub failures: Vec<HostFailure>,
+    /// Failures reported while completing deferred work.
     pub completion_failures: Vec<CompletionFailure>,
+    /// Pointer icon requested by the accepted frame.
     pub pointer_icon: PointerIcon,
+    /// Whether the accepted frame requests native text input.
     pub text_input_active: bool,
+    /// Generation of the accepted accessibility projection.
     pub accessibility_generation: u64,
+    /// Accepted frame generations and application correlation.
     pub change_token: HostChangeToken,
+    /// Earliest scheduled host wake-up, when one is needed.
     pub next_deadline: Option<Instant>,
+    /// Timing and work counters collected for this step.
     pub telemetry: HostTelemetry,
+    /// Text requested for transfer to the native clipboard.
     pub clipboard_text: Option<String>,
+    /// Rejected accessibility actions and their failure evidence.
     pub semantic_failures: Vec<SemanticActionFailure>,
+    /// Global actions emitted for the embedding application.
     pub global_actions: Vec<GlobalAction>,
+    /// Controller execution outcomes recorded during the step.
     pub controller_executions: Vec<ControllerExecutionEvidence>,
 }
 
@@ -2258,7 +2338,7 @@ impl<A: Application> UiHost<A> {
 
     /// Constructs a host against an explicit monotonic origin for deterministic
     /// scheduling tests and embedded adapters that already own the clock.
-    pub fn new_at(application: A, width: u32, height: u32, now: Instant) -> Self {
+    pub fn new_at(mut application: A, width: u32, height: u32, now: Instant) -> Self {
         let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
         let mut state = UiStateStore::default();
         let context = ViewContext::from_host(bounds, &state, None::<&UiFrame<A::Message>>);
@@ -2272,6 +2352,7 @@ impl<A: Application> UiHost<A> {
             .poll_interval_controller(&crate::ControllerSnapshot::default())
             .map(|interval| now + interval);
         let resources = tree.resource_diagnostics();
+        let native_correlation = application.take_frame_correlation();
         Self {
             tree_remote_access_protected: application.remote_access_protected(),
             application,
@@ -2283,7 +2364,7 @@ impl<A: Application> UiHost<A> {
             scale_factor: 1.0,
             input_dispatcher: FocusedInputDispatcher::default(),
             frame_generation: 1,
-            native_correlation: None,
+            native_correlation,
             pointer_icon: PointerIcon::Default,
             overlay_failures,
             next_application_deadline,
@@ -4513,6 +4594,10 @@ struct ApplicationRuntime<A: Application, H: HostAdapter<A>> {
     window: Option<Arc<dyn Window>>,
     raster: AsyncRasterWorker,
     raster_revision: u64,
+    raster_correlation: Option<NativeFrameCorrelation>,
+    raster_frame_generation: u64,
+    #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+    presentation_feedback: Option<crate::wayland_presentation::Feedback>,
     input: twinkle_input::winit::Adapter,
     clipboard: Option<arboard::Clipboard>,
     controller: Option<NativeControllerWorker>,
@@ -4639,6 +4724,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             window: None,
             raster,
             raster_revision: 0,
+            raster_correlation: None,
+            raster_frame_generation: 0,
+            #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+            presentation_feedback: None,
             input: twinkle_input::winit::Adapter::default(),
             clipboard: arboard::Clipboard::new().ok(),
             controller,
@@ -5034,6 +5123,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         self.raster_revision = self.raster_revision.wrapping_add(1).max(1);
         let _snapshot_started = crate::pipeline_trace::clock();
         let commands = host.commands().to_vec();
+        self.raster_correlation = host.native_correlation;
+        self.raster_frame_generation = host.frame_generation;
         crate::pipeline_trace::event!({
             "event": "software_submission", "surface": self.native_host_generation,
             "revision": self.raster_revision, "frame_generation": host.frame_generation,
@@ -5075,6 +5166,8 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             return Ok(false);
         };
         let size = window.surface_size();
+        let frame_generation = host.frame_generation;
+        let correlation = host.native_correlation;
         let frame = host.render_frame();
         let _presenter_started = crate::pipeline_trace::clock();
         crate::pipeline_trace::event!({"event": "gpu_present_start", "frame_generation": host.frame_generation});
@@ -5084,6 +5177,14 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         } else {
             host.retained_paint_damage()
         };
+        #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+        if let Some(feedback) = &mut self.presentation_feedback {
+            feedback.request(crate::wayland_presentation::Token {
+                correlation,
+                frame_generation,
+            })?;
+        }
+        let native_present_started = Instant::now();
         let result = presenter.present(
             frame.logical_size.0,
             size.width,
@@ -5093,9 +5194,23 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         );
         self.authoritative_unchanged_present = false;
         result?;
+        let submitted_at = Instant::now();
+        let present_call_duration = submitted_at.duration_since(native_present_started);
         crate::pipeline_trace::event!({"event": "gpu_present_end", "frame_generation": host.frame_generation,
             "presenter_call_us": crate::pipeline_trace::micros(_presenter_started),
             "boundary": "CPU presenter call including nested attribution writes; excludes compositor display"});
+        if let Some(host) = self.host.as_mut() {
+            host.application
+                .native_frame_submitted(NativeFrameSubmission {
+                    correlation,
+                    frame_generation,
+                    submitted_at,
+                    present_call_duration,
+                    backend: "gpu",
+                    scale_factor: self.scale,
+                    physical_size: (size.width, size.height),
+                });
+        }
         Ok(true)
     }
 
@@ -5132,7 +5247,19 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         }
         let _conversion_us = crate::pipeline_trace::micros(_transfer_started);
         let _present_started = crate::pipeline_trace::clock();
+        #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+        if let Some(feedback) = &mut self.presentation_feedback {
+            feedback
+                .request(crate::wayland_presentation::Token {
+                    correlation: self.raster_correlation,
+                    frame_generation: self.raster_frame_generation,
+                })
+                .map_err(std::io::Error::other)?;
+        }
+        let native_present_started = Instant::now();
         buffer.present()?;
+        let submitted_at = Instant::now();
+        let present_call_duration = submitted_at.duration_since(native_present_started);
         crate::pipeline_trace::event!({
             "event": "software_present", "surface": self.native_host_generation,
             "revision": result.revision, "physical_width": result.width, "physical_height": result.height,
@@ -5142,10 +5269,38 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
         });
         self.raster
             .acknowledge(self.native_host_generation, result.revision);
+        if let Some(host) = self.host.as_mut() {
+            host.application
+                .native_frame_submitted(NativeFrameSubmission {
+                    correlation: self.raster_correlation,
+                    frame_generation: self.raster_frame_generation,
+                    submitted_at,
+                    present_call_duration,
+                    backend: "software",
+                    scale_factor: self.scale,
+                    physical_size: (size.width, size.height),
+                });
+        }
         Ok(())
     }
 
     fn tick(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
+        #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+        if let Some(feedback) = &mut self.presentation_feedback {
+            match feedback.dispatch() {
+                Ok(events) => {
+                    if let Some(host) = &mut self.host {
+                        for event in events {
+                            host.application.native_frame_presented(event);
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.fail(event_loop, std::io::Error::other(error));
+                    return None;
+                }
+            }
+        }
         let now = Instant::now();
         let Some(window) = self.window.clone() else {
             return None;
@@ -5400,6 +5555,10 @@ impl<A: Application, H: HostAdapter<A>> ApplicationRuntime<A, H> {
             host.shutdown();
         }
         self.surface = None;
+        #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+        {
+            self.presentation_feedback = None;
+        }
         self.window = None;
         self.raster.retire(self.native_host_generation);
     }
@@ -5651,6 +5810,42 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         }
         self.host = Some(host);
         self.window = Some(window.clone());
+        #[allow(unused_mut)] // Mutated only with optional Linux Wayland feedback.
+        let mut presentation_supported = false;
+        #[cfg(all(target_os = "linux", feature = "wayland-presentation"))]
+        if let (Ok(display), Ok(native_window)) =
+            (self.display.display_handle(), window.window_handle())
+        {
+            if let (
+                raw_window_handle::RawDisplayHandle::Wayland(display),
+                raw_window_handle::RawWindowHandle::Wayland(native_window),
+            ) = (display.as_raw(), native_window.as_raw())
+            {
+                // SAFETY: this runtime owns both live winit handles and explicitly
+                // drops the guest feedback queue before its window/display owners.
+                match unsafe {
+                    crate::wayland_presentation::Feedback::new(
+                        display.display.as_ptr(),
+                        native_window.surface.as_ptr(),
+                        self.display.clone(),
+                        window.clone(),
+                    )
+                } {
+                    Ok(feedback) => {
+                        presentation_supported = feedback.supported();
+                        self.presentation_feedback = Some(feedback);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Wayland presentation feedback unavailable")
+                    }
+                }
+            }
+        }
+        if let Some(host) = &mut self.host {
+            host.application
+                .native_presentation_supported(presentation_supported);
+        }
+
         #[cfg(feature = "gpu-presenter")]
         if std::env::var_os("TWINKLE_RENDERER").as_deref() != Some(std::ffi::OsStr::new("software"))
         {
@@ -5994,6 +6189,36 @@ fn is_clipboard_paste(input: &twinkle_input::InputEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_frame_captures_application_correlation_before_native_submission() {
+        struct Tagged(u64);
+        impl Application for Tagged {
+            type Message = u64;
+            fn update(&mut self, message: u64) {
+                self.0 = message;
+            }
+            fn view(&self, _: ViewContext) -> impl crate::View<u64> {
+                crate::Text::new(self.0.to_string())
+            }
+            fn take_frame_correlation(&mut self) -> Option<crate::NativeFrameCorrelation> {
+                Some(crate::NativeFrameCorrelation {
+                    mount: 42,
+                    generation: self.0,
+                })
+            }
+        }
+        let mut host = UiHost::new(Tagged(7), 200, 100);
+        let captured = host.native_correlation;
+        assert_eq!(captured.unwrap().generation, 7);
+        host.application_mut().update(8);
+        host.step(HostBatch {
+            application_changed: true,
+            ..Default::default()
+        });
+        assert_eq!(host.native_correlation.unwrap().generation, 8);
+        assert_eq!(captured.unwrap().generation, 7);
+    }
+
     use crate::ui::ComponentBuilderExt;
     static SYNTHETIC_INGRESS_ORDER: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(1);

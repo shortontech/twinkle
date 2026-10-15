@@ -8799,3 +8799,227 @@ fn layout_child_intrinsic_hint_never_executes_during_measurement() {
     let _ = UiFrame::layout(element, Rect::new(0.0, 0.0, 320.0, 180.0));
     assert_eq!(builds.get(), 1);
 }
+
+#[test]
+fn generated_layout_descendants_refresh_without_accumulating_old_interactions() {
+    let counter = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let build = || {
+        let counter = counter.clone();
+        Column::new().id("outer").child(
+            Grid::fixed(1).id("grid").child(
+                Container::new()
+                    .id("dynamic")
+                    .width(160.0)
+                    .height(90.0)
+                    .into_element()
+                    .with_layout_child_preferred(Size::new(160.0, 90.0), move |_| {
+                        Button::new(counter.get(), format!("Tick {}", counter.get()))
+                            .id(format!("generated-{}", counter.get()))
+                            .into_element()
+                    }),
+            ),
+        )
+    };
+    let bounds = Rect::new(0.0, 0.0, 320.0, 180.0);
+    let mut state = UiStateStore::default();
+    let mut frame = UiFrame::resolve(build(), FrameRequest::new(bounds, &mut state));
+    let initial = frame.resource_diagnostics();
+    for tick in 1..30 {
+        counter.set(tick);
+        frame = UiFrame::resolve_against_reusing(
+            build(),
+            FrameRequest::new(bounds, &mut state),
+            &mut frame,
+        );
+        let resources = frame.resource_diagnostics();
+        assert_eq!(
+            resources.hit_target_count, initial.hit_target_count,
+            "hit records grew at tick {tick}"
+        );
+        assert_eq!(
+            resources.message_binding_count, initial.message_binding_count,
+            "message records grew at tick {tick}"
+        );
+        assert!(
+            frame
+                .commands
+                .iter()
+                .any(|p| matches!(p,PaintCommand::Text{text,..} if text==&format!("Tick {tick}")))
+        );
+        assert!(
+            !frame
+                .commands
+                .iter()
+                .any(|p| matches!(p,PaintCommand::Text{text,..} if text=="Tick 0"))
+        );
+    }
+}
+
+#[test]
+fn boundary_identity_complete_frames_match_textual_and_whole_overlay_oracles() {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            MEASUREMENT_ORACLE_MODE.set(0);
+        }
+    }
+    let _reset = Reset;
+    let fixture = |reverse: bool| {
+        let mut children = (0..12)
+            .map(|index| {
+                Container::<TestMessage>::new()
+                    .id(format!("branch-{index}"))
+                    .message(TestMessage::Named("active"))
+                    .interaction_paints([
+                        InteractionPaint::default(),
+                        InteractionPaint {
+                            width: Some(Length::Px(96.0 + index as f32)),
+                            height: Some(Length::Px(48.0)),
+                            ..Default::default()
+                        },
+                        InteractionPaint::default(),
+                    ])
+                    .child(Column::new().child(Text::new(format!("content {index}")).wrap(true)))
+                    .into_element()
+            })
+            .collect::<Vec<_>>();
+        if reverse {
+            children.reverse();
+        }
+        Row::new().children(children).into_element()
+    };
+    let bounds = Rect::new(0.0, 0.0, 800.0, 720.0);
+    let mut histories = (0..3)
+        .map(|_| (UiStateStore::default(), None))
+        .collect::<Vec<_>>();
+    for (step, pressed) in [false, true, true, false, true].into_iter().enumerate() {
+        let mut frames = Vec::new();
+        for (mode, (state, previous)) in histories.iter_mut().enumerate() {
+            MEASUREMENT_ORACLE_MODE.set(mode as u8);
+            state.set_pressed(pressed.then(|| UiId::from("root/branch-0")));
+            let request = FrameRequest::new(bounds, state);
+            let frame = match previous.as_ref() {
+                Some(previous) => {
+                    UiFrame::resolve_against(fixture(step % 2 == 1), request, previous)
+                }
+                None => UiFrame::resolve(fixture(false), request),
+            };
+            frames.push(frame);
+        }
+        MEASUREMENT_ORACLE_MODE.set(0);
+        let mut cold_state = UiStateStore::default();
+        cold_state.set_pressed(pressed.then(|| UiId::from("root/branch-0")));
+        let cold = UiFrame::resolve(
+            fixture(step % 2 == 1),
+            FrameRequest::new(bounds, &mut cold_state),
+        );
+        assert_eq!(
+            frames[0].commands(),
+            cold.commands(),
+            "cold commands at step {step}"
+        );
+        assert_eq!(
+            frames[0].resolved_layout(),
+            cold.resolved_layout(),
+            "cold layout at step {step}"
+        );
+        let hit_signature = |frame: &UiFrame<TestMessage>| {
+            frame
+                .hits
+                .iter()
+                .map(|hit| {
+                    (
+                        hit.id.clone(),
+                        hit.rect,
+                        hit.target_bounds,
+                        hit.value_bounds,
+                        hit.message.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(hit_signature(&frames[0]), hit_signature(&cold));
+        for oracle in &frames[1..] {
+            assert_eq!(hit_signature(&frames[0]), hit_signature(oracle));
+            assert_eq!(frames[0].commands(), oracle.commands());
+            assert_eq!(frames[0].resolved_layout(), oracle.resolved_layout());
+            assert_eq!(
+                frames[0].accessibility_nodes(),
+                oracle.accessibility_nodes()
+            );
+        }
+        for ((_, previous), frame) in histories.iter_mut().zip(frames) {
+            *previous = Some(frame);
+        }
+    }
+}
+
+#[test]
+#[ignore = "release-profile sparse active-overlay admission workload"]
+fn retained_sparse_active_overlay_identity_release_workload() {
+    const WARMUP: usize = 10;
+    const ITERATIONS: usize = 200;
+    const BRANCHES: usize = 200;
+
+    fn fixture() -> Element<TestMessage> {
+        let branches = (0..BRANCHES).map(|index| {
+            let content = Column::new()
+                .child(Text::new(format!("branch {index} primary measurement text")).wrap(true))
+                .child(Text::new("secondary measurement text").wrap(true));
+            if index == 0 {
+                Container::new()
+                    .id(format!("branch-{index}"))
+                    .message(TestMessage::Named("active"))
+                    .interaction_paints([
+                        InteractionPaint::default(),
+                        InteractionPaint {
+                            width: Some(Length::Px(96.0)),
+                            height: Some(Length::Px(48.0)),
+                            ..InteractionPaint::default()
+                        },
+                        InteractionPaint::default(),
+                    ])
+                    .child(content)
+                    .into_element()
+            } else {
+                Container::new()
+                    .id(format!("branch-{index}"))
+                    .child(content)
+                    .into_element()
+            }
+        });
+        Row::new().gap(2.0).children(branches).into_element()
+    }
+
+    let bounds = Rect::new(0.0, 0.0, 800.0, 720.0);
+    let mut state = UiStateStore::default();
+    state.set_pressed(Some(UiId::from("root/branch-0")));
+    let mut previous = UiFrame::layout_with_state(fixture(), bounds, &mut state);
+    for _ in 0..WARMUP {
+        previous = UiFrame::resolve_against_reusing(
+            fixture(),
+            FrameRequest::new(bounds, &mut state),
+            &mut previous,
+        );
+    }
+    let mut samples = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        let started = std::time::Instant::now();
+        let frame = UiFrame::resolve_against_reusing(
+            fixture(),
+            FrameRequest::new(bounds, &mut state),
+            &mut previous,
+        );
+        samples.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+        std::hint::black_box(frame.resolved_layout().nodes.len());
+        previous = frame;
+    }
+    samples.sort_by(f64::total_cmp);
+    let percentile = |percent: usize| samples[(ITERATIONS * percent).div_ceil(100) - 1];
+    eprintln!(
+        "retained_sparse_active_overlay branches={BRANCHES} warmup={WARMUP} iterations={ITERATIONS} p50_us={:.3} p95_us={:.3} total_us={:.3}",
+        percentile(50),
+        percentile(95),
+        samples.iter().sum::<f64>()
+    );
+}

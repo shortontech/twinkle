@@ -1150,17 +1150,11 @@ impl ChartModel {
                     .unwrap_or(5)
                     .clamp(2, self.limits.max_ticks_per_axis);
                 let mut ticks = Size::default();
-                for i in 0..count {
-                    let start = mapper.map(domain[0]);
-                    let end = mapper.map(domain[1]);
-                    let value =
-                        mapper.invert(start + (end - start) * i as f32 / (count - 1) as f32);
-                    let size = measured_text(
-                        &format_tick(value, axis.unit.as_deref()),
-                        scale,
-                        false,
-                        None,
-                    );
+                let column = channel(&layer.encodings, axis_channel)
+                    .and_then(|encoding| resolved.dataset.column(&encoding.field.column))
+                    .expect("resolved axis column");
+                for (_, text) in axis_ticks(column, domain, &mapper, count, axis.unit.as_deref()) {
+                    let size = measured_text(&text, scale, false, None);
                     ticks.width = ticks.width.max(size.width);
                     ticks.height = ticks.height.max(size.height);
                 }
@@ -1574,6 +1568,8 @@ impl ChartModel {
             y_scale,
             &x_mapper,
             &y_mapper,
+            x_column,
+            y_column,
             output,
         )?;
         let mut series_groups = series_groups(dataset, &layer.encodings, &self.state);
@@ -1809,6 +1805,10 @@ impl ChartModel {
                 let step = values.len().div_ceil(max_marks).max(1);
                 let size_column = channel(&layer.encodings, Channel::Size)
                     .and_then(|encoding| dataset.column(&encoding.field.column));
+                let size_scale = channel(&layer.encodings, Channel::Size)
+                    .and_then(|encoding| encoding.scale.as_ref())
+                    .and_then(|name| self.spec.scales.iter().find(|scale| &scale.name == name));
+                let size_domain = size_scale.and_then(|scale| scale.domain);
                 let size_max = size_column
                     .into_iter()
                     .flat_map(|column| column.values.iter())
@@ -1821,7 +1821,15 @@ impl ChartModel {
                         .and_then(|column| column.values[*index].number())
                         .filter(|value| value.is_finite() && *value >= 0.0)
                         .map_or(3.0, |value| {
-                            if size_max == 0.0 {
+                            if let Some(domain) = size_domain {
+                                let mut normalized = (value - domain[0]) / (domain[1] - domain[0]);
+                                if size_scale.is_some_and(|scale| scale.reversed) {
+                                    normalized = 1.0 - normalized;
+                                }
+                                // Explicit size domains preserve quantitative area across
+                                // revisions and keep zero-size services inspectable.
+                                (normalized.clamp(0.0, 1.0).sqrt() as f32 * 10.0).max(2.0)
+                            } else if size_max == 0.0 {
                                 0.0
                             } else {
                                 (value / size_max).sqrt() as f32 * 10.0
@@ -1865,8 +1873,12 @@ impl ChartModel {
                     .filter_map(DataValue::number)
                     .filter(|value| value.is_finite())
                     .collect();
-                let fill_domain =
-                    (!numeric_fill.is_empty()).then(|| extent(numeric_fill.iter().copied()));
+                let fill_scale = channel(&layer.encodings, Channel::Fill)
+                    .and_then(|encoding| encoding.scale.as_ref())
+                    .and_then(|name| self.spec.scales.iter().find(|scale| &scale.name == name));
+                let fill_domain = fill_scale.and_then(|scale| scale.domain).or_else(|| {
+                    (!numeric_fill.is_empty()).then(|| extent(numeric_fill.iter().copied()))
+                });
                 for (index, x, y) in &values {
                     let center = map(*x, *y);
                     let left = (center.x - cell_width / 2.0).max(plot.origin.x);
@@ -1876,9 +1888,13 @@ impl ChartModel {
                         (center.y + cell_height / 2.0).min(plot.origin.y + plot.size.height);
                     let value = fill_column.map(|column| &column.values[*index]);
                     let cell_color = match (value, fill_domain) {
-                        (Some(DataValue::Number(value)), Some(domain)) if value.is_finite() => self
-                            .theme
-                            .sequential((value - domain[0]) / (domain[1] - domain[0])),
+                        (Some(DataValue::Number(value)), Some(domain)) if value.is_finite() => {
+                            let mut normalized = (value - domain[0]) / (domain[1] - domain[0]);
+                            if fill_scale.is_some_and(|scale| scale.reversed) {
+                                normalized = 1.0 - normalized;
+                            }
+                            self.theme.sequential(normalized)
+                        }
                         (Some(DataValue::Category(_)), _) => {
                             self.theme
                                 .series_cue(
@@ -2284,6 +2300,8 @@ impl ChartModel {
         y_scale: Option<&str>,
         x_mapper: &AxisMapper,
         y_mapper: &AxisMapper,
+        x_column: &crate::Column,
+        y_column: &crate::Column,
         output: &mut RetainedSurfaceOutput,
     ) -> Result<(), ChartError> {
         for axis in &self.spec.axes {
@@ -2310,19 +2328,22 @@ impl ChartModel {
             } else {
                 continue;
             };
-            for index in 0..count {
-                let t = index as f32 / (count - 1) as f32;
+            let ticks = axis_ticks(
+                if is_x { x_column } else { y_column },
+                domain,
+                if is_x { x_mapper } else { y_mapper },
+                count,
+                axis.unit.as_deref(),
+            );
+            for (value, text) in ticks {
                 if is_x {
-                    let start = x_mapper.map(domain[0]);
-                    let x = start + (x_mapper.map(domain[1]) - start) * t;
-                    let value = x_mapper.invert(x);
+                    let x = x_mapper.map(value);
                     if axis.grid {
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(x, plot.origin.y, 1.0, plot.size.height),
                             color: self.theme.grid,
                         });
                     }
-                    let text = format_tick(value, axis.unit.as_deref());
                     let size = measured_text(&text, text_scale, false, None);
                     let width = plot.size.width.min(size.width);
                     let origin = (x - width / 2.0).clamp(
@@ -2349,16 +2370,13 @@ impl ChartModel {
                         wrap: false,
                     });
                 } else {
-                    let start = y_mapper.map(domain[0]);
-                    let y = start + (y_mapper.map(domain[1]) - start) * t;
-                    let value = y_mapper.invert(y);
+                    let y = y_mapper.map(value);
                     if axis.grid {
                         output.paint.push(PaintCommand::Fill {
                             rect: Rect::new(plot.origin.x, y, plot.size.width, 1.0),
                             color: self.theme.grid,
                         });
                     }
-                    let text = format_tick(value, axis.unit.as_deref());
                     let size = measured_text(&text, text_scale, false, None);
                     let label_y = y - size.height * 0.5;
                     let bounds = Rect::new(
@@ -3740,6 +3758,55 @@ fn include_domain_value(
     }
 }
 
+fn axis_ticks(
+    column: &crate::Column,
+    domain: [f64; 2],
+    mapper: &AxisMapper,
+    count: usize,
+    unit: Option<&str>,
+) -> Vec<(f64, String)> {
+    if column
+        .values
+        .iter()
+        .all(|v| matches!(v, DataValue::Category(_) | DataValue::Null))
+        && column
+            .values
+            .iter()
+            .any(|v| matches!(v, DataValue::Category(_)))
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        let labels = column
+            .values
+            .iter()
+            .filter_map(DataValue::category)
+            .filter(|label| seen.insert(*label))
+            .enumerate()
+            .filter(|(index, _)| in_domain(*index as f64, domain))
+            .map(|(index, label)| (index as f64, label.to_owned()))
+            .collect::<Vec<_>>();
+        if labels.len() <= count {
+            return labels;
+        }
+        return (0..count)
+            .map(|i| labels[i * (labels.len() - 1) / (count - 1)].clone())
+            .collect();
+    }
+    (0..count)
+        .map(|i| {
+            let fraction = i as f64 / (count - 1) as f64;
+            let value = if matches!(mapper, AxisMapper::Log(_)) {
+                mapper.invert(
+                    mapper.map(domain[0])
+                        + (mapper.map(domain[1]) - mapper.map(domain[0])) * fraction as f32,
+                )
+            } else {
+                domain[0] + (domain[1] - domain[0]) * fraction
+            };
+            (value, format_tick(value, unit))
+        })
+        .collect()
+}
+
 fn format_tick(value: f64, unit: Option<&str>) -> String {
     let value = if value.abs() >= 1_000_000.0 || (value != 0.0 && value.abs() < 0.001) {
         format!("{value:.2e}")
@@ -3946,13 +4013,6 @@ fn series_groups(
     let mut groups: Vec<Vec<usize>> = Vec::new();
     for (index, value) in column.values.iter().enumerate() {
         let label = Arc::<str>::from(format_data_value(value));
-        if state
-            .visible_series
-            .as_ref()
-            .is_some_and(|visible| !visible.contains(&label))
-        {
-            continue;
-        }
         let key = match value {
             DataValue::Null => "null".to_owned(),
             DataValue::Number(value) => format!("n:{:016x}", value.to_bits()),
@@ -3964,7 +4024,15 @@ fn series_groups(
             groups.push(Vec::new());
             groups.len() - 1
         });
-        groups[group].push(index);
+        // Reserve every admitted series' palette slot even when hidden, so a
+        // controlled legend toggle cannot recolor the remaining line/area data.
+        if state
+            .visible_series
+            .as_ref()
+            .is_none_or(|visible| visible.contains(&label))
+        {
+            groups[group].push(index);
+        }
     }
     groups
 }
@@ -5844,6 +5912,253 @@ mod tests {
             })
             .collect();
         assert_eq!(radii, vec![5.0, 10.0]);
+    }
+
+    #[test]
+    fn hiding_first_series_preserves_remaining_paint_and_legend_colors() {
+        let limits = ChartLimits::default();
+        let data = Arc::new(
+            ChartData::new(
+                1,
+                vec![
+                    Dataset::new(
+                        "d",
+                        vec![
+                            RowKey::from("a0"),
+                            RowKey::from("b0"),
+                            RowKey::from("a1"),
+                            RowKey::from("b1"),
+                        ],
+                        vec![
+                            Column::new(
+                                "x",
+                                vec![
+                                    DataValue::Number(0.0),
+                                    DataValue::Number(0.0),
+                                    DataValue::Number(1.0),
+                                    DataValue::Number(1.0),
+                                ],
+                            ),
+                            Column::new(
+                                "y",
+                                vec![
+                                    DataValue::Number(1.0),
+                                    DataValue::Number(2.0),
+                                    DataValue::Number(1.5),
+                                    DataValue::Number(2.5),
+                                ],
+                            ),
+                            Column::new(
+                                "series",
+                                vec![
+                                    DataValue::Category("A".into()),
+                                    DataValue::Category("B".into()),
+                                    DataValue::Category("A".into()),
+                                    DataValue::Category("B".into()),
+                                ],
+                            ),
+                        ],
+                    )
+                    .unwrap(),
+                ],
+                &limits,
+            )
+            .unwrap(),
+        );
+        let mut spec =
+            crate::Recipes::line("Series", FieldRef::new("d", "x"), FieldRef::new("d", "y"));
+        spec.layers[0].encodings.push(crate::Encoding {
+            channel: Channel::Series,
+            field: FieldRef::new("d", "series"),
+            scale: None,
+        });
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        let input = |content| {
+            RetainedSurfaceInput::new(
+                Rect::new(0.0, 0.0, 600.0, 300.0),
+                1.0,
+                twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                    content,
+                    ..Default::default()
+                },
+            )
+        };
+        let colors = |paint: &[PaintCommand]| {
+            paint
+                .iter()
+                .filter_map(|p| match p {
+                    PaintCommand::Path { color, .. } => Some(*color),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = colors(&view.update(input(1)).unwrap().output.paint);
+        let after = colors(
+            &view
+                .update_state(
+                    ChartState {
+                        visible_series: Some([Arc::from("B")].into_iter().collect()),
+                        ..Default::default()
+                    },
+                    input(2),
+                )
+                .unwrap()
+                .output
+                .paint,
+        );
+        assert_eq!(before.len(), 2);
+        assert_eq!(after, vec![before[1]]);
+    }
+
+    #[test]
+    fn categorical_guides_paint_source_labels_and_numeric_ticks_avoid_float_noise() {
+        let limits = ChartLimits::default();
+        let dataset = Dataset::new(
+            "sources",
+            vec![RowKey::from("a"), RowKey::from("b")],
+            vec![
+                Column::new(
+                    "source",
+                    vec![
+                        DataValue::Category("source-0042".into()),
+                        DataValue::Category("source-0007".into()),
+                    ],
+                ),
+                Column::new(
+                    "value",
+                    vec![DataValue::Number(1.0), DataValue::Number(2.0)],
+                ),
+            ],
+        )
+        .unwrap();
+        let data = Arc::new(ChartData::new(1, vec![dataset], &limits).unwrap());
+        let mut spec = crate::Recipes::horizontal_bar(
+            "Sources",
+            FieldRef::new("sources", "source"),
+            FieldRef::new("sources", "value"),
+        );
+        spec.axes.push(crate::Axis {
+            scale: "y".into(),
+            title: None,
+            unit: None,
+            tick_count: Some(5),
+            grid: false,
+        });
+        let mut view =
+            ChartView::new(ChartModel::new(Arc::new(spec), data, limits).unwrap()).unwrap();
+        let input =
+            RetainedSurfaceInput::new(Rect::new(0.0, 0.0, 600.0, 300.0), 1.0, Default::default());
+        let paint = &view.update(input).unwrap().output.paint;
+        for label in ["source-0042", "source-0007"] {
+            assert!(
+                paint
+                    .iter()
+                    .any(|p| matches!(p,PaintCommand::Text{text,..} if text==label))
+            );
+        }
+        let column = Column::new("v", vec![DataValue::Number(445500.0)]);
+        let mapper = AxisMapper::new([0.0, 445500.0], [0.0, 100.0], None).unwrap();
+        assert_eq!(
+            axis_ticks(&column, [0.0, 445500.0], &mapper, 5, None)[1].1,
+            "111375"
+        );
+    }
+
+    #[test]
+    fn explicit_color_and_size_domains_keep_values_stable_across_revisions() {
+        let limits = ChartLimits::default();
+        let data = |revision, other| {
+            Arc::new(
+                ChartData::new(
+                    revision,
+                    vec![
+                        Dataset::new(
+                            DatasetId::from("d"),
+                            vec![
+                                RowKey::from("zero"),
+                                RowKey::from("fixed"),
+                                RowKey::from("changing"),
+                            ],
+                            vec![
+                                Column::new(
+                                    "x",
+                                    vec![
+                                        DataValue::Number(0.0),
+                                        DataValue::Number(1.0),
+                                        DataValue::Number(2.0),
+                                    ],
+                                ),
+                                Column::new("y", vec![DataValue::Number(1.0); 3]),
+                                Column::new(
+                                    "value",
+                                    vec![
+                                        DataValue::Number(0.0),
+                                        DataValue::Number(25.0),
+                                        DataValue::Number(other),
+                                    ],
+                                ),
+                            ],
+                        )
+                        .unwrap(),
+                    ],
+                    &limits,
+                )
+                .unwrap(),
+            )
+        };
+        let field = |name| FieldRef::new("d", name);
+        for mut spec in [
+            crate::Recipes::heatmap("Heat", field("x"), field("y"), field("value")),
+            crate::Recipes::bubble("Hosts", field("x"), field("y"), field("value")),
+        ] {
+            for scale in &mut spec.scales {
+                if matches!(scale.kind, crate::ScaleKind::Color | crate::ScaleKind::Size) {
+                    scale.domain = Some([0.0, 100.0]);
+                }
+            }
+            let spec = Arc::new(spec);
+            let mut view = ChartView::new(
+                ChartModel::new(spec.clone(), data(1, 50.0), limits.clone()).unwrap(),
+            )
+            .unwrap();
+            let input = |revision| {
+                RetainedSurfaceInput::new(
+                    Rect::new(0.0, 0.0, 600.0, 300.0),
+                    1.0,
+                    twinkle_ui::retained_surface::RetainedSurfaceRevisions {
+                        content: revision,
+                        ..Default::default()
+                    },
+                )
+            };
+            let first = view.update(input(1)).unwrap().output.paint.clone();
+            let second = view
+                .replace_and_update(spec, data(2, 100.0), input(2))
+                .unwrap()
+                .output
+                .paint
+                .clone();
+            // The zero and fixed marks must not change just because another
+            // datum's maximum changes. Guides are independent of size/fill.
+            let marks = |paint: &[PaintCommand]| {
+                paint
+                    .iter()
+                    .filter(|command| match command {
+                        PaintCommand::Fill { rect, .. } => rect.size.width < 600.0,
+                        PaintCommand::RoundedFill { radius, .. } => {
+                            *radius == 2.0 || *radius == 5.0
+                        }
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            let a = marks(&first);
+            let b = marks(&second);
+            assert!(a.len() >= 2, "must paint zero and fixed marks");
+            assert_eq!(&a[..2], &b[..2]);
+        }
     }
 
     #[test]
