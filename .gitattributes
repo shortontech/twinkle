@@ -1,0 +1,2 @@
+# Shared Rust/JS semantic trace must match generated LF-delimited output.
+crates/twinkle-redux/tests/fixtures/shared_semantic_trace.txt text eol=lf
