@@ -2463,6 +2463,7 @@ impl<Message: Clone> UiFrame<Message> {
             .has_value_overrides()
             .then_some(&transient_overlay);
         let mut measurement = MeasurementSession::default();
+        measurement.prepare_boundaries(&root, &root_id, &transient_overlay, &tree.retained_nodes);
         layout_element(
             &root,
             &root_id,
@@ -8645,9 +8646,27 @@ impl Hasher for MeasurementNodeHasher {
 
 type MeasurementNodeIndex = HashMap<usize, usize, BuildHasherDefault<MeasurementNodeHasher>>;
 
+#[cfg(test)]
+thread_local! {
+    // 0 optimized, 1 textual identities, 2 whole-overlay measurement oracle.
+    static MEASUREMENT_ORACLE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+struct MeasurementBoundaryIdentity {
+    parent: UiId,
+    index: usize,
+    id: UiId,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    requests: std::cell::Cell<u64>,
+}
+
 struct MeasurementSession {
     #[cfg(test)]
     enabled: bool,
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    boundary_counts: std::cell::Cell<[u64; 6]>,
+    boundary_ids:
+        HashMap<usize, MeasurementBoundaryIdentity, BuildHasherDefault<MeasurementNodeHasher>>,
     node_index: MeasurementNodeIndex,
     nodes: Vec<NodeMeasurements>,
     entries: usize,
@@ -8671,11 +8690,152 @@ struct MeasurementSession {
     purpose_requests: [u64; 4],
 }
 
+impl MeasurementSession {
+    // Only call immediately after reconciling this immutable declaration. The map
+    // never survives this layout session; auxiliary/generated declarations fall
+    // back to textual resolution. No retained slot or borrowed address escapes.
+    fn prepare_boundaries<Message>(
+        &mut self,
+        element: &Element<Message>,
+        id: &UiId,
+        overlay: &TransientStateJournal,
+        retained: &super::retained::RetainedNodeArena,
+    ) {
+        #[cfg(test)]
+        if MEASUREMENT_ORACLE_MODE.get() == 1 {
+            return;
+        }
+        let started = crate::pipeline_trace::clock();
+        #[cfg(feature = "pipeline-attribution")]
+        let allocation_before = crate::pipeline_trace::allocator_counts();
+        self.boundary_ids.clear();
+        if !overlay.measurement_affects(id) {
+            self.boundary_ids.shrink_to_fit();
+        }
+        self.seed_boundaries(element, id, overlay, retained);
+        #[cfg(feature = "pipeline-attribution")]
+        let allocation_delta = allocation_before
+            .zip(crate::pipeline_trace::allocator_counts())
+            .map(|(before, after)| {
+                [
+                    after[0] - before[0],
+                    after[1] - before[1],
+                    after[2] - before[2],
+                ]
+            });
+        crate::pipeline_trace::event!({
+            "event": "measurement_boundary_preparation",
+            "entries": self.boundary_ids.len(),
+            "capacity": self.boundary_ids.capacity(),
+            "capacityInlineBytes": self.boundary_ids.capacity() * std::mem::size_of::<(usize, MeasurementBoundaryIdentity)>(),
+            "estimatedTableBytes": self.boundary_table_bytes(),
+            "allocationDeltaCallsFreesRequestedBytes": allocation_delta,
+            "serviceUs": crate::pipeline_trace::micros(started),
+            "maxEntries": 16_384,
+            "rootMembershipProbes": 1,
+            "ownership": "Session owns two Arc UiId handles per boundary, sharing existing identity payloads. Table estimate includes spare buckets and control bytes for this compiler's standard HashMap; allocator bookkeeping/rounding is additional. Attribution/test entries include an extra eight-byte request counter; normal entries do not. All capacity is released at session end."
+        });
+        let _ = started;
+    }
+
+    #[cfg(any(test, feature = "pipeline-attribution"))]
+    fn boundary_table_bytes(&self) -> usize {
+        if self.boundary_ids.capacity() == 0 {
+            return 0;
+        }
+        let buckets = (self.boundary_ids.capacity() + 1).next_power_of_two();
+        buckets * (std::mem::size_of::<(usize, MeasurementBoundaryIdentity)>() + 1) + 16
+    }
+
+    fn seed_boundaries<Message>(
+        &mut self,
+        element: &Element<Message>,
+        id: &UiId,
+        overlay: &TransientStateJournal,
+        retained: &super::retained::RetainedNodeArena,
+    ) {
+        const MAX_BOUNDARIES: usize = 16_384;
+        #[cfg(any(test, feature = "pipeline-attribution"))]
+        {
+            let mut counts = self.boundary_counts.get();
+            counts[3] += 1;
+            self.boundary_counts.set(counts);
+        }
+        if !overlay.measurement_affects(id) {
+            return;
+        }
+        for (index, child) in element.children.iter().enumerate() {
+            if self.boundary_ids.len() >= MAX_BOUNDARIES {
+                return;
+            }
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            {
+                let mut counts = self.boundary_counts.get();
+                counts[4] += 1;
+                self.boundary_counts.set(counts);
+            }
+            let Some(child_id) = retained.child_ui_id(id, index) else {
+                continue;
+            };
+            // Verify textual parent/position semantics without constructing or
+            // fingerprinting a fresh path. This also rejects ambiguous duplicate
+            // parent lookups whose retained children belong to another declaration.
+            if !layout::child_identity_matches(id, child, index, &child_id) {
+                continue;
+            }
+            self.boundary_ids.insert(
+                child as *const Element<Message> as usize,
+                MeasurementBoundaryIdentity {
+                    parent: id.clone(),
+                    index,
+                    id: child_id.clone(),
+                    #[cfg(any(test, feature = "pipeline-attribution"))]
+                    requests: std::cell::Cell::new(0),
+                },
+            );
+            self.seed_boundaries(child, &child_id, overlay, retained);
+        }
+    }
+
+    fn boundary_id<Message>(&self, child: &Element<Message>, parent: &UiId, index: usize) -> UiId {
+        if let Some(identity) = self
+            .boundary_ids
+            .get(&(child as *const Element<Message> as usize))
+            && identity.parent == *parent
+            && identity.index == index
+        {
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            {
+                let mut counts = self.boundary_counts.get();
+                counts[0] += 1;
+                counts[5] += u64::from(identity.requests.get() != 0);
+                identity.requests.set(identity.requests.get() + 1);
+                self.boundary_counts.set(counts);
+            }
+            return identity.id.clone();
+        }
+        let id = layout::resolved_child_id(parent, child, index);
+        #[cfg(any(test, feature = "pipeline-attribution"))]
+        {
+            let mut counts = self.boundary_counts.get();
+            counts[1] += 1;
+            counts[2] += id.as_str().len() as u64;
+            self.boundary_counts.set(counts);
+        }
+        crate::pipeline_trace::count_work!(9, 1);
+        crate::pipeline_trace::count_work!(10, id.as_str().len() as u64);
+        id
+    }
+}
+
 impl Default for MeasurementSession {
     fn default() -> Self {
         Self {
             #[cfg(test)]
             enabled: true,
+            #[cfg(any(test, feature = "pipeline-attribution"))]
+            boundary_counts: std::cell::Cell::new([0; 6]),
+            boundary_ids: HashMap::default(),
             node_index: MeasurementNodeIndex::default(),
             nodes: Vec::new(),
             entries: 0,
@@ -8736,6 +8896,13 @@ impl Drop for MeasurementSession {
     fn drop(&mut self) {
         crate::pipeline_trace::event!({
             "event": "measurement_session",
+            "boundaryReused": self.boundary_counts.get()[0],
+            "boundaryTextualFallbacks": self.boundary_counts.get()[1],
+            "boundaryTextualBytes": self.boundary_counts.get()[2],
+            "boundaryEntries": self.boundary_ids.len(),
+            "boundaryPreparationSeedMembershipProbes": self.boundary_counts.get()[3],
+            "boundaryPreparationArenaRequests": self.boundary_counts.get()[4],
+            "boundaryRepeatedReuses": self.boundary_counts.get()[5],
             "requests": self.requests,
             "evaluations": self.evaluations,
             "hits": self.hits,
@@ -8765,9 +8932,7 @@ fn measure_child_effective<Message>(
 ) -> Size {
     match parent {
         Some((parent_id, overlay)) => {
-            let child_id = layout::resolved_child_id(parent_id, child, index);
-            crate::pipeline_trace::count_work!(9, 1);
-            crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
+            let child_id = session.boundary_id(child, parent_id, index);
             let child_context = overlay
                 .measurement_affects(&child_id)
                 .then_some((&child_id, overlay));
@@ -8781,13 +8946,12 @@ fn effective_child_style<'a, Message>(
     child: &'a Element<Message>,
     parent: Option<(&UiId, &'a TransientStateJournal)>,
     index: usize,
+    session: &MeasurementSession,
 ) -> EffectiveStyle<'a> {
     crate::pipeline_trace::count_work!(11, 1);
     match parent {
         Some((parent_id, overlay)) => {
-            let child_id = layout::resolved_child_id(parent_id, child, index);
-            crate::pipeline_trace::count_work!(9, 1);
-            crate::pipeline_trace::count_work!(10, child_id.as_str().len() as u64);
+            let child_id = session.boundary_id(child, parent_id, index);
             if overlay.measurement_affects(&child_id) {
                 crate::pipeline_trace::count_work!(8, 1);
                 overlay.style(&child_id, child)
@@ -9118,7 +9282,7 @@ fn evaluate_element_effective<Message>(
                     MeasurementPurpose::Intrinsic,
                     session,
                 );
-                let position = effective_child_style(child, context, index)
+                let position = effective_child_style(child, context, index, session)
                     .absolute_position
                     .unwrap_or_default();
                 Size::new(position.x + size.width, position.y + size.height)
@@ -9158,7 +9322,7 @@ fn evaluate_element_effective<Message>(
                         .enumerate()
                         .zip(&sizes)
                         .map(|((index, child), measured)| {
-                            let child_style = effective_child_style(child, context, index);
+                            let child_style = effective_child_style(child, context, index, session);
                             let preferred = child_style.basis.resolve(
                                 child_max.width,
                                 child_style.width.resolve(child_max.width, measured.width),
@@ -9669,3 +9833,7 @@ fn contains(rect: Rect, point: Point) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "tree/measurement_admission.rs"]
+mod measurement_admission;

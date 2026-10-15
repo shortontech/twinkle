@@ -432,7 +432,7 @@ pub(super) fn layout_element<Message: Clone>(
             let content = rect.inset(style.padding);
             for (index, child) in element.children.iter().enumerate() {
                 let child_context = measurement_context;
-                let position = effective_child_style(child, child_context, index)
+                let position = effective_child_style(child, child_context, index, measurement)
                     .absolute_position
                     .unwrap_or_default();
                 let size = measure_child_effective(
@@ -510,10 +510,12 @@ pub(super) fn layout_element<Message: Clone>(
                 .enumerate()
                 .map(|(index, child)| match axis {
                     Axis::Horizontal => {
-                        effective_child_style(child, measurement_context, index).min_width
+                        effective_child_style(child, measurement_context, index, measurement)
+                            .min_width
                     }
                     Axis::Vertical => {
-                        effective_child_style(child, measurement_context, index).min_height
+                        effective_child_style(child, measurement_context, index, measurement)
+                            .min_height
                     }
                 })
                 .sum::<f32>()
@@ -925,9 +927,10 @@ pub(super) fn layout_element<Message: Clone>(
                 let row_y = content.origin.y - offset_y
                     + row_heights[..row].iter().sum::<f32>()
                     + style.gap * row as f32;
-                let alignment = effective_child_style(child, measurement_context, index)
-                    .align_self
-                    .unwrap_or(style.align_items);
+                let alignment =
+                    effective_child_style(child, measurement_context, index, measurement)
+                        .align_self
+                        .unwrap_or(style.align_items);
                 let item_height = measured[index].height.min(row_heights[row]);
                 let row_baseline = if alignment == Align::Baseline {
                     measured[row * column_count..measured.len().min((row + 1) * column_count)]
@@ -1002,6 +1005,26 @@ pub(super) fn resolved_child_id<Message>(
     )
 }
 
+pub(super) fn child_identity_matches<Message>(
+    parent: &UiId,
+    child: &Element<Message>,
+    index: usize,
+    candidate: &UiId,
+) -> bool {
+    candidate
+        .as_str()
+        .strip_prefix(parent.as_str())
+        .and_then(|tail| tail.strip_prefix('/'))
+        .is_some_and(|suffix| match child.id.as_ref() {
+            Some(key) => suffix == key.as_str(),
+            None => suffix.strip_prefix('#').is_some_and(|digits| {
+                (digits == "0" || !digits.starts_with('0'))
+                    && digits.bytes().all(|digit| digit.is_ascii_digit())
+                    && digits.parse::<usize>() == Ok(index)
+            }),
+        })
+}
+
 fn retained_child_id<Message>(
     tree: &UiFrame<Message>,
     parent: &UiId,
@@ -1021,6 +1044,7 @@ fn retained_child_id_from<Message>(
 ) -> UiId {
     retained
         .and_then(|retained| retained.child_ui_id(parent, index))
+        .filter(|candidate| child_identity_matches(parent, child, index, candidate))
         .unwrap_or_else(|| resolved_child_id(parent, child, index))
 }
 
@@ -1514,7 +1538,7 @@ impl TransientStateJournal {
 
     pub(super) fn measurement_affects(&self, id: &UiId) -> bool {
         #[cfg(test)]
-        if self.force_measurement_overlay {
+        if self.force_measurement_overlay || MEASUREMENT_ORACLE_MODE.get() == 2 {
             return self.has_value_overrides();
         }
         self.measurement_affected.contains(id)
@@ -3180,7 +3204,7 @@ fn flex_bounds<Message>(
         .enumerate()
         .zip(&measured)
         .map(|((index, child), measured)| {
-            let style = effective_child_style(child, context, index);
+            let style = effective_child_style(child, context, index, measurement);
             let (intrinsic, min, max) = match axis {
                 Axis::Horizontal => (measured.width, style.min_width, style.max_width),
                 Axis::Vertical => (measured.height, style.min_height, style.max_height),
@@ -3249,7 +3273,7 @@ fn flex_bounds<Message>(
             .enumerate()
             .zip(&resolved_measured)
             .filter(|((index, child), _)| {
-                effective_child_style(child, context, *index)
+                effective_child_style(child, context, *index, measurement)
                     .align_self
                     .unwrap_or(align_items)
                     == Align::Baseline
@@ -3265,7 +3289,7 @@ fn flex_bounds<Message>(
         .zip(&resolved_measured)
         .enumerate()
     {
-        let style = effective_child_style(child, context, index);
+        let style = effective_child_style(child, context, index, measurement);
         let main_offset = leading + index as f32 * extra_gap;
         let alignment = style.align_self.unwrap_or(align_items);
         match axis {
@@ -3394,6 +3418,164 @@ mod transient_journal_tests {
                     .child(Text::new("sibling").id("sibling")),
             )
             .into_element()
+    }
+
+    #[test]
+    fn measurement_boundary_session_reuses_only_current_parent_positions() {
+        let root = dependency_fixture();
+        let root_id = UiId::from("root");
+        let mut arena = super::super::super::retained::RetainedNodeArena::default();
+        arena.reconcile_against(&root, None);
+        let mut journal = TransientStateJournal::default();
+        let mut session = MeasurementSession::default();
+        session.prepare_boundaries(&root, &root_id, &journal, &arena);
+        assert_eq!(session.boundary_ids.capacity(), 0);
+        journal.style_patches.insert(
+            UiId::from("root/left/target"),
+            TransientStylePatch {
+                width: Some(Length::Px(40.0)),
+                ..Default::default()
+            },
+        );
+        journal.finalize(&root, &root_id, Some(&arena));
+        session.prepare_boundaries(&root, &root_id, &journal, &arena);
+        assert_eq!(session.boundary_ids.len(), 3);
+        let mut other_mount = super::super::super::retained::RetainedNodeArena::default();
+        other_mount.reconcile_against(&root, None);
+        let mut other_session = MeasurementSession::default();
+        other_session.prepare_boundaries(&root, &root_id, &journal, &other_mount);
+        let first = session.boundary_id(&root.children[0], &root_id, 0);
+        let second = other_session.boundary_id(&root.children[0], &root_id, 0);
+        assert_eq!(first, second);
+        assert_ne!(first.mounted_token(), second.mounted_token());
+        for _ in 0..10 {
+            assert_eq!(
+                session.boundary_id(&root.children[0], &root_id, 0),
+                UiId::from("root/left")
+            );
+        }
+        // An address hit with a foreign parent must resolve through fallback.
+        assert_eq!(
+            session.boundary_id(&root.children[0], &UiId::from("other"), 0),
+            UiId::from("other/left")
+        );
+        let constraints = Constraints::loose(Size::new(300.0, 200.0));
+        let optimized = measure_element_effective(
+            &root,
+            Some((&root_id, &journal)),
+            constraints,
+            MeasurementPurpose::Intrinsic,
+            &mut session,
+        );
+        let textual = measure_element_effective(
+            &root,
+            Some((&root_id, &journal)),
+            constraints,
+            MeasurementPurpose::Intrinsic,
+            &mut MeasurementSession::default(),
+        );
+        assert_eq!(optimized, textual);
+        assert!(session.boundary_counts.get()[0] >= 10);
+        assert_eq!(session.boundary_counts.get()[1], 1);
+
+        let changed = Row::<()>::new()
+            .child(Text::new("new").id("new"))
+            .into_element();
+        session.prepare_boundaries(&changed, &root_id, &journal, &arena);
+        assert!(session.boundary_ids.is_empty());
+        assert_eq!(
+            session.boundary_id(&changed.children[0], &root_id, 0),
+            UiId::from("root/new")
+        );
+    }
+
+    #[test]
+    fn measurement_boundary_session_budget_and_empty_contraction() {
+        let root = Row::<()>::new()
+            .children((0..20_000).map(|_| Text::new("x")))
+            .into_element();
+        let root_id = UiId::from("root");
+        let mut arena = super::super::super::retained::RetainedNodeArena::default();
+        arena.reconcile_against(&root, None);
+        let mut journal = TransientStateJournal::default();
+        journal.style_patches.insert(
+            root_id.clone(),
+            TransientStylePatch {
+                width: Some(Length::Px(40.0)),
+                ..Default::default()
+            },
+        );
+        journal.style_patches.insert(
+            UiId::from("root/#19999"),
+            TransientStylePatch {
+                width: Some(Length::Px(80.0)),
+                ..Default::default()
+            },
+        );
+        journal.finalize(&root, &root_id, Some(&arena));
+        let mut session = MeasurementSession::default();
+        session.prepare_boundaries(&root, &root_id, &journal, &arena);
+        assert_eq!(session.boundary_ids.len(), 16_384);
+        assert!(session.boundary_ids.capacity() <= 28_672);
+        assert!(session.boundary_table_bytes() <= 1_343_504);
+        // A growing hash table may temporarily own the old and new buckets.
+        // Each is bounded by the admitted final capacity; payloads remain shared.
+        assert!(session.boundary_table_bytes() * 2 <= 2_687_008);
+        assert_eq!(
+            session.boundary_id(&root.children[19_999], &root_id, 19_999),
+            UiId::from("root/#19999")
+        );
+        let fallback_size = measure_child_effective(
+            &root.children[19_999],
+            Some((&root_id, &journal)),
+            19_999,
+            Constraints::loose(Size::new(200.0, 200.0)),
+            MeasurementPurpose::Intrinsic,
+            &mut session,
+        );
+        assert_eq!(
+            fallback_size.width, 80.0,
+            "budget fallback must preserve a live metric patch"
+        );
+        session.prepare_boundaries(&root, &root_id, &TransientStateJournal::default(), &arena);
+        assert_eq!(session.boundary_table_bytes(), 0);
+        drop(session);
+        let mut empty = MeasurementSession::default();
+        empty.prepare_boundaries(&root, &root_id, &TransientStateJournal::default(), &arena);
+        assert_eq!(empty.boundary_ids.capacity(), 0);
+    }
+
+    #[test]
+    fn measurement_boundary_broad_deep_scaling_is_bounded() {
+        std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(|| {
+            for nodes in [64, 256, 1_024, 4_096] {
+                for deep in [false, true] {
+                    let root: Element<()> = if deep {
+                        let mut root = Container::new().into_element();
+                        for _ in 1..nodes { root = Container::new().child(root).into_element(); }
+                        root
+                    } else {
+                        Row::new().children((1..nodes).map(|_| Container::new())).into_element()
+                    };
+                    let root_id = UiId::from("root");
+                    let target = if deep { UiId::from(format!("root{}", "/#0".repeat(nodes - 1))) } else { root_id.clone() };
+                    let mut arena = super::super::super::retained::RetainedNodeArena::default();
+                    arena.reconcile_against(&root, None);
+                    let mut journal = TransientStateJournal::default();
+                    journal.style_patches.insert(target, TransientStylePatch { width: Some(Length::Px(40.0)), ..Default::default() });
+                    journal.finalize(&root, &root_id, Some(&arena));
+                    let mut session = MeasurementSession::default();
+                    session.prepare_boundaries(&root, &root_id, &journal, &arena);
+                    assert_eq!(session.boundary_ids.len(), nodes - 1);
+                    assert!(session.boundary_ids.capacity() <= nodes * 2);
+                    for identity in session.boundary_ids.values() {
+                        assert!(identity.id.as_str().starts_with(identity.parent.as_str()));
+                        assert!(identity.index < nodes);
+                    }
+                    eprintln!("measurement_boundary_scaling nodes={nodes} deep={deep} entries={} capacity={} inline_bytes={}", session.boundary_ids.len(), session.boundary_ids.capacity(), session.boundary_ids.capacity() * std::mem::size_of::<(usize, MeasurementBoundaryIdentity)>());
+                }
+            }
+        }).unwrap().join().unwrap();
     }
 
     #[test]
