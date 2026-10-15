@@ -1853,8 +1853,11 @@ pub struct HostFailure {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Generations identifying the accepted frame and its accessibility projection.
 pub struct HostChangeToken {
+    /// Generation of the accepted native frame.
     pub frame_generation: u64,
+    /// Generation of the accepted accessibility projection.
     pub semantic_generation: u64,
     /// Incremental declaration that produced this frame, when one was
     /// admitted during the host step. Presenters carry this unchanged so
@@ -1866,7 +1869,9 @@ pub struct HostChangeToken {
 /// its admitted declaration generation to native frame diagnostics.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct NativeFrameCorrelation {
+    /// Application mount identity captured when the declaration was admitted.
     pub mount: u64,
+    /// Declaration generation within that mount.
     pub generation: u64,
 }
 
@@ -1874,12 +1879,19 @@ pub struct NativeFrameCorrelation {
 /// timestamp; an unavailable/invalid clock mapping also leaves it absent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NativeFramePresentation {
+    /// Application correlation captured for the frame, if one was supplied.
     pub correlation: Option<NativeFrameCorrelation>,
+    /// Native frame generation associated with this feedback.
     pub frame_generation: u64,
+    /// Mapped monotonic compositor timestamp, absent for discarded or unmappable feedback.
     pub presented_at: Option<Instant>,
+    /// Host monotonic time when compositor feedback was processed.
     pub observed_at: Instant,
+    /// Whether the compositor discarded the frame without presenting it.
     pub discarded: bool,
+    /// Reported display refresh interval, when available.
     pub refresh_interval: Option<Duration>,
+    /// Compositor presentation sequence, when available.
     pub sequence: Option<u64>,
 }
 
@@ -1888,34 +1900,58 @@ pub struct NativeFramePresentation {
 /// application state when a software worker finishes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NativeFrameSubmission {
+    /// Application correlation captured with the submitted frame.
     pub correlation: Option<NativeFrameCorrelation>,
+    /// Native frame generation submitted to the presenter.
     pub frame_generation: u64,
+    /// Host monotonic time immediately after the successful presenter call.
     pub submitted_at: Instant,
     /// CPU duration inside the native presenter call; not GPU execution time.
     pub present_call_duration: Duration,
+    /// Presenter backend identifier, currently `gpu` or `software`.
     pub backend: &'static str,
+    /// Logical-to-physical scale used for the submitted surface.
     pub scale_factor: f32,
+    /// Submitted surface width and height in physical pixels.
     pub physical_size: (u32, u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Accepted host-step results, emitted work, failures and scheduling information.
 pub struct HostEventOutcome {
+    /// Whether the step changed accepted host or application state.
     pub changed: bool,
+    /// How the host handled the incoming event.
     pub disposition: crate::EventDisposition,
+    /// Combined invalidation requested by accepted work.
     pub invalidation: Invalidation,
+    /// Application messages delivered during this step.
     pub messages: Vec<MessageEvidence>,
+    /// Effects produced while processing accepted messages.
     pub effects: Vec<EffectEvidence>,
+    /// Host admission or execution failures reported during the step.
     pub failures: Vec<HostFailure>,
+    /// Failures reported while completing deferred work.
     pub completion_failures: Vec<CompletionFailure>,
+    /// Pointer icon requested by the accepted frame.
     pub pointer_icon: PointerIcon,
+    /// Whether the accepted frame requests native text input.
     pub text_input_active: bool,
+    /// Generation of the accepted accessibility projection.
     pub accessibility_generation: u64,
+    /// Accepted frame generations and application correlation.
     pub change_token: HostChangeToken,
+    /// Earliest scheduled host wake-up, when one is needed.
     pub next_deadline: Option<Instant>,
+    /// Timing and work counters collected for this step.
     pub telemetry: HostTelemetry,
+    /// Text requested for transfer to the native clipboard.
     pub clipboard_text: Option<String>,
+    /// Rejected accessibility actions and their failure evidence.
     pub semantic_failures: Vec<SemanticActionFailure>,
+    /// Global actions emitted for the embedding application.
     pub global_actions: Vec<GlobalAction>,
+    /// Controller execution outcomes recorded during the step.
     pub controller_executions: Vec<ControllerExecutionEvidence>,
 }
 
