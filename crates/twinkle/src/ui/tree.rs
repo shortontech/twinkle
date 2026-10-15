@@ -319,7 +319,7 @@ pub struct InteractionState {
 /// Resolved common geometry and identity for one UI node.
 ///
 /// Optional navigation, scrolling, grid, interaction-index and semantic data
-/// live in a lazily allocated [`ResolvedNodeDetails`] sidecar. Direct field
+/// live in a lazily allocated sidecar. Direct field
 /// access remains available through deref; exhaustive struct literals are an
 /// intentional 0.2 representation boundary.
 pub struct ResolvedNode {
