@@ -371,7 +371,7 @@ impl FocusedInputDispatcher {
                         InputCommand::Application {
                             shortcut: Shortcut::Submit,
                             fallback: Some(if text_editing {
-                                UiEvent::KeyboardActivate
+                                UiEvent::TextInput("\n".into())
                             } else {
                                 UiEvent::KeyboardNavigateActivate
                             }),
@@ -593,7 +593,7 @@ fn consumes_correlated_text(command: &InputCommand) -> bool {
                 | UiEvent::TextMoveDocumentHome { .. }
                 | UiEvent::TextMoveDocumentEnd { .. }
         ) | InputCommand::Application {
-            shortcut: Shortcut::Reload,
+            shortcut: Shortcut::Reload | Shortcut::Submit,
             ..
         }
     )
@@ -701,6 +701,27 @@ mod tests {
                 .dispatch(&event)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn enter_offers_submit_with_newline_fallback_for_focused_editor() {
+        let mut dispatch = FocusedInputDispatcher::default();
+        let event = key(LogicalKey::Named(NamedKey::Enter), KeyCode::Enter, &[]);
+        assert_eq!(
+            dispatch.dispatch_with_context(
+                &event,
+                InputContext {
+                    text_focused: true,
+                    ..InputContext::default()
+                },
+            ),
+            [InputCommand::Application {
+                shortcut: Shortcut::Submit,
+                fallback: Some(UiEvent::TextInput("\n".into())),
+            }]
+        );
+        // A correlated native text callback must not insert a second newline.
+        assert!(dispatch.dispatch(&commit(1, 1, "\n")).is_empty());
     }
 
     #[test]
