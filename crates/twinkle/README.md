@@ -70,9 +70,30 @@ application owns only domain state, typed messages, `update`, and `view`. See
 [`examples/standalone.rs`](examples/standalone.rs) for the complete counter application.
 
 The default build includes native controller discovery and the `gpu-presenter` feature. The
-standalone runtime prefers wgpu and falls back to its software presenter if GPU initialization or
-presentation fails. Set `TWINKLE_RENDERER=software` to force the fallback for diagnostics and A/B
-testing. `default-features = false` omits both native controller discovery and the GPU presenter;
+standalone runtime defaults to OpenGL/GLES, with CPU fallback if GPU initialization or
+presentation fails. Apps can override `Application::renderer()` to return `Renderer::OpenGl`
+(the default), `Renderer::Gpu` (automatic GPU backend selection), or `Renderer::Cpu`.
+The preference is read at native window startup. `TWINKLE_RENDERER=gl`, `gpu`, or `software`
+overrides it; `opengl` is also accepted. `WGPU_BACKEND` overrides the backend for either GPU
+mode, but does not enable GPU rendering when CPU mode is selected. For example:
+
+```sh
+TWINKLE_RENDERER=gpu WGPU_BACKEND=gl ./my-app
+```
+
+OpenGL availability depends on the platform and driver. On the tested NVIDIA Wayland setup,
+wgpu rejected the GL presentation surface and Twinkle fell back to CPU; Mesa software GL
+successfully presented frames. Selecting OpenGL does not guarantee hardware acceleration.
+
+For example, inside an `impl Application`:
+
+```rust,ignore
+fn renderer(&self) -> twinkle_ui::Renderer {
+    twinkle_ui::Renderer::OpenGl
+}
+```
+
+`default-features = false` omits both native controller discovery and the GPU presenter;
 enable either feature explicitly when needed. The backend-neutral controller vocabulary and
 software fallback remain available without default features. Oxc and V8 are not in this crate's
 dependency closure; JSX is an opt-in feature of the separate repository tooling.

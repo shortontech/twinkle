@@ -128,8 +128,12 @@ To build reusable components or a Rust design system, follow the
 ## Current feature surface
 
 The default `twinkle-ui` dependency includes native controller discovery and GPU presentation.
-The standalone runtime prefers wgpu and automatically falls back to software presentation. Set
-`TWINKLE_RENDERER=software` to force the fallback for diagnostics. With
+The standalone runtime defaults to OpenGL/GLES with automatic CPU fallback.
+Apps can override `Application::renderer()` to return `twinkle_ui::Renderer::OpenGl`,
+`Renderer::Gpu` (automatic GPU backend selection), or `Renderer::Cpu`.
+`TWINKLE_RENDERER=gl` (also `opengl`), `gpu`, or `software` overrides the app preference.
+`WGPU_BACKEND` overrides the backend in GPU modes; CPU mode remains CPU.
+The app preference is read at window startup. With
 `default-features = false`, both `native-controller` and `gpu-presenter` are omitted; either can be
 enabled explicitly, while the controller event vocabulary and software presenter remain
 available. It does not include Oxc or V8. JSX support belongs to the repository's `twinkle-presentation` and

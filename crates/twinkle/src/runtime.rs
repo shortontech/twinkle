@@ -781,6 +781,30 @@ impl ViewContext {
     }
 }
 
+/// Native window renderer preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Renderer {
+    /// Render on the CPU using the software presenter.
+    Cpu,
+    /// Use OpenGL/GLES when compiled and available, otherwise use the CPU.
+    #[default]
+    OpenGl,
+    /// Use the GPU presenter when compiled and available, otherwise use the CPU.
+    Gpu,
+}
+
+impl Renderer {
+    #[cfg(any(feature = "gpu-presenter", test))]
+    fn with_override(self, value: Option<&std::ffi::OsStr>) -> Self {
+        match value.and_then(std::ffi::OsStr::to_str) {
+            Some("software") => Self::Cpu,
+            Some("gpu") => Self::Gpu,
+            Some("gl" | "opengl") => Self::OpenGl,
+            _ => self,
+        }
+    }
+}
+
 /// Application state managed by Twinkle's native runtime.
 ///
 /// An application follows a conventional unidirectional loop: user interaction emits a
@@ -797,6 +821,15 @@ pub trait Application: Sized {
     /// Messages are cloned when a single declared action must be delivered through more than one
     /// runtime path, so they should usually be small values or cheaply cloned handles.
     type Message: Clone;
+
+    /// Preferred renderer for this application's native windows, read at window startup.
+    ///
+    /// `TWINKLE_RENDERER=software`, `gpu`, or `gl` overrides this preference.
+    /// OpenGL is the default. `WGPU_BACKEND` overrides the GPU backend selection.
+    /// GPU rendering requires the `gpu-presenter` feature and falls back to CPU on failure.
+    fn renderer(&self) -> Renderer {
+        Renderer::default()
+    }
 
     /// Applies one message to application state.
     ///
@@ -5847,8 +5880,15 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
         }
 
         #[cfg(feature = "gpu-presenter")]
-        if std::env::var_os("TWINKLE_RENDERER").as_deref() != Some(std::ffi::OsStr::new("software"))
-        {
+        let renderer = self
+            .host
+            .as_ref()
+            .expect("host available")
+            .application
+            .renderer()
+            .with_override(std::env::var_os("TWINKLE_RENDERER").as_deref());
+        #[cfg(feature = "gpu-presenter")]
+        if renderer != Renderer::Cpu {
             let gpu = self
                 .display
                 .display_handle()
@@ -5856,7 +5896,7 @@ impl<A: Application, H: HostAdapter<A>> ApplicationHandler for ApplicationRuntim
                 .map_err(|error| error.to_string())
                 .and_then(|(display, native_window)| {
                     // SAFETY: the runtime owns both handles and drops the presenter before the window.
-                    unsafe { crate::gpu_presenter::WindowGpuPresenter::new(display, native_window) }
+                    unsafe { crate::gpu_presenter::WindowGpuPresenter::new(display, native_window, self.display.clone(), renderer) }
                 });
             match gpu {
                 Ok(presenter) => {
@@ -6189,6 +6229,35 @@ fn is_clipboard_paste(input: &twinkle_input::InputEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn renderer_preference_and_environment_override() {
+        use super::Renderer;
+        use std::ffi::OsStr;
+        assert_eq!(Renderer::default(), Renderer::OpenGl);
+        for preference in [Renderer::Cpu, Renderer::Gpu, Renderer::OpenGl] {
+            assert_eq!(preference.with_override(None), preference);
+            for value in ["gl", "opengl"] {
+                assert_eq!(
+                    preference.with_override(Some(OsStr::new(value))),
+                    Renderer::OpenGl
+                );
+            }
+            assert_eq!(
+                preference.with_override(Some(OsStr::new("unknown"))),
+                preference
+            );
+            assert_eq!(
+                preference.with_override(Some(OsStr::new("software"))),
+                Renderer::Cpu
+            );
+            assert_eq!(
+                preference.with_override(Some(OsStr::new("gpu"))),
+                Renderer::Gpu
+            );
+        }
+    }
+
+
     #[test]
     fn initial_frame_captures_application_correlation_before_native_submission() {
         struct Tagged(u64);

@@ -682,8 +682,15 @@ struct GpuGraphics {
 }
 
 impl GpuGraphics {
-    unsafe fn new(display: DisplayHandle<'_>, window: WindowHandle<'_>) -> Result<Self, String> {
-        let instance = wgpu::Instance::default();
+    unsafe fn new(
+        display: DisplayHandle<'_>,
+        window: WindowHandle<'_>,
+        owned_display: winit::event_loop::OwnedDisplayHandle,
+        renderer: crate::Renderer,
+    ) -> Result<Self, String> {
+        let instance = wgpu::Instance::new(
+            instance_descriptor(renderer).with_display_handle(Box::new(owned_display)),
+        );
         // SAFETY: the caller guarantees the native window and display outlive
         // this temporary compatibility surface and subsequent presenters.
         let surface = unsafe {
@@ -697,7 +704,7 @@ impl GpuGraphics {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
-            apply_limit_buckets: true,
+            apply_limit_buckets: false,
         }))
         .map_err(|error| error.to_string())?;
         crate::pipeline_trace::backend_identity("gpu_adapter", || {
@@ -715,7 +722,11 @@ impl GpuGraphics {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Twinkle standalone GPU"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: if adapter.get_info().backend == wgpu::Backend::Gl {
+                wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits())
+            } else {
+                wgpu::Limits::default()
+            },
             ..Default::default()
         }))
         .map_err(|error| error.to_string())?;
@@ -767,12 +778,12 @@ impl GpuGraphics {
     }
 
     fn new_headless() -> Result<Self, String> {
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(instance_descriptor(crate::Renderer::Gpu));
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None,
             force_fallback_adapter: false,
-            apply_limit_buckets: true,
+            apply_limit_buckets: false,
         }))
         .map_err(|error| error.to_string())?;
         Self::from_adapter(instance, None, adapter)
@@ -1335,8 +1346,10 @@ impl WindowGpuPresenter {
     pub(crate) unsafe fn new(
         display: DisplayHandle<'_>,
         window: WindowHandle<'_>,
+        owned_display: winit::event_loop::OwnedDisplayHandle,
+        renderer: crate::Renderer,
     ) -> Result<Self, String> {
-        let graphics = unsafe { GpuGraphics::new(display, window) }?;
+        let graphics = unsafe { GpuGraphics::new(display, window, owned_display, renderer) }?;
         let presenter = unsafe { GpuPresenter::new(window, &graphics) }?;
         Ok(Self {
             presenter,
@@ -4191,4 +4204,13 @@ fn multisample_render_readback_cost() {
             );
         }
     }
+}
+
+/// Apply environment selection after the application's preferred GPU backend.
+fn instance_descriptor(renderer: crate::Renderer) -> wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    if renderer == crate::Renderer::OpenGl {
+        descriptor.backends = wgpu::Backends::GL;
+    }
+    descriptor.with_env()
 }

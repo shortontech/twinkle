@@ -99,7 +99,7 @@ pub use runtime::{
     NativeFramePresentation, NativeFrameSubmission, NormalizedAdmissionBinding,
     NormalizedIngressAuthority, NormalizedInputEnvelope, NormalizedRecipientBinding,
     NormalizedSourceBinding, OutboundFileDrag, OverlayDeclarationFailure, Popover, ScrollAnchor,
-    SemanticActionFailure, Shortcut, ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost,
+    Renderer, SemanticActionFailure, Shortcut, ShortcutOutcome, Tooltip, TransientWindowSpawner, UiHost,
     UiHostViewport, ViewContext, run, run_with_adapter, run_with_controller_source,
 };
 #[cfg(target_os = "windows")]
@@ -464,7 +464,7 @@ pub mod prelude {
         OverlayId, OverlayMenu, OverlayMenuItem, OverlayMenuPresentation, OverlayPlacement,
         OverlayStyle, PageHeader, PlatformThemePreferences, PointerIcon, Popover, PreviewState,
         PreviewTile, ProjectStatusRow, RESPONSIVE_NAVIGATION_BREAKPOINT, RadioButton, RadioGroup,
-        RadioOption, RadiusScale, ReadingDirection, ResolvedAppearance, ResolvedThemePreferences,
+        RadioOption, RadiusScale, ReadingDirection, Renderer, ResolvedAppearance, ResolvedThemePreferences,
         ResponsiveNavigation, ResponsiveNavigationDestination, ResponsiveNavigationError,
         ResponsiveNavigationPresentation, Row, SETTINGS_SHELL_NARROW_BREAKPOINT,
         START_MENU_SINGLE_PANE_BREAKPOINT, SectionHeader, SelectField, SelectionIndicator,
